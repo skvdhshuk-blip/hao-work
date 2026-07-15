@@ -61,13 +61,13 @@ const shouldStartInBackground = (loginItemSettings = readLoginItemSettings()) =>
 };
 
 // Set the product name early so electron-log derives its log directory as
-// ~/Library/Logs/OpenChamber/ (not ~/Library/Logs/@openchamber/electron/).
-app.setName('OpenChamber');
+// ~/Library/Logs/Hao Work/ (not ~/Library/Logs/@openchamber/electron/).
+app.setName('Hao Work');
 if (process.platform === 'linux') {
-  app.setDesktopName('openchamber.desktop');
+  app.setDesktopName('hao-work.desktop');
 }
 if (isDev) {
-  app.setPath('userData', path.join(app.getPath('appData'), 'OpenChamber Dev'));
+  app.setPath('userData', path.join(app.getPath('appData'), 'Hao Work Dev'));
 }
 app.setAppUserModelId(APP_USER_MODEL_ID);
 app.commandLine.appendSwitch('proxy-bypass-list', '<-loopback>');
@@ -190,6 +190,7 @@ const state = {
   serverHandle: null,
   sidecarUrl: null,
   localOrigin: null,
+  localUiOrigin: null,
   apiBaseUrl: null,
   clientToken: null,
   requestHeaders: {},
@@ -1026,6 +1027,30 @@ const buildLocalUrl = (port) => `http://127.0.0.1:${port}`;
 
 const resourceRoot = () => isDev ? path.join(__dirname, 'resources') : process.resourcesPath;
 const resolveWebDistDir = () => path.join(resourceRoot(), 'web-dist');
+const configurePackagedHaoCodeRuntime = () => {
+  if (!app.isPackaged) return;
+  const runtimeRoot = path.join(resourceRoot(), 'haocode-runtime');
+  const manifestPath = path.join(runtimeRoot, 'runtime.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`Bundled HaoCode runtime is missing or invalid: ${error.message}`);
+  }
+  for (const [key, environmentName] of [
+    ['php', 'HAOWORK_PHP_BINARY'],
+    ['worker', 'HAOWORK_HAOCODE_WORKER'],
+    ['autoload', 'HAOWORK_HAOCODE_AUTOLOAD'],
+  ]) {
+    const relativePath = manifest[key];
+    if (typeof relativePath !== 'string' || !relativePath.trim()) {
+      throw new Error(`Bundled HaoCode runtime manifest is missing ${key}.`);
+    }
+    const absolutePath = path.join(runtimeRoot, relativePath);
+    if (!fs.existsSync(absolutePath)) throw new Error(`Bundled HaoCode runtime file is missing: ${absolutePath}`);
+    process.env[environmentName] = absolutePath;
+  }
+};
 const shouldUsePackagedUi = () => {
   if (process.env.OPENCHAMBER_ELECTRON_LOAD_SERVER_UI === '1') return false;
   if (process.env.OPENCHAMBER_ELECTRON_USE_BUNDLED_UI === '1') return true;
@@ -1316,6 +1341,7 @@ const inheritUserShellEnv = () => {
 
 const spawnLocalServer = async () => {
   inheritUserShellEnv();
+  configurePackagedHaoCodeRuntime();
 
   const settings = readSettingsRoot();
   const storedPort = Number.isFinite(settings.desktopLocalPort) ? settings.desktopLocalPort : null;
@@ -2204,6 +2230,10 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
   const useSaved = saved && typeof saved.width === 'number' && typeof saved.height === 'number';
   const restoredBounds = useSaved ? clampWindowBoundsToVisibleWorkArea(saved) : null;
   const desktopLocalOrigin = state.localOrigin || state.sidecarUrl || '';
+  const hmrUiPort = Number(process.env.OPENCHAMBER_HMR_UI_PORT || '');
+  const desktopLocalUiOrigin = isDev
+    ? state.localUiOrigin || (Number.isInteger(hmrUiPort) && hmrUiPort > 0 ? `http://127.0.0.1:${hmrUiPort}` : '')
+    : '';
   const rendererRuntimeConfig = buildRendererRuntimeConfig(url, runtimeConfig);
   const desktopApiBaseUrl = rendererRuntimeConfig.apiBaseUrl;
   const desktopClientToken = rendererRuntimeConfig.clientToken;
@@ -2218,7 +2248,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
   const autoHidesNativeMenuBar = process.platform !== 'darwin';
   const windowIconPath = getWindowIconPath();
   const options = {
-    title: 'OpenChamber',
+    title: 'Hao Work',
     ...(Number.isFinite(restoredBounds?.x) && Number.isFinite(restoredBounds?.y)
       ? { x: restoredBounds.x, y: restoredBounds.y }
       : {}),
@@ -2243,6 +2273,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
     webPreferences: {
       additionalArguments: [
         `--openchamber-local-origin=${desktopLocalOrigin}`,
+        `--openchamber-local-ui-origin=${desktopLocalUiOrigin}`,
         `--openchamber-api-base-url=${desktopApiBaseUrl}`,
         `--openchamber-client-token=${desktopClientToken}`,
         `--openchamber-runtime-headers=${JSON.stringify(desktopRequestHeaders)}`,
@@ -2601,6 +2632,10 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
   }
 
   const desktopLocalOrigin = state.localOrigin || '';
+  const hmrUiPort = Number(process.env.OPENCHAMBER_HMR_UI_PORT || '');
+  const desktopLocalUiOrigin = isDev
+    ? state.localUiOrigin || (Number.isInteger(hmrUiPort) && hmrUiPort > 0 ? `http://127.0.0.1:${hmrUiPort}` : '')
+    : '';
   const desktopApiBaseUrl = effectiveRuntimeConfig.apiBaseUrl || '';
   const desktopClientToken = effectiveRuntimeConfig.clientToken || '';
   const desktopRequestHeaders = effectiveRuntimeConfig.requestHeaders || {};
@@ -2610,7 +2645,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
   // macOS vibrancy, on by default; users can disable it (Appearance settings).
   const useVibrancy = process.platform === 'darwin' && readSettingsRoot().desktopVibrancy !== false;
   const browserWindow = new BrowserWindow({
-    title: 'OpenChamber Mini Chat',
+    title: 'Hao Work Mini Chat',
     width: MINI_CHAT_WINDOW_WIDTH,
     height: MINI_CHAT_WINDOW_HEIGHT,
     minWidth: MINI_CHAT_MIN_WINDOW_WIDTH,
@@ -2629,6 +2664,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
     webPreferences: {
       additionalArguments: [
         `--openchamber-local-origin=${desktopLocalOrigin}`,
+        `--openchamber-local-ui-origin=${desktopLocalUiOrigin}`,
         `--openchamber-api-base-url=${desktopApiBaseUrl}`,
         `--openchamber-client-token=${desktopClientToken}`,
         `--openchamber-runtime-headers=${JSON.stringify(desktopRequestHeaders)}`,
@@ -2759,6 +2795,8 @@ const resolveInitialUrl = async () => {
     : isDev && await waitForHealth(hmrUiUrl, 8_000, 100)
     ? hmrUiUrl
     : localUrl;
+
+  state.localUiOrigin = isDev ? new URL(localUiUrl).origin : null;
 
   state.sidecarUrl = localUrl;
   const localAvailable = Boolean(localUrl);
@@ -4231,7 +4269,7 @@ const buildMacMenu = () => {
     {
       label: app.name,
       submenu: [
-        { label: 'About OpenChamber', click: () => dispatchAction('about') },
+        { label: 'About Hao Work', click: () => dispatchAction('about') },
         {
           label: 'Check for Updates',
           click: () => dispatchCheckForUpdates(),
@@ -4334,9 +4372,9 @@ const buildAutoHiddenMenu = () => {
 
   return Menu.buildFromTemplate([
     {
-      label: 'OpenChamber',
+      label: 'Hao Work',
       submenu: [
-        { label: 'About OpenChamber', click: () => dispatchAction('about') },
+        { label: 'About Hao Work', click: () => dispatchAction('about') },
         {
           label: 'Check for Updates',
           click: () => dispatchCheckForUpdates(),
@@ -4487,6 +4525,7 @@ const isLocalSender = (webContents) => {
     const url = new URL(raw);
     if (url.protocol === `${UI_PROTOCOL}:` && url.hostname === 'app') return true;
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    if (isDev && state.localUiOrigin && url.origin === state.localUiOrigin) return true;
     if (state.localOrigin) {
       try {
         const allowed = new URL(state.localOrigin);

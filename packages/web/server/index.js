@@ -86,6 +86,7 @@ import { createPushRuntime } from './lib/notifications/push-runtime.js';
 import { createApnsRuntime } from './lib/notifications/apns-runtime.js';
 import { createNotificationTemplateRuntime } from './lib/notifications/template-runtime.js';
 import { createPermissionAutoAcceptRuntime } from './lib/permission-auto-accept/runtime.js';
+import { createHaoCodeCompatibilityServer } from './lib/haocode/compat-server.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
@@ -279,9 +280,11 @@ const maybeCacheSessionInfoFromEvent = (...args) => notificationTemplateRuntime.
 const buildTemplateVariables = (...args) => notificationTemplateRuntime.buildTemplateVariables(...args);
 const getCachedZenModels = (...args) => notificationTemplateRuntime.getCachedZenModels(...args);
 
-const OPENCHAMBER_DATA_DIR = process.env.OPENCHAMBER_DATA_DIR
-  ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
-  : path.join(os.homedir(), '.config', 'openchamber');
+const OPENCHAMBER_DATA_DIR = process.env.HAOWORK_DATA_DIR
+  ? path.resolve(process.env.HAOWORK_DATA_DIR)
+  : process.env.OPENCHAMBER_DATA_DIR
+    ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+    : path.join(os.homedir(), '.config', 'hao-work');
 const SETTINGS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'settings.json');
 const PUSH_SUBSCRIPTIONS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'push-subscriptions.json');
 const APNS_TOKENS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'apns-tokens.json');
@@ -290,6 +293,15 @@ const CLIENT_PAIRING_SESSIONS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'clien
 const CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'cloudflare-managed-remote-tunnels.json');
 const CLOUDFLARE_LEGACY_NAMED_TUNNELS_FILE_PATH = path.join(OPENCHAMBER_DATA_DIR, 'cloudflare-named-tunnels.json');
 const CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION = 1;
+
+const haoCodeCompatibilityRuntime = createHaoCodeCompatibilityServer({
+  dataDir: OPENCHAMBER_DATA_DIR,
+  workerOptions: {
+    ...(process.env.HAOWORK_PHP_BINARY ? { phpBinary: process.env.HAOWORK_PHP_BINARY } : {}),
+    ...(process.env.HAOWORK_HAOCODE_WORKER ? { workerPath: process.env.HAOWORK_HAOCODE_WORKER } : {}),
+    ...(process.env.HAOWORK_HAOCODE_AUTOLOAD ? { autoloadPath: process.env.HAOWORK_HAOCODE_AUTOLOAD } : {}),
+  },
+});
 
 const managedTunnelConfigRuntime = createManagedTunnelConfigRuntime({
   fsPromises,
@@ -1050,12 +1062,32 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
   getActiveSessionCount,
 });
 
-const restartOpenCode = (...args) => openCodeLifecycleRuntime.restartOpenCode(...args);
-const waitForOpenCodeReady = (...args) => openCodeLifecycleRuntime.waitForOpenCodeReady(...args);
-const waitForAgentPresence = (...args) => openCodeLifecycleRuntime.waitForAgentPresence(...args);
-const refreshOpenCodeAfterConfigChange = (...args) => openCodeLifecycleRuntime.refreshOpenCodeAfterConfigChange(...args);
-const startHealthMonitoring = () => openCodeLifecycleRuntime.startHealthMonitoring(HEALTH_CHECK_INTERVAL);
-const triggerHealthCheck = () => openCodeLifecycleRuntime.triggerHealthCheck();
+const activateHaoCodeCompatibilityRuntime = async () => {
+  const port = await haoCodeCompatibilityRuntime.start();
+  setOpenCodePort(port);
+  openCodeBaseUrl = `http://127.0.0.1:${port}`;
+  isExternalOpenCode = true;
+  isOpenCodeReady = true;
+  openCodeNotReadySince = 0;
+  lastOpenCodeError = null;
+  syncToHmrState();
+  return port;
+};
+const restartOpenCode = async () => {
+  await haoCodeCompatibilityRuntime.stop();
+  openCodePort = null;
+  openCodeBaseUrl = null;
+  isOpenCodeReady = false;
+  return activateHaoCodeCompatibilityRuntime();
+};
+const waitForOpenCodeReady = async () => activateHaoCodeCompatibilityRuntime();
+const waitForAgentPresence = async () => true;
+const refreshOpenCodeAfterConfigChange = async () => activateHaoCodeCompatibilityRuntime();
+const startHealthMonitoring = () => undefined;
+const triggerHealthCheck = async () => {
+  await activateHaoCodeCompatibilityRuntime();
+  return true;
+};
 const scheduledTasksRuntime = createScheduledTasksRuntime({
   projectConfigRuntime,
   listProjects: async () => {
@@ -1099,11 +1131,8 @@ const ensureGlobalWatcherStarted = async () => {
   return globalWatcherStartPromise;
 };
 const bootstrapOpenCodeAtStartup = async (...args) => {
-  await openCodeLifecycleRuntime.bootstrapOpenCodeAtStartup(...args);
+  await activateHaoCodeCompatibilityRuntime(...args);
   scheduleOpenCodeApiDetection();
-  if (openCodeLifecycleState.openCodeProcess && !openCodeLifecycleState.isExternalOpenCode) {
-    startHealthMonitoring();
-  }
   // The global watcher used to start only for desktop notifications; the
   // session-assist runtime also rides its event hub, so it now starts
   // unconditionally once OpenCode is up.
@@ -1298,7 +1327,7 @@ async function main(options = {}) {
     ? options.getDesktopRuntimeConfig
     : null;
 
-  console.log(`Starting OpenChamber on port ${port === 0 ? 'auto' : port}`);
+  console.log(`Starting Hao Work on port ${port === 0 ? 'auto' : port}`);
 
   const sayTTSCapability = await detectSayTtsCapability(process);
 
@@ -1418,9 +1447,9 @@ async function main(options = {}) {
     getServerLabel: () => {
       try {
         const name = os.hostname();
-        return typeof name === 'string' && name.trim().length > 0 ? name.trim() : 'OpenChamber';
+        return typeof name === 'string' && name.trim().length > 0 ? name.trim() : 'Hao Work';
       } catch {
-        return 'OpenChamber';
+        return 'Hao Work';
       }
     },
     readSettingsFromDiskMigrated,
@@ -1663,7 +1692,8 @@ async function main(options = {}) {
       } catch {
         // best-effort shutdown of the dictation worker
       }
-      return gracefulShutdown({ exitProcess: shutdownOptions.exitProcess ?? false });
+      return Promise.resolve(gracefulShutdown({ exitProcess: shutdownOptions.exitProcess ?? false }))
+        .finally(() => haoCodeCompatibilityRuntime.stop());
     }
   };
 }

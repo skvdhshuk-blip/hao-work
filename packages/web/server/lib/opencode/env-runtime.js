@@ -47,7 +47,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
     return result;
   };
 
-  const isExecutable = (filePath) => {
+  const defaultIsExecutable = (filePath) => {
     try {
       const stat = fs.statSync(filePath);
       if (!stat.isFile()) return false;
@@ -62,6 +62,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
       return false;
     }
   };
+  const isExecutable = typeof deps.isExecutable === 'function' ? deps.isExecutable : defaultIsExecutable;
 
   const resolveWindowsExecutablePath = (candidate) => {
     if (process.platform !== 'win32' || typeof candidate !== 'string' || candidate.trim().length === 0) {

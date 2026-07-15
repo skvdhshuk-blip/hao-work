@@ -44,6 +44,10 @@ export const fetchGoogleQuota = async () => {
         continue;
       }
       const { clientId, clientSecret } = resolveGoogleOAuthClient(source.sourceId);
+      if (!clientId || !clientSecret) {
+        sourceErrors.push(`${source.sourceLabel}: OAuth client credentials not configured`);
+        continue;
+      }
       accessToken = await refreshGoogleAccessToken(source.refreshToken, clientId, clientSecret);
     }
 

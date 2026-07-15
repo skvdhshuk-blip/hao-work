@@ -21,6 +21,7 @@ import { runtimeFetch } from "@/lib/runtime-fetch";
 import { markStartupTrace, measureStartupTrace } from "@/lib/startupTrace";
 import { normalizePath } from "@/lib/pathNormalization";
 import { getSyncConfig, subscribeToSyncConfigChanges } from "@/sync/sync-refs";
+import { mergeModelMetadataWithLiveModel } from "@/lib/modelMetadata";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
 const MODELS_DEV_PROXY_URL = "/api/openchamber/models-metadata";
@@ -3219,17 +3220,19 @@ export const useConfigStore = create<ConfigStore>()(
                         return undefined;
                     }
                     const { modelsMetadata, providers } = get();
+                    const provider = providers.find((p) => p.id === providerId);
+                    const model = provider?.models.find((item) => item.id === modelId);
                     const cached = modelsMetadata.get(key);
                     if (cached) {
-                        return cached;
+                        return model
+                            ? mergeModelMetadataWithLiveModel(providerId, model, cached)
+                            : cached;
                     }
 
                     // Fallback: derive metadata from provider model data (covers custom providers not in models.dev)
-                    const provider = providers.find((p) => p.id === providerId);
                     if (!provider) {
                         return undefined;
                     }
-                    const model = provider.models.find((m) => m.id === modelId);
                     if (!model) {
                         return undefined;
                     }

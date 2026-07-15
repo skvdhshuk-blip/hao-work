@@ -418,20 +418,6 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => ctx.isDesktopLocalOrigin,
   },
   {
-    id: 'sessions.opencode-binary',
-    page: 'sessions',
-    titleKey: 'settings.openchamber.opencodeCli.field.binaryPath',
-    keywords: ['opencode', 'cli', 'binary', 'path'],
-    isAvailable: (ctx) => !ctx.isVSCode,
-  },
-  {
-    id: 'sessions.opencode-update-notifications',
-    page: 'sessions',
-    titleKey: 'settings.openchamber.opencodeCli.field.showUpdateNotifications',
-    keywords: ['opencode', 'cli', 'updates'],
-    isAvailable: (ctx) => !ctx.isVSCode,
-  },
-  {
     id: 'git.github-account',
     page: 'git',
     titleKey: 'settings.github.page.actions.connect',

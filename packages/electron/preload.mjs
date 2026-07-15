@@ -12,6 +12,7 @@ const readArgValue = (name) => {
 };
 
 const localOrigin = readArgValue('--openchamber-local-origin');
+const localUiOrigin = readArgValue('--openchamber-local-ui-origin');
 const apiBaseUrl = readArgValue('--openchamber-api-base-url');
 const clientToken = readArgValue('--openchamber-client-token');
 const runtimeHeadersRaw = readArgValue('--openchamber-runtime-headers');
@@ -43,6 +44,7 @@ const currentOrigin = (() => {
 })();
 const isLocalPage = currentOrigin !== 'null'
   && (currentOrigin === 'openchamber-ui://app'
+  || (localUiOrigin && currentOrigin === localUiOrigin)
   || (localOrigin && currentOrigin === localOrigin));
 
 // Remote pages need __OPENCHAMBER_LOCAL_ORIGIN__ so the HostSwitcher knows

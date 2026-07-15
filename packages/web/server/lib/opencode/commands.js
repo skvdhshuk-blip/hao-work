@@ -154,6 +154,34 @@ function getCommandSources(commandName, workingDirectory) {
   return sources;
 }
 
+function getCommandConfig(commandName, workingDirectory) {
+  const { path: mdPath } = getCommandScope(commandName, workingDirectory);
+  if (mdPath && fs.existsSync(mdPath)) {
+    const { frontmatter, body } = parseMdFile(mdPath);
+    return { ...frontmatter, template: body || '' };
+  }
+  return { ...(getJsonEntrySource(readConfigLayers(workingDirectory), 'command', commandName).section || {}) };
+}
+
+function listCommandConfigs(workingDirectory) {
+  const names = new Set(Object.keys(readConfigLayers(workingDirectory)?.mergedConfig?.command || {}));
+  const collect = (directory) => {
+    if (!directory || !fs.existsSync(directory)) return;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) collect(entryPath);
+      else if (entry.isFile() && entry.name.endsWith('.md')) names.add(entry.name.slice(0, -3));
+    }
+  };
+  collect(COMMAND_DIR);
+  collect(path.join(OPENCODE_CONFIG_DIR, 'command'));
+  if (workingDirectory) {
+    collect(path.join(workingDirectory, '.opencode', 'commands'));
+    collect(path.join(workingDirectory, '.opencode', 'command'));
+  }
+  return [...names].sort().map((name) => ({ name, ...getCommandConfig(name, workingDirectory) }));
+}
+
 function createCommand(commandName, config, workingDirectory, scope) {
   ensureDirs();
 
@@ -327,6 +355,8 @@ function deleteCommand(commandName, workingDirectory) {
 }
 
 export {
+  listCommandConfigs,
+  getCommandConfig,
   getCommandSources,
   createCommand,
   updateCommand,

@@ -1,7 +1,7 @@
 {
-  "name": "OpenChamber - AI Coding Companion",
-  "short_name": "OpenChamber",
-  "description": "OpenChamber desktop companion for the OpenCode AI coding agent",
+  "name": "Hao Work - AI Coding Workspace",
+  "short_name": "Hao Work",
+  "description": "Hao Work coding workspace powered by the HaoCode agent SDK",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#151313",

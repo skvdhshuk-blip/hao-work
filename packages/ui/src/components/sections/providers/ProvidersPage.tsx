@@ -171,6 +171,10 @@ export const ProvidersPage: React.FC = () => {
   const [providerDropdownOpen, setProviderDropdownOpen] = React.useState(false);
   const [providerSources, setProviderSources] = React.useState<Record<string, ProviderSources>>({});
   const [showAuthPanel, setShowAuthPanel] = React.useState(false);
+  const [haoCodeBaseUrl, setHaoCodeBaseUrl] = React.useState('');
+  const [haoCodeProviderType, setHaoCodeProviderType] = React.useState('');
+  const [haoCodeModel, setHaoCodeModel] = React.useState('');
+  const [haoCodeSettingsBusy, setHaoCodeSettingsBusy] = React.useState(false);
   const isAddMode = selectedProviderId === ADD_PROVIDER_ID;
 
   React.useEffect(() => {
@@ -285,6 +289,24 @@ export const ProvidersPage: React.FC = () => {
   }, [selectedProviderId, t]);
 
   React.useEffect(() => {
+    if (!selectedProviderId || selectedProviderId === ADD_PROVIDER_ID) return;
+    let cancelled = false;
+    void runtimeFetch(`/api/provider/${encodeURIComponent(selectedProviderId)}/settings`, {
+      headers: { Accept: 'application/json' },
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || 'Failed to load HaoCode provider settings.');
+      if (cancelled) return;
+      setHaoCodeBaseUrl(typeof payload?.baseUrl === 'string' ? payload.baseUrl : '');
+      setHaoCodeProviderType(typeof payload?.providerType === 'string' ? payload.providerType : '');
+      setHaoCodeModel('');
+    }).catch((error) => {
+      if (!cancelled) console.error('Failed to load HaoCode provider settings:', error);
+    });
+    return () => { cancelled = true; };
+  }, [selectedProviderId]);
+
+  React.useEffect(() => {
     if (!selectedProviderId || selectedProviderId === ADD_PROVIDER_ID) {
       return;
     }
@@ -311,6 +333,7 @@ export const ProvidersPage: React.FC = () => {
             ...prev,
             [selectedProviderId]: sources,
           }));
+          setShowAuthPanel(!sources.auth.exists);
         }
       } catch (error) {
         if (!cancelled) {
@@ -357,6 +380,28 @@ export const ProvidersPage: React.FC = () => {
       toast.error(t('settings.providers.page.toast.apiKeySaveFailed'));
     } finally {
       setAuthBusyKey(null);
+    }
+  };
+
+  const handleSaveHaoCodeSettings = async (providerId: string) => {
+    setHaoCodeSettingsBusy(true);
+    try {
+      const response = await runtimeFetch(`/api/provider/${encodeURIComponent(providerId)}/settings`, {
+        method: 'PATCH',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: haoCodeBaseUrl, providerType: haoCodeProviderType, model: haoCodeModel }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || 'Failed to save HaoCode provider settings.');
+      setHaoCodeBaseUrl(typeof payload?.baseUrl === 'string' ? payload.baseUrl : haoCodeBaseUrl);
+      setHaoCodeProviderType(typeof payload?.providerType === 'string' ? payload.providerType : haoCodeProviderType);
+      setHaoCodeModel('');
+      await reloadOpenCodeConfiguration({ scopes: ['providers'], mode: 'active' });
+      toast.success('HaoCode provider settings saved');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to save HaoCode provider settings.');
+    } finally {
+      setHaoCodeSettingsBusy(false);
     }
   };
 
@@ -944,6 +989,52 @@ export const ProvidersPage: React.FC = () => {
                 )}
               </div>
             )}
+          </section>
+        </div>
+
+        <div data-settings-item="providers.haocode" className="mb-8">
+          <div className="mb-1 px-1">
+            <h3 className="typography-ui-header font-medium text-foreground">HaoCode connection</h3>
+            <p className="typography-meta text-muted-foreground">Override the gateway or add a model exposed by this provider.</p>
+          </div>
+          <section className="grid gap-3 px-2 py-1.5 sm:grid-cols-2">
+            <label className="typography-meta text-muted-foreground sm:col-span-2">
+              Base URL
+              <Input
+                value={haoCodeBaseUrl}
+                onChange={(event) => setHaoCodeBaseUrl(event.target.value)}
+                placeholder="https://api.example.com"
+                className="mt-1 font-mono text-xs"
+              />
+            </label>
+            <label className="typography-meta text-muted-foreground">
+              Provider type
+              <Input
+                value={haoCodeProviderType}
+                onChange={(event) => setHaoCodeProviderType(event.target.value)}
+                placeholder="anthropic | openai | openai_chat"
+                className="mt-1 font-mono text-xs"
+              />
+            </label>
+            <label className="typography-meta text-muted-foreground">
+              Add model ID
+              <Input
+                value={haoCodeModel}
+                onChange={(event) => setHaoCodeModel(event.target.value)}
+                placeholder="model-name"
+                className="mt-1 font-mono text-xs"
+              />
+            </label>
+            <div className="sm:col-span-2">
+              <Button
+                size="xs"
+                className="!font-normal"
+                onClick={() => handleSaveHaoCodeSettings(selectedProvider.id)}
+                disabled={haoCodeSettingsBusy || !haoCodeBaseUrl.trim() || !haoCodeProviderType.trim()}
+              >
+                {haoCodeSettingsBusy ? 'Saving…' : 'Save HaoCode settings'}
+              </Button>
+            </div>
           </section>
         </div>
 

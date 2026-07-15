@@ -17,25 +17,14 @@ import {
 import { readAuthFile } from '../../../opencode/auth.js';
 import { parseGoogleRefreshToken } from './transforms.js';
 
-const ANTIGRAVITY_GOOGLE_CLIENT_ID =
-  '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-const ANTIGRAVITY_GOOGLE_CLIENT_SECRET = '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';
-const GEMINI_GOOGLE_CLIENT_ID =
-  '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
-const GEMINI_GOOGLE_CLIENT_SECRET = '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';
 export const DEFAULT_PROJECT_ID = 'rising-fact-p41fc';
 
 export const resolveGoogleOAuthClient = (sourceId) => {
-  if (sourceId === 'gemini') {
-    return {
-      clientId: GEMINI_GOOGLE_CLIENT_ID,
-      clientSecret: GEMINI_GOOGLE_CLIENT_SECRET
-    };
-  }
+  const prefix = sourceId === 'gemini' ? 'GEMINI' : 'ANTIGRAVITY';
 
   return {
-    clientId: ANTIGRAVITY_GOOGLE_CLIENT_ID,
-    clientSecret: ANTIGRAVITY_GOOGLE_CLIENT_SECRET
+    clientId: process.env[`HAOWORK_${prefix}_GOOGLE_CLIENT_ID`]?.trim() ?? '',
+    clientSecret: process.env[`HAOWORK_${prefix}_GOOGLE_CLIENT_SECRET`]?.trim() ?? ''
   };
 };
 

@@ -271,6 +271,7 @@ describe('useConfigStore provider persistence', () => {
       selectedProviderId: '',
       currentAgentName: undefined,
       agents: [],
+      modelsMetadata: new Map(),
       agentModelSelections: {},
       opencodeDefaultAgent: undefined,
       opencodeDefaultModel: undefined,
@@ -336,6 +337,24 @@ describe('useConfigStore provider persistence', () => {
     expect(reloaded.directoryScoped[DIRECTORY]?.providers.map((entry) => entry.id)).toEqual(['fresh']);
     expect(reloaded.currentProviderId).toBe('fresh');
     expect(reloaded.currentModelId).toBe('fresh-model');
+  });
+
+  test('prefers the live runtime limits over cached models.dev limits', () => {
+    const live = provider('deepseek', 'deepseek-chat');
+    live.models[0].limit = { context: 200_000, output: 16_384 };
+    useConfigStore.setState({
+      providers: [live],
+      modelsMetadata: new Map([['deepseek/deepseek-chat', {
+        id: 'deepseek-chat',
+        providerId: 'deepseek',
+        limit: { context: 1_000_000, output: 384_000 },
+      }]]),
+    });
+
+    expect(useConfigStore.getState().getModelMetadata('deepseek', 'deepseek-chat')?.limit).toEqual({
+      context: 200_000,
+      output: 16_384,
+    });
   });
 
   test('provider config events refresh all known directory provider caches immediately', async () => {

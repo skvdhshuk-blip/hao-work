@@ -940,13 +940,17 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
             // re-renders synchronously before paint. Rendering the plain rows
             // meanwhile keeps the container's height real so the scroller
             // never collapses/clamps during the flip.
-            visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
-              subtreeContainsActive,
-              subtreeContainsEditing,
-              menuOpenSessionId,
-              nodeStructureKey: resolveNodeStructureKey(node),
-              childRenderExtrasFor,
-            }))
+            visibleSessions.map((node) => (
+              <React.Fragment key={node.session.id}>
+                {renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
+                  subtreeContainsActive,
+                  subtreeContainsEditing,
+                  menuOpenSessionId,
+                  nodeStructureKey: resolveNodeStructureKey(node),
+                  childRenderExtrasFor,
+                })}
+              </React.Fragment>
+            ))
           ) : (
           <div style={{ height: sessionVirtualizer.getTotalSize(), position: 'relative' }}>
             {/* Absolutely positioned rows (canonical tanstack layout): with
@@ -993,13 +997,17 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
           )}
         </div>
       ) : (
-        visibleSessions.map((node) => renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
-          subtreeContainsActive,
-          subtreeContainsEditing,
-          menuOpenSessionId,
-          nodeStructureKey: resolveNodeStructureKey(node),
-          childRenderExtrasFor,
-        }))
+        visibleSessions.map((node) => (
+          <React.Fragment key={node.session.id}>
+            {renderSessionNode(node, 0, group.directory, projectId, group.isArchivedBucket === true, undefined, 'project', {
+              subtreeContainsActive,
+              subtreeContainsEditing,
+              menuOpenSessionId,
+              nodeStructureKey: resolveNodeStructureKey(node),
+              childRenderExtrasFor,
+            })}
+          </React.Fragment>
+        ))
       )}
       {totalSessions === 0 && allFoldersForGroup.length === 0 ? (
         <div className="py-1 text-left typography-micro text-muted-foreground">

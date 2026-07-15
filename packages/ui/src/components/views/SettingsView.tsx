@@ -269,29 +269,6 @@ const SettingsHome: React.FC<{ onOpen: (slug: SettingsPageSlug) => void }> = ({ 
             <div className="typography-micro text-muted-foreground/70">{t('settings.view.home.cards.skillsCatalog.description')}</div>
           </button>
 
-          <button
-            type="button"
-            onClick={() => onOpen('mcp')}
-            className={cn(
-              'rounded-lg border border-border bg-[var(--surface-elevated)] p-4 text-left',
-              'hover:bg-[var(--interactive-hover)] transition-colors'
-            )}
-          >
-            <div className="typography-ui-label text-foreground">{t('settings.view.home.cards.mcp.title')}</div>
-            <div className="typography-micro text-muted-foreground/70">{t('settings.view.home.cards.mcp.description')}</div>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => onOpen('usage')}
-            className={cn(
-              'rounded-lg border border-border bg-[var(--surface-elevated)] p-4 text-left',
-              'hover:bg-[var(--interactive-hover)] transition-colors'
-            )}
-          >
-            <div className="typography-ui-label text-foreground">{t('settings.view.home.cards.usage.title')}</div>
-            <div className="typography-micro text-muted-foreground/70">{t('settings.view.home.cards.usage.description')}</div>
-          </button>
         </div>
       </div>
     </div>

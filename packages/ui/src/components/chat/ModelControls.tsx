@@ -2287,9 +2287,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     <DropdownMenu open={isReady && agentMenuOpen} onOpenChange={isReady ? handleModelMenuOpenChange : undefined}>
                         <TooltipTrigger asChild>
                             <DropdownMenuTrigger asChild>
-                                <div
+                                <button
+                                    type="button"
                                     className={cn(
-                                        'model-controls__model-trigger flex items-center gap-1.5 cursor-pointer hover:bg-transparent hover:opacity-70 min-w-0',
+                                        'model-controls__model-trigger flex items-center gap-1.5 cursor-pointer border-0 bg-transparent p-0 text-left hover:bg-transparent hover:opacity-70 min-w-0',
                                         buttonHeight
                                     )}
                                 >
@@ -2331,7 +2332,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                             </span>
                                         </span>
                                     )}
-                                </div>
+                                </button>
                             </DropdownMenuTrigger>
                         </TooltipTrigger>
                         <DropdownMenuContent
@@ -2616,9 +2617,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 <DropdownMenu>
                     <TooltipTrigger asChild>
                         <DropdownMenuTrigger asChild>
-                            <div
+                            <button
+                                type="button"
                                 className={cn(
-                                    'model-controls__variant-trigger flex items-center gap-1.5 transition-colors cursor-pointer hover:bg-transparent hover:opacity-70 min-w-0',
+                                    'model-controls__variant-trigger flex items-center gap-1.5 transition-colors cursor-pointer border-0 bg-transparent p-0 text-left hover:bg-transparent hover:opacity-70 min-w-0',
                                     buttonHeight,
                                 )}
                             >
@@ -2634,7 +2636,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 >
                                     {displayVariant}
                                 </span>
-                            </div>
+                            </button>
                         </DropdownMenuTrigger>
                     </TooltipTrigger>
                     <DropdownMenuContent align="end" alignOffset={-40} className="w-[min(180px,calc(100vw-2rem))]">
@@ -2679,8 +2681,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                         <DropdownMenu open={isReady && isAgentSelectorOpen} onOpenChange={isReady ? setIsAgentSelectorOpen : undefined}>
                             <TooltipTrigger asChild>
                                 <DropdownMenuTrigger asChild>
-                                    <div className={cn(
-                                        'flex items-center gap-1.5 transition-colors cursor-pointer hover:bg-transparent hover:opacity-70 min-w-0',
+                                    <button type="button" className={cn(
+                                        'flex items-center gap-1.5 transition-colors cursor-pointer border-0 bg-transparent p-0 text-left hover:bg-transparent hover:opacity-70 min-w-0',
                                         buttonHeight
                                     )}>
                                         {!isReady ? (
@@ -2724,7 +2726,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                                 </span>
                                             </>
                                         )}
-                                    </div>
+                                    </button>
                                 </DropdownMenuTrigger>
                             </TooltipTrigger>
                             <DropdownMenuContent align="end" alignOffset={-40} className="w-[min(280px,calc(100vw-2rem))] p-0 flex flex-col">

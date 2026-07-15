@@ -89,6 +89,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     group: 'usage',
     kind: 'split',
     keywords: ['quota', 'billing', 'tokens', 'usage', 'limits'],
+    isAvailable: () => false,
   },
   {
     slug: 'agents',
@@ -117,6 +118,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     group: 'opencode',
     kind: 'split',
     keywords: ['mcp', 'model context protocol', 'servers', 'tools', 'remote', 'stdio'],
+    isAvailable: () => false,
   },
   {
     slug: 'plugins',
@@ -124,6 +126,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     group: 'opencode',
     kind: 'split',
     keywords: ['plugin', 'plugins', 'extensions', 'addons', 'npm', 'opencode-wakatime'],
+    isAvailable: () => false,
   },
   {
     slug: 'skills.installed',

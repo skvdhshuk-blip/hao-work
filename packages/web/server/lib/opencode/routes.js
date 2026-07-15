@@ -41,11 +41,9 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
     return trimmed || null;
   };
 
-  const isBundledOpenCodeBinaryActive = async () => {
-    const settings = await readSettingsFromDiskMigrated();
-    const resolution = await getOpenCodeResolutionSnapshot(settings);
-    return resolution?.source === 'bundled' || resolution?.detectedSourceNow === 'bundled';
-  };
+  // Hao Work always owns its local engine. The compatibility API keeps these
+  // historical route names, but no OpenCode binary is discovered or upgraded.
+  const isBundledOpenCodeBinaryActive = async () => true;
 
   const readOpenCodeCurrentVersion = async () => {
     const healthResponse = await fetch(buildOpenCodeUrl('/global/health', ''), {
@@ -143,14 +141,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
   });
 
   app.get('/api/config/opencode-resolution', async (_req, res) => {
-    try {
-      const settings = await readSettingsFromDiskMigrated();
-      const resolution = await getOpenCodeResolutionSnapshot(settings);
-      res.json(resolution);
-    } catch (error) {
-      console.error('Failed to resolve OpenCode binary:', error);
-      res.status(500).json({ error: 'Failed to resolve OpenCode binary' });
-    }
+    res.json({ source: 'haocode', path: null, managed: true, _fe_agentEngine: 'haocode' });
   });
 
   app.post('/api/opencode/upgrade', async (req, res) => {
@@ -158,7 +149,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
       if (await isBundledOpenCodeBinaryActive()) {
         return res.status(409).json({
           success: false,
-          error: 'OpenCode is bundled with OpenChamber Desktop and cannot be upgraded separately.',
+          error: 'HaoCode is bundled with Hao Work and is upgraded with the application.',
         });
       }
 
@@ -381,29 +372,12 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
         return res.status(400).json({ error: 'Provider ID is required' });
       }
 
-      const headerDirectory = typeof req.get === 'function' ? req.get('x-opencode-directory') : null;
-      const queryDirectory = Array.isArray(req.query?.directory)
-        ? req.query.directory[0]
-        : req.query?.directory;
-      const requestedDirectory = headerDirectory || queryDirectory || null;
-
-      let directory = null;
-      const resolved = await resolveProjectDirectory(req);
-      if (resolved.directory) {
-        directory = resolved.directory;
-      } else if (requestedDirectory) {
-        return res.status(400).json({ error: resolved.error });
-      }
-
-      const sources = getProviderSources(providerId, directory);
-      const { getProviderAuth } = await getAuthLibrary();
-      const auth = getProviderAuth(providerId);
-      sources.sources.auth.exists = Boolean(auth);
-
-      return res.json({
-        providerId,
-        sources: sources.sources,
+      const upstream = await fetch(buildOpenCodeUrl(`/provider/${encodeURIComponent(providerId)}/source`, ''), {
+        headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
       });
+      const payload = await upstream.json().catch(() => null);
+      if (!upstream.ok) return res.status(upstream.status).json(payload || { error: upstream.statusText });
+      return res.json(payload);
     } catch (error) {
       console.error('Failed to get provider sources:', error);
       return res.status(500).json({ error: error.message || 'Failed to get provider sources' });
@@ -418,6 +392,20 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
       }
 
       const scope = typeof req.query?.scope === 'string' ? req.query.scope : 'auth';
+      if (scope === 'auth' || scope === 'all') {
+        const upstream = await fetch(buildOpenCodeUrl(`/auth/${encodeURIComponent(providerId)}`, ''), {
+          method: 'DELETE',
+          headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
+        });
+        const payload = await upstream.json().catch(() => null);
+        if (!upstream.ok) return res.status(upstream.status).json(payload || { error: upstream.statusText });
+        return res.json({
+          success: true,
+          removed: payload === true,
+          requiresReload: false,
+          message: payload === true ? 'Provider disconnected successfully' : 'Provider was not connected',
+        });
+      }
       const headerDirectory = typeof req.get === 'function' ? req.get('x-opencode-directory') : null;
       const queryDirectory = Array.isArray(req.query?.directory)
         ? req.query.directory[0]

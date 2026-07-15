@@ -68,3 +68,8 @@ workspaces/
 *.pid
 .worktrees/
 test-results/
+
+# Hao Work build-time runtimes (recreated by Electron packaging scripts)
+packages/electron/.cache/
+packages/electron/resources/haocode-runtime/
+packages/haocode-bridge/vendor/

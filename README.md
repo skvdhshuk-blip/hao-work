@@ -1,454 +1,109 @@
-# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/badges/openchamber-logo-dark.svg"><img src="docs/references/badges/openchamber-logo-light.svg" width="32" height="32" align="absmiddle" /></picture> OpenChamber
+# Hao Work
 
-[![GitHub stars](https://img.shields.io/github/stars/openchamber/openchamber?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgZmlsbD0iI2YxZWNlYyIgdmlld0JveD0iMCAwIDI1NiAyNTYiPjxwYXRoIGQ9Ik0yMjkuMDYsMTA4Ljc5bC00OC43LDQyLDE0Ljg4LDYyLjc5YTguNCw4LjQsMCwwLDEtMTIuNTIsOS4xN0wxMjgsMTg5LjA5LDczLjI4LDIyMi43NGE4LjQsOC40LDAsMCwxLTEyLjUyLTkuMTdsMTQuODgtNjIuNzktNDguNy00MkE4LjQ2LDguNDYsMCwwLDEsMzEuNzMsOTRMOTUuNjQsODguOGwyNC42Mi01OS42YTguMzYsOC4zNiwwLDAsMSwxNS40OCwwbDI0LjYyLDU5LjZMMjI0LjI3LDk0QTguNDYsOC40NiwwLDAsMSwyMjkuMDYsMTA4Ljc5WiIgb3BhY2l0eT0iMC4yIj48L3BhdGg%2BPHBhdGggZD0iTTIzOS4xOCw5Ny4yNkExNi4zOCwxNi4zOCwwLDAsMCwyMjQuOTIsODZsLTU5LTQuNzZMMTQzLjE0LDI2LjE1YTE2LjM2LDE2LjM2LDAsMCwwLTMwLjI3LDBMOTAuMTEsODEuMjMsMzEuMDgsODZhMTYuNDYsMTYuNDYsMCwwLDAtOS4zNywyOC44Nmw0NSwzOC44M0w1MywyMTEuNzVhMTYuMzgsMTYuMzgsMCwwLDAsMjQuNSwxNy44MkwxMjgsMTk4LjQ5bDUwLjUzLDMxLjA4QTE2LjQsMTYuNCwwLDAsMCwyMDMsMjExLjc1bC0xMy43Ni01OC4wNyw0NS0zOC44M0ExNi40MywxNi40MywwLDAsMCwyMzkuMTgsOTcuMjZabS0xNS4zNCw1LjQ3LTQ4LjcsNDJhOCw4LDAsMCwwLTIuNTYsNy45MWwxNC44OCw2Mi44YS4zNy4zNywwLDAsMS0uMTcuNDhjLS4xOC4xNC0uMjMuMTEtLjM4LDBsLTU0LjcyLTMzLjY1YTgsOCwwLDAsMC04LjM4LDBMNjkuMDksMjE1Ljk0Yy0uMTUuMDktLjE5LjEyLS4zOCwwYS4zNy4zNywwLDAsMS0uMTctLjQ4bDE0Ljg4LTYyLjhhOCw4LDAsMCwwLTIuNTYtNy45MWwtNDguNy00MmMtLjEyLS4xLS4yMy0uMTktLjEzLS41cy4xOC0uMjcuMzMtLjI5bDYzLjkyLTUuMTZBOCw4LDAsMCwwLDEwMyw5MS44NmwyNC42Mi01OS42MWMuMDgtLjE3LjExLS4yNS4zNS0uMjVzLjI3LjA4LjM1LjI1TDE1Myw5MS44NmE4LDgsMCwwLDAsNi43NSw0LjkybDYzLjkyLDUuMTZjLjE1LDAsLjI0LDAsLjMzLjI5UzIyNCwxMDIuNjMsMjIzLjg0LDEwMi43M1oiPjwvcGF0aD48L3N2Zz4%3D&logoColor=FFFCF0&labelColor=100F0F&color=66800B)](https://github.com/openchamber/openchamber/stargazers)
-[![GitHub release](https://img.shields.io/github/v/release/openchamber/openchamber?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgZmlsbD0iI2YxZWNlYyIgdmlld0JveD0iMCAwIDI1NiAyNTYiPjxwYXRoIGQ9Ik0xMjgsMTI5LjA5VjIzMmE4LDgsMCwwLDEtMy44NC0xbC04OC00OC4xOGE4LDgsMCwwLDEtNC4xNi03VjgwLjE4YTgsOCwwLDAsMSwuNy0zLjI1WiIgb3BhY2l0eT0iMC4yIj48L3BhdGg%2BPHBhdGggZD0iTTIyMy42OCw2Ni4xNSwxMzUuNjgsMThhMTUuODgsMTUuODgsMCwwLDAtMTUuMzYsMGwtODgsNDguMTdhMTYsMTYsMCwwLDAtOC4zMiwxNHY5NS42NGExNiwxNiwwLDAsMCw4LjMyLDE0bDg4LDQ4LjE3YTE1Ljg4LDE1Ljg4LDAsMCwwLDE1LjM2LDBsODgtNDguMTdhMTYsMTYsMCwwLDAsOC4zMi0xNFY4MC4xOEExNiwxNiwwLDAsMCwyMjMuNjgsNjYuMTVaTTEyOCwzMmw4MC4zNCw0NC0yOS43NywxNi4zLTgwLjM1LTQ0Wk0xMjgsMTIwLDQ3LjY2LDc2bDMzLjktMTguNTYsODAuMzQsNDRaTTQwLDkwbDgwLDQzLjc4djg1Ljc5TDQwLDE3NS44MlptMTc2LDg1Ljc4aDBsLTgwLDQzLjc5VjEzMy44MmwzMi0xNy41MVYxNTJhOCw4LDAsMCwwLDE2LDBWMTA3LjU1TDIxNiw5MHY4NS43N1oiPjwvcGF0aD48L3N2Zz4%3D&logoColor=FFFCF0&labelColor=100F0F&color=205EA6)](https://github.com/openchamber/openchamber/releases/latest)
-[![Created with OpenCode](docs/references/badges/created-with-opencode.svg)](https://opencode.ai)
-[![Discord](https://img.shields.io/badge/Discord-join.svg?style=flat&labelColor=100F0F&color=8B7EC8&logo=discord&logoColor=FFFCF0)](https://discord.gg/ZYRSdnwwKA)
-[![Support the project](https://img.shields.io/badge/Support-Project-black?style=flat&labelColor=100F0F&color=EC8B49&logo=ko-fi&logoColor=FFFCF0)](https://ko-fi.com/G2G41SAWNS)
+Hao Work 是一个以 [OpenChamber](https://github.com/openchamber/openchamber) 为 UI 与桌面壳基础、以 [HaoCode](https://github.com/skvdhshuk-blip/hao-code) 为 Agent 引擎的 AI 编程工作台。
 
-## **OpenCode, everywhere.** Desktop. Browser. Phone.
+它的长期方向是成为“模型自适应工作内核”：为不同模型加载经评测验证的 system prompt、工具组合、思考参数、上下文策略和验证流程，而不把产品绑定在某种语言或单一模型上。
 
-### A rich interface for [OpenCode](https://opencode.ai). Review diffs, manage agents, run dev servers, and keep the big picture while your AI codes.
+它保留 OpenChamber 成熟的会话、文件、工具调用、权限确认、终端和桌面交互体验，但本地运行不再启动 OpenCode。浏览器仍使用 OpenCode SDK 的数据形状，Hao Work 在服务端通过一个兼容层把这些请求翻译为 HaoCode SDK 调用。
 
-![OpenChamber Chat](docs/references/chat_example.png)
-
-<details>
-<summary>More screenshots</summary>
-
-![Tool Output](docs/references/tool_output_example.png)
-![Settings](docs/references/settings_example.png)
-![Diff View](docs/references/diff_example.png)
-![VS Code Extension](packages/vscode/extension.jpg)
-
-<p>
-<img src="docs/references/pwa_chat_example.png" width="45%" alt="PWA Chat">
-<img src="docs/references/pwa_diff_example.png" width="45%" alt="PWA Diff">
+<p align="center">
+  <img src="docs/images/hao-work-analysis.png" alt="Hao Work 使用 HaoCode 分析 PHP 源码" width="100%">
 </p>
 
-</details>
+## 当前能力
 
-## Why use OpenChamber?
+- HaoCode 持久会话、多轮对话和流式文本/思考输出
+- Read、Write、Edit、apply_patch、Glob、Grep、Bash、Skill 与 Memory 等工具事件展示
+- Bash、文件写入和编辑操作的权限确认
+- AskUserQuestion 问答与中断后继续执行
+- Anthropic、OpenAI 和 DeepSeek API Key 配置
+- 项目、会话和消息状态持久化到 `~/.config/hao-work`
+- macOS、Windows 与 Linux 的 Electron 打包结构
 
-- **Cross-device continuity**: Start in TUI, continue on tablet/phone, return to terminal - same session
-- **Remote access**: Use OpenCode from anywhere via browser
-- **Familiarity**: A visual alternative for developers who prefer GUI workflows
+兼容层目前只实现 Hao Work 主链路所需的 OpenCode API。OpenChamber 中依赖 OpenCode 专有后端能力的边缘功能可能尚未映射，新增映射时应在 `packages/web/server/lib/haocode/compat-server.test.js` 补回归测试。
 
-## Features
+## 架构
 
-### Core (all app versions)
+```text
+OpenChamber React UI
+        │ OpenCode-shaped HTTP / SSE / WebSocket
+        ▼
+HaoCode compatibility server (Node.js)
+        │ one JSON request + JSON-lines events
+        ▼
+PHP bridge worker
+        │
+        ▼
+sk-wang/hao-code
+```
 
-- Branchable chat timeline with `/undo`, `/redo`, and one-click forks from earlier turns
-- Smart tool UIs for diffs, file operations, permissions, and long-running task progress
-- Voice mode with speech input and read-aloud responses for hands-free workflows
-- Multi-agent runs from one prompt with isolated worktrees for safe side-by-side comparisons
-- Git workflows in-app: identities, commits, PR creation, checks, and merge actions
-- GitHub-native workflows: start sessions from issues and pull requests with context already attached
-- Plan/Build mode with a dedicated plan view for drafting and iterating implementation steps
-- Inline comment drafts on diffs, files, and plans that can be sent back to the agent
-- Context visibility tools (token/cost breakdowns, raw message inspection, and activity summaries)
-- Integrated terminal with per-directory sessions and stable performance on heavy output
-- Built-in skills catalog and local skill management for reusable automation workflows
+- `packages/ui`：沿用并扩展 OpenChamber 的 React UI。
+- `packages/web/server/lib/haocode`：HaoCode 兼容服务、状态存储与 PHP worker 管理。
+- `packages/haocode-bridge`：PHP 与 Node.js 之间的 JSON-lines 边界。
+- `packages/electron`：桌面壳、图标和内置运行时打包。
 
-### Web / PWA
+## 本地开发
 
-- Provider-aware tunnel access model with Cloudflare `quick`, `managed-remote`, and `managed-local` modes
-- One-scan onboarding with tunnel QR + password URL helpers
-- Mobile-first experience: optimized chat controls, keyboard-safe layouts, and attachment-friendly UI
-- Background notifications plus reliable cross-tab session activity tracking
-- Built-in self-update + restart flow that keeps your server settings intact
-
-### Desktop (macOS + Windows + Linux)
-
-- Floating Mini Chat: keep a small always-on-top assistant beside your editor, browser, or terminal
-- Multiple native windows for separate projects or sessions
-- Native notifications for task alerts while OpenChamber is hidden
-- One-click open in VS Code, Cursor, Terminal, Finder, Explorer, and more
-- Desktop host switcher for local and remote OpenChamber instances
-- Convenient tunnel management without manual setup
-- Deep-link connections for joining remote OpenChamber from a link
-- SSH remote access with host import, connection management, and port forwarding
-
-### VS Code Extension
-
-- Editor-native workflow: open files directly from tool output and keep sessions beside your code
-- Agent Manager for parallel multi-model runs from a single prompt
-- Right-click actions to add context, explain selections, and improve code in-place
-- In-extension settings, responsive layout, and theme mapping that matches your editor
-- Hardened runtime lifecycle and health checks for faster startup and fewer stuck reconnect states
-
-### Custom Themes
-
-- **Use it from anywhere** - Cloudflare tunnel with QR code onboarding. Scan, connect, code from your couch.
-- **Branchable chat timeline** - Undo, redo, fork from any turn. Explore different approaches without losing your place.
-- **GitHub-native workflows** - Start sessions from issues and PRs with context already attached. Review checks, merge - all in-app.
-- **Project Actions** - Run dev servers, configure SSH port forwarding, open remote URLs locally. Your project commands, one click away.
-- **Connect to remote machines** - Desktop app connects to remote OpenChamber instances over SSH, with dedicated lifecycle and UX flows.
-
-## Quick Start
-
-> **Prerequisite:** Desktop bundles the matching OpenCode CLI. CLI/Web and VS Code use your installed [OpenCode CLI](https://opencode.ai).
-
-### **Desktop (macOS + Windows + Linux)**
-
-Download the latest Desktop release from [GitHub Releases](https://github.com/openchamber/openchamber/releases).
-
-On Linux, choose the AppImage for your system:
-
-- `linux-x86_64.AppImage` for 64-bit Intel or AMD systems
-- `linux-arm64.AppImage` for ARM64/aarch64 systems
-
-Make the AppImage executable before launching it, for example with `chmod +x <downloaded-appimage>`. Keep the AppImage in a location your user can write to so OpenChamber can download and apply in-app updates.
-
-Linux AppImages need FUSE (`libfuse.so.2`). On Ubuntu/Debian install `libfuse2` (or `fuse` / `libfuse2t64` on newer releases). If FUSE is unavailable, run with extraction instead:
+要求：Bun、Node.js 22+、Composer，以及 PHP 8.3+。
 
 ```bash
-APPIMAGE_EXTRACT_AND_RUN=1 ./OpenChamber-*-linux-*.AppImage
+bun install
+composer install --working-dir=packages/haocode-bridge
+bun run dev
 ```
 
-Linux Desktop ships as AppImage with in-app window controls and auto-update when running from a writable AppImage. System tray and launch-at-login are not available on Linux yet (macOS/Windows only).
+默认页面为 `http://127.0.0.1:5180`，API 服务为 `http://127.0.0.1:3902`。在 Settings → Providers 中保存 Anthropic、OpenAI 或 DeepSeek API Key 后即可创建会话。
 
-### **VS Code**
-Install from [Marketplace](https://marketplace.visualstudio.com/items?itemName=fedaykindev.openchamber) or search "OpenChamber" in Extensions.
-
-### **CLI (Web + PWA)**
-_requires Node.js 22+_
+开发时可覆盖 bridge 运行环境：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/openchamber/openchamber/main/scripts/install.sh | bash
-openchamber --ui-password be-creative-here
+HAOWORK_PHP_BINARY=/absolute/path/to/php \
+HAOWORK_HAOCODE_WORKER=/absolute/path/to/worker.php \
+HAOWORK_HAOCODE_AUTOLOAD=/absolute/path/to/vendor/autoload.php \
+bun run dev
 ```
 
-<details>
-<summary>Advanced CLI options</summary>
+## 测试
 
 ```bash
-openchamber --port 8080              # Custom port
-openchamber --lan --port 3000        # Listen on LAN (0.0.0.0)
-openchamber --ui-password secret     # Password-protect UI
-openchamber startup enable           # Start at login as a native service
-OPENCHAMBER_UI_PASSWORD=secret openchamber startup enable # Save service password env
-openchamber startup status           # Show startup service status
-openchamber startup disable          # Remove startup service
-openchamber tunnel help              # Tunnel lifecycle commands
-openchamber tunnel providers         # Show provider capabilities
-openchamber tunnel profile add --provider cloudflare --mode managed-remote --name prod-main --hostname app.example.com --token <token>
-openchamber tunnel start --profile prod-main
-openchamber tunnel start --provider cloudflare --mode quick --qr
-openchamber tunnel start --provider cloudflare --mode managed-local --config ~/.cloudflared/config.yml
-openchamber tunnel status --all      # Show tunnel state across instances
-openchamber tunnel stop --port 3000  # Stop tunnel only (server stays running)
-openchamber connect-url --port 3000  # Add this server to OpenChamber Desktop
-openchamber connect-url --server http://host:3000 --qr
-openchamber connect-url --port 3000 --qr
-openchamber logs                     # Follow latest instance logs
-OPENCODE_PORT=4096 OPENCODE_SKIP_START=true openchamber                    # Connect to external OpenCode server
-OPENCODE_HOST=https://myhost:4096 OPENCODE_SKIP_START=true openchamber  # Connect via custom host/HTTPS
-openchamber stop                     # Stop server
-openchamber update                   # Update to latest
+bun test packages/web/server/lib/haocode/compat-server.test.js
+bun run type-check
+bun run --cwd packages/web build
 ```
 
-`startup enable` snapshots your current environment into the native service so startup behaves like you launched `openchamber` from the same shell. This preserves provider tokens, PATH, SSH agent settings, and other CLI auth/config env vars. Use `--no-env-snapshot` if you want a minimal service env.
+兼容层测试使用假 worker，不消耗模型额度；真实模型联调需要在本地 Provider 设置中保存 API Key。
 
-Connect to an existing OpenCode server:
-```bash
-OPENCODE_PORT=4096 OPENCODE_SKIP_START=true openchamber
-OPENCODE_HOST=https://myhost:4096 OPENCODE_SKIP_START=true openchamber
-```
-
-Bind managed OpenCode server to all interfaces (use only on trusted networks):
-```bash
-OPENCHAMBER_OPENCODE_HOSTNAME=0.0.0.0 openchamber --port 3000
-```
-
-Expose OpenChamber itself on your LAN:
-```bash
-openchamber --lan --port 3000 --ui-password secret
-```
-
-Add this server to OpenChamber Desktop or another OpenChamber app:
-```bash
-openchamber connect-url --port 3000 --qr
-```
-
-If no OpenChamber server is running on that port, `connect-url` starts one before generating the link.
-
-Headless/API-only setup for a remote machine:
-```bash
-openchamber connect-url --port 3000 --api-only --lan --server http://your-host-or-ip:3000 --qr --ui-password secret
-```
-
-This runs OpenChamber as an API-only server without the desktop app or browser UI assets on that machine, then creates a link for Desktop to import. `--lan` makes the server reachable from other machines. `--server` is the address Desktop should use.
-
-When OpenChamber was started with `--lan` or `--host 0.0.0.0`, `connect-url` automatically uses a detected LAN IP instead of `127.0.0.1`. Use `--server http://host:3000` to override the advertised address, and include `--lan` when `connect-url` needs to start the server for LAN access.
-
-Paste the printed `openchamber://connect?...` link in Desktop under Settings -> Remote Instances -> Direct Instances -> Import Link. The link contains the server URL and a client token. It does not enable browser UI password protection; use `--ui-password` when exposing a server beyond localhost.
-
-</details>
-
-<details>
-<summary>systemd service (VPN / LAN access)</summary>
-
-Run OpenChamber and OpenCode as separate persistent services — useful when you want to access your
-dev machine over a VPN (e.g. Tailscale) or LAN without a Cloudflare tunnel.
-
-**How it works:**
-- OpenCode runs as its own service, binding only to `localhost`.
-- OpenChamber connects to it via `OPENCODE_HOST` and `--lan` makes it reachable on your VPN IP.
-- `--foreground` keeps the CLI process alive so systemd can track and restart it.
-
-**`~/.config/systemd/user/opencode.service`**
-```ini
-[Unit]
-Description=OpenCode Server
-
-[Service]
-Type=simple
-ExecStart=opencode serve --port 4095
-Environment="PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/YOU/.local/bin:/home/YOU/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"
-Environment=SSH_AUTH_SOCK=%t/ssh-agent.socket
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
-> **Why set `PATH` and `SSH_AUTH_SOCK`?**
-> systemd user services start with a minimal environment — no shell profile is sourced.
-> Without an explicit `PATH`, OpenCode won't find tools installed via Homebrew, npm, or `~/.local/bin`.
-> Without `SSH_AUTH_SOCK`, git operations over SSH (push, pull, clone) will fail because the agent socket isn't inherited.
-> Adjust the `PATH` to match your own tool installation paths.
-> `%t` expands to `$XDG_RUNTIME_DIR` (e.g. `/run/user/1000`), where most SSH agents write their socket.
-
-**`~/.config/systemd/user/openchamber.service`**
-```ini
-[Unit]
-Description=OpenChamber Web Server
-After=opencode.service
-
-[Service]
-Type=simple
-ExecStart=openchamber serve --port 3000 --host 0.0.0.0 --ui-password your-password --foreground
-Environment="OPENCODE_HOST=http://localhost:4095"
-Environment="OPENCODE_SKIP_START=true"
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
+## 桌面运行与打包
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now opencode openchamber
+# Electron 开发模式
+bun run electron:dev
+
+# 准备当前平台的轻量 PHP + HaoCode bridge
+bun run --cwd packages/electron prepare:haocode-runtime
+
+# 完整打包
+bun run electron:build
 ```
 
-OpenChamber will be reachable at `http://<your-vpn-hostname>:3000` from any device on your VPN.
+`prepare:haocode-runtime` 会执行以下操作：
 
-> **Note:** `--host 0.0.0.0` is required to listen on all interfaces. The default
-> bind address is `127.0.0.1` (localhost only). Use `--host <ip>` or
-> `OPENCHAMBER_HOST=<ip>` to bind to a specific interface instead.
+1. 按 `packages/haocode-bridge/composer.lock` 安装 HaoCode。
+2. 从 NativePHP `php-bin` 下载与当前平台/架构匹配的静态 PHP 8.4，并用 GitHub blob SHA 校验。
+3. 把 PHP、bridge、Composer vendor 和运行清单写入 Electron resources。
 
-</details>
+这些资源只在构建阶段生成，不提交到 Git。最终用户安装打包产物后，不需要另装 OpenCode、Tokimo、Composer 或系统 PHP。
 
-<details>
-<summary>Docker</summary>
+## Provider 环境变量
 
-```bash
-docker compose up -d
-```
+Hao Work 优先使用在界面中保存的本地 API Key，也兼容以下环境变量：
 
-Available at `http://localhost:3000`.
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `DEEPSEEK_API_KEY`
 
-**UI Password:**
-```yaml
-environment:
-  UI_PASSWORD: your_secure_password
-```
+密钥只保存在本机运行状态中，不要写入仓库或发布产物。
 
-**Cloudflare Tunnel (optional):**
-```yaml
-environment:
-  OPENCHAMBER_TUNNEL_MODE: quick # quick | managed-remote | managed-local
-  OPENCHAMBER_TUNNEL_PROVIDER: cloudflare
-```
+## 致谢与许可
 
-For `managed-remote` mode, provide:
-
-```yaml
-environment:
-  OPENCHAMBER_TUNNEL_MODE: managed-remote
-  OPENCHAMBER_TUNNEL_HOSTNAME: app.example.com
-  OPENCHAMBER_TUNNEL_TOKEN: <token>
-```
-
-For `managed-local` mode, optionally provide:
-
-```yaml
-environment:
-  OPENCHAMBER_TUNNEL_MODE: managed-local
-  OPENCHAMBER_TUNNEL_CONFIG: /home/openchamber/.cloudflared/config.yml
-```
-
-Managed-local path note: `OPENCHAMBER_TUNNEL_CONFIG` must point to a path inside the container user home (`/home/openchamber/...`). If your Cloudflare config references a credentials JSON file, that file path must also be accessible inside the container (mount with `volumes`).
-
-### Reverse proxy notes
-
-- For a complete reverse proxy setup guide, see [`docs/REVERSE_PROXY.md`](./docs/REVERSE_PROXY.md).
-- Website docs source lives at `packages/docs/content/docs/reverse-proxy.mdx`.
-
-### Tunnel behavior notes
-
-- OpenChamber supports one active tunnel per running instance (port).
-- Starting a tunnel with a different mode/provider on the same instance replaces the current tunnel.
-- Replacing or stopping a tunnel revokes existing connect links and invalidates remote tunnel sessions for that instance.
-- Connect links are one-time tokens; generating a new link revokes the previous unused link.
-
-**Data Directory Permission Note:** The `data/` directory is mounted into the container for persistent storage (config, sessions, SSH keys, workspaces). Before running, ensure the directory exists and has proper permissions:
-
-```bash
-mkdir -p data/openchamber data/opencode/share data/opencode/config data/ssh
-chown -R 1000:1000 data/
-```
-
-**SSH/Git:** If git push/pull fails, run `ssh -T git@github.com` in terminal.
-
-</details>
-
-
-## Features
-
-<details>
-<summary><strong>Chat & Interaction</strong></summary>
-
-- Branchable chat timeline with `/undo`, `/redo`, and one-click forks from any turn
-- Multi-agent runs from one prompt with isolated worktrees for safe side-by-side comparisons
-- Voice mode with speech input and read-aloud responses for hands-free workflows
-- Plan/Build mode with a dedicated plan view for drafting and iterating steps
-- Inline comment drafts on diffs, files, and plans - send feedback back to the agent
-- Shell mode via leading `!` with inline output
-- Share messages as images
-- Mermaid diagrams render inline with copy/download actions
-- Smart tool UIs for diffs, file operations, permissions, and task progress
-
-</details>
-
-<details>
-<summary><strong>Git & GitHub</strong></summary>
-
-- Full Git sidebar with staging, commits, push/pull, branch management, and rebase/merge flows
-- PR creation with AI-generated descriptions, status checks, and merge actions
-- Start sessions from GitHub issues and pull requests with context baked in
-- Multi-remote push and fork-aware PR creation
-- Worktree integration: isolated sessions per branch, merge back with conflict handling
-- Git identities, gitmoji support, and multi-account GitHub auth
-
-</details>
-
-<details>
-<summary><strong>Files, Diff & Terminal</strong></summary>
-
-- Workspace file browser with inline editing, syntax highlighting, Vim mode, and markdown preview
-- Beautiful diff viewer with stacked/inline modes, lazy loading for large changesets
-- Integrated terminal with per-directory sessions, tabbed interface, and stable heavy-output performance
-- Clickable file paths in messages - jump to exact line locations
-- File-type icons across all views for faster visual scanning
-
-</details>
-
-<details>
-<summary><strong>Web / PWA</strong></summary>
-
-- Cloudflare tunnel with quick, managed-remote, and managed-local modes, secure one-time connect links, and QR onboarding
-- Mobile-first: optimized chat controls, keyboard-safe layouts, drag-to-reorder projects
-- Background notifications and cross-tab session tracking
-- Self-update + restart flow that keeps your server settings intact
-- Installable as PWA with project-aware naming
-
-</details>
-
-<details>
-<summary><strong>Desktop (macOS + Windows + Linux)</strong></summary>
-
-- Floating Mini Chat: keep a small always-on-top assistant beside your editor, browser, or terminal
-- Multiple native windows for separate projects or sessions
-- Native notifications for task alerts while OpenChamber is hidden
-- One-click open in VS Code, Cursor, Terminal, Finder, Explorer, and more
-- Desktop host switcher for local and remote OpenChamber instances
-- Convenient tunnel management without manual setup
-- Deep-link connections for joining remote OpenChamber from a link
-- SSH remote access with host import, connection management, and port forwarding
-
-</details>
-
-<details>
-<summary><strong>VS Code Extension</strong></summary>
-
-- Editor-native: open files from tool output, keep sessions beside your code
-- Agent Manager for parallel multi-model runs from a single prompt
-- Right-click actions: add context, explain selections, improve code in-place
-- Session editor panel, responsive layout, and theme mapping to your editor
-- Edit-style tool results open directly in focused diff views
-
-</details>
-
-<details>
-<summary><strong>Customization</strong></summary>
-
-- 18+ built-in themes with light/dark variants
-- Custom themes via JSON files in `~/.config/openchamber/themes/` - hot reload, no restart
-- Configurable keyboard shortcuts for chat, panels, and services
-- Font size, spacing, corner radius, and layout controls
-- Customizable project icons with upload and automatic favicon discovery
-- Skills catalog and local skill management for reusable automation
-
-[Read the Guide: Custom Themes](docs/CUSTOM_THEMES.md)
-
-</details>
-
-<details>
-<summary><strong>Context & Productivity</strong></summary>
-
-- Token usage, cost breakdowns, and raw message inspection panel
-- Usage quota tracking across multiple providers with pace/prediction indicators
-- Favorite model cycling via keyboard shortcuts
-- Session folders and subfolders with drag-to-reorder
-- Persistent project notes and todos per project
-- Draft persistence per session with expanded focus mode for longer prompts
-
-</details>
-
-## Roadmap
-
-Active development. Here's what's being worked on or planned:
-
-- Mobile app with remote instance and laptop connectivity
-- More built-in tunneling options
-- Kanban board for multi-agent management - keeping the human in the loop and in control
-- Custom OpenCode plugins/tools built-in catalog
-- Linear integration
-- Built-in browser for running dev apps with agent integration
-
-## Acknowledgments
-
-Independent project, not affiliated with the OpenCode team.
-
-**Special thanks to:**
-
-- [OpenCode](https://opencode.ai) - For the excellent API and extensible architecture.
-- [Flexoki](https://github.com/kepano/flexoki) - Beautiful color scheme by [Steph Ango](https://stephango.com/flexoki).
-- [Pierre](https://pierrejs-docs.vercel.app/) - Fast, beautiful diff viewer with syntax highlighting.
-- [Ghostty-web](https://github.com/coder/ghostty-web) - Great implementation of a Ghostty web renderer.
-- [David Hill](https://x.com/iamdavidhill) - Who inspired me to release this without [overthinking](https://x.com/iamdavidhill/status/1993648326450020746).
-- [My wife](https://github.com/yulia-ivashko), who - with zero AI background - sat down with the app for the first time and built the firework celebration that plays on every successful push.
-- Every contributor who shaped this project with their PRs, ideas, and attention to detail.
-
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and guidelines.
-
-Docs source lives in [`packages/docs`](packages/docs/README.md).
-
-## License
-
-MIT
+Hao Work 基于 OpenChamber 二次开发，并保留其 MIT License 与原作者版权声明。Hao Work 新增的 HaoCode 集成同样按本仓库的 MIT License 发布。

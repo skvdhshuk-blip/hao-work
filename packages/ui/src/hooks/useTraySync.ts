@@ -197,11 +197,11 @@ const buildUsage = (): TrayUsage => {
 // configured name. Async because the host config is read over IPC.
 const resolveInstanceName = async (): Promise<string> => {
   try {
-    if (isDesktopLocalOriginActive()) return 'Local OpenChamber';
+    if (isDesktopLocalOriginActive()) return 'Local Hao Work';
     const localOrigin = (window as unknown as { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__
       || window.location.origin;
     const runtimeApiBaseUrl = getRuntimeApiBaseUrl();
-    if (runtimeApiBaseUrl && locationMatchesHost(runtimeApiBaseUrl, localOrigin)) return 'Local OpenChamber';
+    if (runtimeApiBaseUrl && locationMatchesHost(runtimeApiBaseUrl, localOrigin)) return 'Local Hao Work';
     const cfg = await desktopHostsGet();
     const match = cfg.hosts.find((host) =>
       runtimeApiBaseUrl ? locationMatchesHost(runtimeApiBaseUrl, getDesktopHostApiUrl(host)) : false);

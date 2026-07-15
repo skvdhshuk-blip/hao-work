@@ -1,0 +1,27 @@
+{
+  "$schema": "https://getcomposer.org/schema.json",
+  "name": "hao-work/haocode-bridge",
+  "description": "JSON-lines bridge between Hao Work and the HaoCode PHP SDK.",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": "^8.3",
+    "sk-wang/hao-code": "^1.10.2"
+  },
+  "repositories": {
+    "haocode": {
+      "type": "git",
+      "url": "https://github.com/skvdhshuk-blip/hao-code.git"
+    }
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "preferred-install": "dist",
+    "sort-packages": true,
+    "allow-plugins": {
+      "php-http/discovery": true
+    }
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

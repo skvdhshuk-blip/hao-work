@@ -24,7 +24,7 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
   const { t } = useI18n();
   const showDiagnostics = import.meta.env.DEV;
   const [version, setVersion] = React.useState<string | null>(null);
-  const [openCodeVersion, setOpenCodeVersion] = React.useState<string | null>(null);
+  const [haoCodeVersion, setHaoCodeVersion] = React.useState<string | null>(null);
   const [isCopyingDiagnostics, setIsCopyingDiagnostics] = React.useState(false);
   const [copiedDiagnostics, setCopiedDiagnostics] = React.useState(false);
   const [diagnosticsReport, setDiagnosticsReport] = React.useState<string | null>(null);
@@ -87,23 +87,23 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
     if (!open) return;
 
     let cancelled = false;
-    const fetchOpenCodeVersion = async () => {
+    const fetchHaoCodeVersion = async () => {
       try {
-        const response = await runtimeFetch('/api/opencode/upgrade-status', {
+        const response = await runtimeFetch('/api/global/health', {
           headers: { Accept: 'application/json' },
         });
         if (!response.ok) return;
-        const data = await response.json().catch(() => null) as null | { currentVersion?: unknown };
-        const currentVersion = typeof data?.currentVersion === 'string' ? data.currentVersion.trim() : '';
+        const data = await response.json().catch(() => null) as null | { _fe_haocodeVersion?: unknown };
+        const currentVersion = typeof data?._fe_haocodeVersion === 'string' ? data._fe_haocodeVersion.trim() : '';
         if (!cancelled && currentVersion) {
-          setOpenCodeVersion(currentVersion);
+          setHaoCodeVersion(currentVersion);
         }
       } catch {
-        // OpenCode version is best-effort in About.
+        // HaoCode version is best-effort in About.
       }
     };
 
-    void fetchOpenCodeVersion();
+    void fetchHaoCodeVersion();
     return () => {
       cancelled = true;
     };
@@ -147,13 +147,13 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
           <OpenChamberLogo width={64} height={64} />
 
           <div className="space-y-1">
-            <h2 className="text-lg font-semibold">OpenChamber</h2>
+            <h2 className="text-lg font-semibold">Hao Work</h2>
             <div className="space-y-0.5 typography-meta text-muted-foreground">
               {displayVersion && (
-                <p>{t('aboutDialog.openChamberVersionLabel', { version: displayVersion })}</p>
+                <p>Hao Work {displayVersion}</p>
               )}
-              {openCodeVersion && (
-                <p>{t('aboutDialog.openCodeVersionLabel', { version: openCodeVersion })}</p>
+              {haoCodeVersion && (
+                <p>HaoCode {haoCodeVersion}</p>
               )}
             </div>
           </div>
@@ -184,7 +184,7 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
           <div className="flex flex-col items-center gap-2 pt-2">
             <div className="flex items-center justify-center gap-4">
               <a
-                href="https://github.com/openchamber/openchamber"
+                href="https://github.com/skvdhshuk-blip/hao-work"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1.5 typography-meta text-muted-foreground hover:text-foreground transition-colors"
@@ -193,24 +193,16 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
                 <span>GitHub</span>
               </a>
               <a
-                href="https://discord.gg/ZYRSdnwwKA"
+                href="https://github.com/skvdhshuk-blip/hao-code"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1.5 typography-meta text-muted-foreground hover:text-foreground transition-colors"
               >
-                <Icon name="discord-fill" className="h-4 w-4" />
-                <span>Discord</span>
+                <Icon name="code-box" className="h-4 w-4" />
+                <span>HaoCode</span>
               </a>
             </div>
-            <a
-              href="https://x.com/openchamber_dev"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1.5 typography-meta text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Icon name="twitter-xfill" className="h-4 w-4" />
-              <span>@openchamber_dev</span>
-            </a>
+            <span className="typography-micro text-muted-foreground/70">Based on OpenChamber · MIT</span>
           </div>
 
           <p className="typography-meta text-muted-foreground/60 pt-2">

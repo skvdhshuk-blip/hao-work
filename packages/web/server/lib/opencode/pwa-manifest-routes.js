@@ -1,4 +1,4 @@
-const DEFAULT_PWA_APP_NAME = 'OpenChamber - AI Coding Assistant';
+const DEFAULT_PWA_APP_NAME = 'Hao Work - AI Coding Workspace';
 const mapPwaOrientationToManifest = (value) => {
   if (value === 'portrait') {
     return 'portrait-primary';
@@ -217,7 +217,7 @@ export const registerPwaManifestRoute = (app, dependencies) => {
     const manifest = {
       name: appName,
       short_name: shortName,
-      description: 'Web interface companion for OpenCode AI coding agent',
+      description: 'AI coding workspace powered by HaoCode',
       id: '/',
       start_url: '/',
       scope: '/',

@@ -112,6 +112,7 @@ const createRuntime = (settings, options = {}) => {
     readSettingsFromDiskMigrated: async () => settings,
     spawnSync: options.spawnSync,
     homedir: options.homedir,
+    isExecutable: options.isExecutable,
   });
 
   return { runtime, state };
@@ -211,6 +212,7 @@ describe('OpenCode env runtime', () => {
     const { runtime, state } = createRuntime({}, {
       spawnSync: () => ({ status: 1, stdout: '', stderr: '' }),
       homedir: () => emptyHome,
+      isExecutable: (candidate) => candidate === bundledBinary,
     });
 
     expect(runtime.resolveOpencodeCliPath()).toBe(bundledBinary);

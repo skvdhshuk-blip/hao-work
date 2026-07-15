@@ -136,6 +136,15 @@ const extractUserMessage = (payload) => {
   };
 };
 
+const extractDeletedSessionId = (payload) => {
+  if (!payload || payload.type !== 'session.deleted') return '';
+  const properties = payload.properties && typeof payload.properties === 'object' ? payload.properties : {};
+  const info = properties.info && typeof properties.info === 'object' ? properties.info : {};
+  return typeof properties.sessionID === 'string' && properties.sessionID
+    ? properties.sessionID
+    : (typeof info.id === 'string' ? info.id : '');
+};
+
 const messagePartsToText = (message) => {
   const parts = Array.isArray(message?.parts) ? message.parts : [];
   return parts
@@ -177,7 +186,9 @@ export const createSessionAssistRuntime = ({
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!response.ok) {
-      throw new Error(`OpenCode ${method} ${path} failed with ${response.status}`);
+      const error = new Error(`OpenCode ${method} ${path} failed with ${response.status}`);
+      error.statusCode = response.status;
+      throw error;
     }
     return response.json().catch(() => null);
   };
@@ -201,7 +212,9 @@ export const createSessionAssistRuntime = ({
     if (!targets.recap && !targets.suggestion) return;
     const session = await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, { directory })
       .catch((error) => {
-        console.warn(`[session-assist] session fetch failed: ${error?.message || error}`);
+        if (Number(error?.statusCode) !== 404) {
+          console.warn(`[session-assist] session fetch failed: ${error?.message || error}`);
+        }
         return null;
       });
     if (!session || typeof session !== 'object') return;
@@ -361,6 +374,11 @@ export const createSessionAssistRuntime = ({
 
   const processPayload = (payload, directoryHint = '') => {
     if (stopped) return;
+    const deletedSessionId = extractDeletedSessionId(payload);
+    if (deletedSessionId) {
+      clearTimer(deletedSessionId);
+      return;
+    }
     const status = extractSessionStatus(payload);
     if (status) {
       if (status.type === 'idle') {

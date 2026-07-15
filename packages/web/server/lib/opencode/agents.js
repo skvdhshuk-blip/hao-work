@@ -376,6 +376,26 @@ function getAgentConfig(agentName, workingDirectory, lookupCache = createAgentLo
   };
 }
 
+function listAgentConfigs(workingDirectory) {
+  const names = new Set(Object.keys(readConfigLayers(workingDirectory)?.mergedConfig?.agent || {}));
+  const collect = (directory) => {
+    if (!directory || !fs.existsSync(directory)) return;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) collect(entryPath);
+      else if (entry.isFile() && entry.name.endsWith('.md')) names.add(entry.name.slice(0, -3));
+    }
+  };
+  collect(AGENT_DIR);
+  collect(path.join(AGENT_DIR, '..', 'agent'));
+  if (workingDirectory) {
+    collect(path.join(workingDirectory, '.opencode', 'agents'));
+    collect(path.join(workingDirectory, '.opencode', 'agent'));
+  }
+  const lookupCache = createAgentLookupCache();
+  return [...names].sort().map((name) => ({ name, ...getAgentConfig(name, workingDirectory, lookupCache).config }));
+}
+
 function createAgent(agentName, config, workingDirectory, scope) {
   ensureDirs();
   const lookupCache = createAgentLookupCache();
@@ -691,6 +711,7 @@ function deleteAgent(agentName, workingDirectory, scope) {
 }
 
 export {
+  listAgentConfigs,
   getAgentSources,
   getAgentConfig,
   createAgent,

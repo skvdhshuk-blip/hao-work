@@ -160,11 +160,11 @@ const mkdirp = async (path: string): Promise<boolean> => {
   return Boolean(res.ok);
 };
 
-const readTextFile = async (path: string): Promise<string | null> => {
+const readTextFile = async (path: string, optional = false): Promise<string | null> => {
   const runtimeFiles = getRuntimeFilesAPI();
   if (runtimeFiles?.readFile) {
     try {
-      const result = await runtimeFiles.readFile(path);
+      const result = await runtimeFiles.readFile(path, optional ? { optional: true } : undefined);
       const content = typeof result?.content === 'string' ? result.content : '';
       return content;
     } catch {
@@ -173,7 +173,7 @@ const readTextFile = async (path: string): Promise<string | null> => {
   }
 
   try {
-    const response = await runtimeFetch(`${getBaseUrl()}/fs/read?path=${encodeURIComponent(path)}`,
+    const response = await runtimeFetch(`${getBaseUrl()}/fs/read?path=${encodeURIComponent(path)}${optional ? '&optional=true' : ''}`,
       {
         // Avoid conditional requests (304 + empty body).
         cache: 'no-store',
@@ -562,7 +562,7 @@ async function readOpenChamberConfig(project: ProjectRef): Promise<OpenChamberCo
 
   const readText = async (path: string): Promise<string | null> => {
     // Keep behavior consistent with other helpers.
-    const text = await readTextFile(path);
+    const text = await readTextFile(path, true);
     if (text === null) {
       return null;
     }
@@ -645,7 +645,7 @@ async function writeOpenChamberConfig(
       return false;
     }
 
-    const existingRaw = await readTextFile(configPath);
+    const existingRaw = await readTextFile(configPath, true);
     let existing: Record<string, unknown> = {};
     if (typeof existingRaw === 'string' && existingRaw.trim()) {
       try {
