@@ -1,10 +1,10 @@
 # Hao Work
 
-Hao Work 是一个以 [OpenChamber](https://github.com/openchamber/openchamber) 为 UI 与桌面壳基础、以 [HaoCode](https://github.com/skvdhshuk-blip/hao-code) 为 Agent 引擎的 AI 编程工作台。
+Hao Work 是一个 AI 编程工作台，也是一套模型自适应 harness 的实验平台。
 
-它的长期方向是成为“模型自适应工作内核”：为不同模型加载经评测验证的 system prompt、工具组合、思考参数、上下文策略和验证流程，而不把产品绑定在某种语言或单一模型上。
+不同模型擅长的提示方式、工具组合和推理节奏并不相同。Hao Work 希望用可重复的评测，为每种模型匹配合适的 system prompt、工具、推理参数、上下文管理和验证流程，让模型按自己擅长的方式完成长任务。
 
-它保留 OpenChamber 成熟的会话、文件、工具调用、权限确认、终端和桌面交互体验，但本地运行不再启动 OpenCode。浏览器仍使用 OpenCode SDK 的数据形状，Hao Work 在服务端通过一个兼容层把这些请求翻译为 HaoCode SDK 调用。
+当前版本以 [OpenChamber](https://github.com/openchamber/openchamber) 为界面和桌面运行基础，以 [HaoCode](https://github.com/skvdhshuk-blip/hao-code) 为 Agent 引擎。它保留会话、文件、工具调用、权限确认和终端等桌面体验，并通过兼容层把现有界面协议转换为 HaoCode SDK 调用。
 
 <p align="center">
   <img src="docs/images/hao-work-analysis.png" alt="Hao Work 使用 HaoCode 分析 PHP 源码" width="100%">
