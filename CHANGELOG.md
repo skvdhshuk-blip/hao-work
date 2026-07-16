@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.16.5] - 2026-07-16
+
+- **New repository:** Hao Work now keeps OpenChamber's Git history and native fork relationship, making future upstream UI updates easier to merge.
+- **HaoCode engine:** local agent sessions run through the HaoCode PHP SDK with durable conversations, streaming text and reasoning, tool events, permission interrupts, questions, abort support, and provider-aware context limits.
+- **Long tasks:** agent runs have no practical turn limit by default; an explicit request or environment setting can still apply a finite limit.
+- **Desktop runtime:** macOS packages bundle PHP, the locked HaoCode bridge dependencies, and the worker. Users do not need to install PHP, Composer, OpenCode, or Tokimo.
+- **Permissions:** Bash, Write, Edit, and apply_patch requests integrate with Hao Work's per-session auto-accept control, including child-session inheritance.
+- **Product direction:** the README now defines Hao Work as an AI coding workspace and a model-adaptive harness lab, with per-model prompts, tools, reasoning settings, context handling, and validation guided by repeatable evaluation.
+
 ## [1.16.1] - 2026-07-14
 
 - **Performance:** large session sidebars stay responsive while chats stream, including setups with many projects, worktrees, and sessions. Opening a long chat after an empty or aborted agent turn also no longer repeatedly loads larger portions of its history.
