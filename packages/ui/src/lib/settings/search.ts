@@ -522,6 +522,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['tone', 'concise', 'detailed', 'custom instructions'],
   },
   {
+    id: 'behavior.tool-approval',
+    page: 'behavior',
+    titleKey: 'settings.behavior.page.section.toolApproval',
+    descriptionKey: 'settings.behavior.page.toolApproval.tooltip',
+    keywords: ['hitl', 'approval mode', 'permission mode', 'auto approve', 'human in the loop', 'review model'],
+  },
+  {
     id: 'agents.create',
     page: 'agents',
     titleKey: 'settings.agents.page.title.new',

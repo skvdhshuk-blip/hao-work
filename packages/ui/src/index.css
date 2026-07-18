@@ -3,6 +3,9 @@
 @import "./styles/design-system.css";
 @import "./styles/typography.css";
 @import "./styles/mobile.css";
+@import "./styles/tech-effects.css";
+@import "./styles/tech-chat.css";
+@import "./styles/tech-sidebar.css";
 /* Load KaTeX styles eagerly with the main bundle. Importing them inside the
    lazy MarkdownRendererImpl chunk meant a stylesheet was injected late on the
    first markdown render of a session; that late injection triggered a style
@@ -554,8 +557,8 @@ svg.animate-spin {
 
 .dark {
   color-scheme: dark;
-  --oc-scrollbar-thumb: oklch(0.6 0.02 80 / 0.3);
-  --oc-scrollbar-thumb-hover: oklch(0.6 0.02 80 / 0.5);
+  --oc-scrollbar-thumb: color-mix(in srgb, var(--primary-base, #22D3EE) 32%, transparent);
+  --oc-scrollbar-thumb-hover: color-mix(in srgb, var(--primary-base, #22D3EE) 52%, transparent);
 }
 
 [data-scrollbar="chat"]::-webkit-scrollbar-thumb {
@@ -661,7 +664,7 @@ html:not(.dark) .chat-scroll {
 }
 
 .dark * {
-  scrollbar-color: oklch(0.6 0.02 80 / 0.3) transparent;
+  scrollbar-color: var(--oc-scrollbar-thumb) transparent;
 }
 
 /* Overlay scrollbar styling (custom thumb) */

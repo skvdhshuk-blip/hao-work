@@ -68,6 +68,15 @@ $sessionId = normalizeString($request['haocodeSessionId'] ?? null);
 $maxTurns = normalizePositiveInt($request['maxTurns'] ?? null)
     ?? normalizePositiveInt(getenv('HAOWORK_HAOCODE_MAX_TURNS'))
     ?? DEFAULT_MAX_TURNS;
+// HITL mode: ask, smart (default), or auto. Unknown values always fall back
+// to smart. All smart/auto adjudication happens inside the HaoCode SDK; this
+// worker only forwards the stream (including SDK-emitted auto_decision
+// messages) and never decides an interrupt locally.
+$hitlMode = normalizeHitlMode($request['hitlMode'] ?? null);
+$hitlReviewModel = normalizeString($request['hitlReviewModel'] ?? null);
+// User "Always Allow" rules persisted by the compatibility server; the SDK
+// exact-matches trimmed Bash commands from this file before rule grading.
+$hitlAllowlistPath = normalizeString($request['hitlAllowlistPath'] ?? null);
 $config = new HaoCodeConfig(
     apiKey: normalizeString($provider['apiKey'] ?? null),
     model: normalizeString($provider['model'] ?? null),
@@ -84,12 +93,16 @@ $config = new HaoCodeConfig(
     onThinking: static fn (string $delta): mixed => emit(['type' => 'thinking', 'text' => $delta]),
     ephemeral: false,
     sessionId: $sessionId,
-    interruptOn: normalizeInterrupts($request['interruptOn'] ?? null),
+    interruptOn: $hitlMode === 'auto' ? [] : normalizeInterrupts($request['interruptOn'] ?? null),
     enableAskUser: true,
+    hitlMode: $hitlMode,
+    hitlReviewModel: $hitlReviewModel,
+    hitlAllowlistPath: $hitlAllowlistPath,
 );
 
 try {
     $action = normalizeString($request['action'] ?? null) ?? 'run';
+
     if ($action === 'resume_interrupt') {
         $interruptId = normalizeString($request['interruptId'] ?? null);
         if ($sessionId === null || $interruptId === null) {
@@ -105,8 +118,20 @@ try {
         $messages = HaoCode::stream($prompt, $config);
     }
 
+    // Pure forwarding loop: the SDK settles smart/auto decisions internally
+    // (emitting auto_decision messages for visibility) and resumes itself, so
+    // the worker just relays every message until a terminal event arrives.
+    $terminalEmitted = false;
     foreach ($messages as $message) {
+        if (in_array($message->type, ['result', 'error', 'interrupt'], true)) {
+            $terminalEmitted = true;
+        }
         emitMessage($message);
+    }
+    if (! $terminalEmitted) {
+        // Terminal-event contract: the run must end with result, error, or interrupt.
+        emit(['type' => 'error', 'error' => 'Worker stream ended without a terminal event.']);
+        exit(1);
     }
 } catch (Throwable $exception) {
     emit([
@@ -119,6 +144,10 @@ try {
 
 function emitMessage(Message $message): void
 {
+    if ($message->type === 'auto_decision') {
+        emit(normalizeAutoDecisionMessage($message));
+        return;
+    }
     $payload = ['type' => $message->type];
     foreach ([
         'text', 'toolName', 'toolInput', 'toolOutput', 'toolIsError',
@@ -132,6 +161,44 @@ function emitMessage(Message $message): void
         $payload['interrupt'] = $message->interrupt->toArray();
     }
     emit($payload);
+}
+
+/**
+ * Forward one SDK-native smart-HITL auto_decision message. The SDK already
+ * settled (or escalated) the action; this only normalizes the wire shape.
+ * Unknown enum values are mapped conservatively, matching the compatibility
+ * server's fail-closed normalization: unknown decision -> reject, unknown
+ * risk level -> high, unknown source -> rule.
+ *
+ * @return array<string, mixed>
+ */
+function normalizeAutoDecisionMessage(Message $message): array
+{
+    $decision = normalizeString($message->decision ?? null);
+    if (! in_array($decision, ['approve', 'reject', 'escalate'], true)) {
+        $decision = 'reject';
+    }
+    $source = normalizeString($message->source ?? null);
+    if (! in_array($source, ['rule', 'review', 'batch', 'sandbox'], true)) {
+        $source = 'rule';
+    }
+    $riskLevel = normalizeString($message->riskLevel ?? null);
+    if (! in_array($riskLevel, ['low', 'medium', 'high', 'critical'], true)) {
+        $riskLevel = 'high';
+    }
+
+    return [
+        'type' => 'auto_decision',
+        'sessionId' => normalizeString($message->sessionId ?? null),
+        'interruptId' => normalizeString($message->interruptId ?? null),
+        'actionId' => normalizeString($message->actionId ?? null) ?? 'unknown',
+        'toolName' => normalizeString($message->toolName ?? null),
+        'toolInput' => is_array($message->toolInput ?? null) ? $message->toolInput : [],
+        'decision' => $decision,
+        'source' => $source,
+        'riskLevel' => $riskLevel,
+        'reason' => is_string($message->reason ?? null) ? $message->reason : '',
+    ];
 }
 
 function emit(array $payload): void
@@ -163,6 +230,13 @@ function normalizeProviderType(mixed $value): ?string
 {
     $value = normalizeString($value);
     return in_array($value, ['anthropic', 'openai', 'openai_chat'], true) ? $value : null;
+}
+
+/** @return 'ask'|'smart'|'auto' */
+function normalizeHitlMode(mixed $value): string
+{
+    $value = normalizeString($value);
+    return in_array($value, ['ask', 'smart', 'auto'], true) ? $value : 'smart';
 }
 
 /** @return string[] */

@@ -78,7 +78,7 @@ export function SidebarHeader(props: Props): React.ReactNode {
   }
 
   return (
-    <div className="select-none flex-shrink-0 px-2.5 py-1">
+    <div data-sidebar-header="true" className="select-none flex-shrink-0 px-2.5 py-1">
       <div className="flex h-auto min-h-8 flex-col gap-1">
         <div className="flex h-8 items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">

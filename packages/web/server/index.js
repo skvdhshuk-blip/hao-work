@@ -1395,6 +1395,9 @@ async function main(options = {}) {
         ? resolveManagedOpenCodeLaunchSpec(resolvedOpencodeBinary)
         : null;
       return {
+        // This fork compiles the agent engine in as hao-code with no switch;
+        // advertise it so first-run onboarding can skip CLI install guidance.
+        agentEngine: 'haocode',
         openCodePort,
         openCodeRunning: Boolean(openCodePort && isOpenCodeReady && !isRestartingOpenCode),
         openCodeSecureConnection: isOpenCodeConnectionSecure(),

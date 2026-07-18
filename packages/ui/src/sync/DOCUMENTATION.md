@@ -165,6 +165,7 @@ Keep this in sync with `handleDirectoryEvent` in `sync-context.tsx`:
 | `message.part.updated/removed/delta` | `part` |
 | `vcs.branch.updated` | (none — mutates `draft.vcs` directly) |
 | `permission.asked/replied` | `permission` |
+| `permission.auto_resolved` | `autoDecision` |
 | `question.asked/replied/rejected` | `question` |
 | `lsp.updated` | `lsp` |
 

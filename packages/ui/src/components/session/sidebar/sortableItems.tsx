@@ -229,7 +229,7 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                         <Icon name="folder" className={cn('h-3.5 w-3.5 text-muted-foreground/80', alwaysShowActions ? 'hidden' : 'group-hover/project:hidden group-focus-within/project:hidden')} style={iconColor ? { color: iconColor } : undefined} />
                       )}
                     </span>
-                    <span className={cn(
+                    <span data-project-label="true" className={cn(
                       'text-[14px] font-normal truncate lowercase',
                       isActiveProject ? 'text-foreground' : 'text-foreground group-hover/project:text-foreground',
                     )}>

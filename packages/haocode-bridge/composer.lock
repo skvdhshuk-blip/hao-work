@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "f9783be626d8c637cc2ddb225af93145",
+    "content-hash": "2ee66c7270184b06badab6b7b12976ad",
     "packages": [
         {
             "name": "brick/math",
@@ -144,23 +144,23 @@
         },
         {
             "name": "google/protobuf",
-            "version": "v4.33.6",
+            "version": "v5.35.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/protocolbuffers/protobuf-php.git",
-                "reference": "84b008c23915ed94536737eae46f41ba3bccfe67"
+                "reference": "55bb4a7d6739b5af0927b96213c1371a3afb7cfb"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/protocolbuffers/protobuf-php/zipball/84b008c23915ed94536737eae46f41ba3bccfe67",
-                "reference": "84b008c23915ed94536737eae46f41ba3bccfe67",
+                "url": "https://api.github.com/repos/protocolbuffers/protobuf-php/zipball/55bb4a7d6739b5af0927b96213c1371a3afb7cfb",
+                "reference": "55bb4a7d6739b5af0927b96213c1371a3afb7cfb",
                 "shasum": ""
             },
             "require": {
-                "php": ">=8.1.0"
+                "php": ">=8.2.0"
             },
             "require-dev": {
-                "phpunit/phpunit": ">=10.5.62 <11.0.0"
+                "phpunit/phpunit": ">=11.5.0 <12.0.0"
             },
             "suggest": {
                 "ext-bcmath": "Need to support JSON deserialization"
@@ -182,9 +182,9 @@
                 "proto"
             ],
             "support": {
-                "source": "https://github.com/protocolbuffers/protobuf-php/tree/v4.33.6"
+                "source": "https://github.com/protocolbuffers/protobuf-php/tree/v5.35.1"
             },
-            "time": "2026-03-18T17:32:05+00:00"
+            "time": "2026-06-11T21:19:23+00:00"
         },
         {
             "name": "nyholm/psr7",
@@ -332,16 +332,16 @@
         },
         {
             "name": "open-telemetry/api",
-            "version": "1.9.0",
+            "version": "1.10.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/opentelemetry-php/api.git",
-                "reference": "6f8d237ce2c304ca85f31970f788e7f074d147be"
+                "reference": "7c029c4a6fd457094a20569bf98f93d95e9a7559"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/opentelemetry-php/api/zipball/6f8d237ce2c304ca85f31970f788e7f074d147be",
-                "reference": "6f8d237ce2c304ca85f31970f788e7f074d147be",
+                "url": "https://api.github.com/repos/opentelemetry-php/api/zipball/7c029c4a6fd457094a20569bf98f93d95e9a7559",
+                "reference": "7c029c4a6fd457094a20569bf98f93d95e9a7559",
                 "shasum": ""
             },
             "require": {
@@ -398,7 +398,7 @@
                 "issues": "https://github.com/open-telemetry/opentelemetry-php/issues",
                 "source": "https://github.com/open-telemetry/opentelemetry-php"
             },
-            "time": "2026-02-25T13:24:05+00:00"
+            "time": "2026-07-06T12:28:04+00:00"
         },
         {
             "name": "open-telemetry/context",
@@ -525,20 +525,20 @@
         },
         {
             "name": "open-telemetry/gen-otlp-protobuf",
-            "version": "1.9.0",
+            "version": "1.10.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/opentelemetry-php/gen-otlp-protobuf.git",
-                "reference": "a229cf161d42001d64c8f21e8f678581fe1c66b9"
+                "reference": "66f04d0e448ad333033bfc7baae1aa56330be088"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/opentelemetry-php/gen-otlp-protobuf/zipball/a229cf161d42001d64c8f21e8f678581fe1c66b9",
-                "reference": "a229cf161d42001d64c8f21e8f678581fe1c66b9",
+                "url": "https://api.github.com/repos/opentelemetry-php/gen-otlp-protobuf/zipball/66f04d0e448ad333033bfc7baae1aa56330be088",
+                "reference": "66f04d0e448ad333033bfc7baae1aa56330be088",
                 "shasum": ""
             },
             "require": {
-                "google/protobuf": "^3.22 || ^4.0",
+                "google/protobuf": "^3.22 || ^4.0 || ^5.0",
                 "php": "^8.0"
             },
             "suggest": {
@@ -584,20 +584,20 @@
                 "issues": "https://github.com/open-telemetry/opentelemetry-php/issues",
                 "source": "https://github.com/open-telemetry/opentelemetry-php"
             },
-            "time": "2025-10-19T06:44:33+00:00"
+            "time": "2026-06-17T12:06:32+00:00"
         },
         {
             "name": "open-telemetry/sdk",
-            "version": "1.14.0",
+            "version": "1.15.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/opentelemetry-php/sdk.git",
-                "reference": "6e3d0ce93e76555dd5e2f1d19443ff45b990e410"
+                "reference": "77e1aa73850154abb86937d52a70883edc3b4547"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/opentelemetry-php/sdk/zipball/6e3d0ce93e76555dd5e2f1d19443ff45b990e410",
-                "reference": "6e3d0ce93e76555dd5e2f1d19443ff45b990e410",
+                "url": "https://api.github.com/repos/opentelemetry-php/sdk/zipball/77e1aa73850154abb86937d52a70883edc3b4547",
+                "reference": "77e1aa73850154abb86937d52a70883edc3b4547",
                 "shasum": ""
             },
             "require": {
@@ -605,7 +605,7 @@
                 "nyholm/psr7-server": "^1.1",
                 "open-telemetry/api": "^1.8",
                 "open-telemetry/context": "^1.4",
-                "open-telemetry/sem-conv": "^1.0",
+                "open-telemetry/sem-conv": "^1.38.0",
                 "php": "^8.1",
                 "php-http/discovery": "^1.14",
                 "psr/http-client": "^1.0",
@@ -628,7 +628,10 @@
                 "spi": {
                     "OpenTelemetry\\API\\Configuration\\ConfigEnv\\EnvComponentLoader": [
                         "OpenTelemetry\\API\\Instrumentation\\Configuration\\General\\ConfigEnv\\EnvComponentLoaderHttpConfig",
-                        "OpenTelemetry\\API\\Instrumentation\\Configuration\\General\\ConfigEnv\\EnvComponentLoaderPeerConfig"
+                        "OpenTelemetry\\API\\Instrumentation\\Configuration\\General\\ConfigEnv\\EnvComponentLoaderPeerConfig",
+                        "OpenTelemetry\\SDK\\ConfigEnv\\Trace\\SpanSuppressionStrategySemConv",
+                        "OpenTelemetry\\SDK\\ConfigEnv\\Trace\\SpanSuppressionStrategySpanKind",
+                        "OpenTelemetry\\SDK\\ConfigEnv\\Distribution\\DistributionConfigurationSdk"
                     ],
                     "OpenTelemetry\\SDK\\Common\\Configuration\\Resolver\\ResolverInterface": [
                         "OpenTelemetry\\SDK\\Common\\Configuration\\Resolver\\SdkConfigurationResolver"
@@ -638,7 +641,7 @@
                     ]
                 },
                 "branch-alias": {
-                    "dev-main": "1.12.x-dev"
+                    "dev-main": "1.14.x-dev"
                 }
             },
             "autoload": {
@@ -681,7 +684,7 @@
                 "issues": "https://github.com/open-telemetry/opentelemetry-php/issues",
                 "source": "https://github.com/open-telemetry/opentelemetry-php"
             },
-            "time": "2026-03-21T11:50:01+00:00"
+            "time": "2026-07-14T13:09:54+00:00"
         },
         {
             "name": "open-telemetry/sem-conv",
@@ -1286,11 +1289,11 @@
         },
         {
             "name": "sk-wang/hao-code",
-            "version": "v1.10.2",
+            "version": "v1.13.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/skvdhshuk-blip/hao-code.git",
-                "reference": "ac9a494aa632c57e1ad4a83dcbb8b882b3c9b5aa"
+                "reference": "21fa450fee57de7d211cd17d169a326d6355c485"
             },
             "require": {
                 "nyholm/psr7": "^1.8",
@@ -1357,7 +1360,7 @@
                 "issues": "https://github.com/skvdhshuk-blip/hao-code/issues",
                 "source": "https://github.com/skvdhshuk-blip/hao-code"
             },
-            "time": "2026-07-14T22:16:24+00:00"
+            "time": "2026-07-18T07:05:58+00:00"
         },
         {
             "name": "symfony/clock",

@@ -2,6 +2,7 @@ import React from 'react';
 import type { Message, Part, Session } from '@opencode-ai/sdk/v2';
 import type { PermissionRequest } from '@/types/permission';
 import type { QuestionRequest } from '@/types/question';
+import type { AutoDecisionRecord } from '@/sync/types';
 
 import { ChatInput } from './ChatInput';
 import { DraftPresetChips } from './DraftPresetChips';
@@ -12,6 +13,7 @@ import ChatEmptyState from './ChatEmptyState';
 import { useGlobalSyncStore } from '@/sync/global-sync-store';
 import MessageList, { type MessageListHandle } from './MessageList';
 import { PermissionCard } from './PermissionCard';
+import { AutoDecisionCard } from './AutoDecisionCard';
 import { QuestionCard } from './QuestionCard';
 import { StatusRowContainer } from './StatusRowContainer';
 import { SessionRecapNote } from '@/components/chat/SessionRecapSpacer';
@@ -41,6 +43,7 @@ import {
     useSessionStatus,
     useScopedBlockingPermissions,
     useScopedBlockingQuestions,
+    useScopedAutoDecisions,
     useParentSession,
 } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
@@ -163,6 +166,7 @@ type ChatViewportProps = {
     scrollToBottom: () => void;
     sessionQuestions: QuestionRequest[];
     sessionPermissions: PermissionRequest[];
+    sessionAutoDecisions: AutoDecisionRecord[];
     isProgrammaticFollowActive: boolean;
     showLoadOlderButton: boolean;
     onLoadOlder: () => void;
@@ -196,6 +200,7 @@ const ChatViewport = React.memo(({
     scrollToBottom,
     sessionQuestions,
     sessionPermissions,
+    sessionAutoDecisions,
     isProgrammaticFollowActive,
     showLoadOlderButton,
     onLoadOlder,
@@ -354,13 +359,16 @@ const ChatViewport = React.memo(({
                             scrollRef={scrollRef}
                             directory={directory}
                         />
-                        {(sessionQuestions.length > 0 || sessionPermissions.length > 0) && (
+                        {(sessionQuestions.length > 0 || sessionPermissions.length > 0 || sessionAutoDecisions.length > 0) && (
                             <div>
                                 {sessionQuestions.map((question) => (
                                     <QuestionCard key={question.id} question={question} />
                                 ))}
                                 {sessionPermissions.map((permission) => (
                                     <PermissionCard key={permission.id} permission={permission} />
+                                ))}
+                                {sessionAutoDecisions.map((record) => (
+                                    <AutoDecisionCard key={record.requestID} record={record} />
                                 ))}
                             </div>
                         )}
@@ -410,6 +418,7 @@ const ChatViewport = React.memo(({
         && prev.scrollToBottom === next.scrollToBottom
         && prev.sessionQuestions === next.sessionQuestions
         && prev.sessionPermissions === next.sessionPermissions
+        && prev.sessionAutoDecisions === next.sessionAutoDecisions
         && prev.isProgrammaticFollowActive === next.isProgrammaticFollowActive
         && prev.showLoadOlderButton === next.showLoadOlderButton
         && prev.onLoadOlder === next.onLoadOlder
@@ -580,6 +589,15 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ autoOpenDraft = tr
     // the directory.
     const sessionPermissions = useScopedBlockingPermissions(currentSessionId, effectiveSessionDirectory);
     const sessionQuestions = useScopedBlockingQuestions(currentSessionId, effectiveSessionDirectory);
+    // Auto-resolved decisions (HaoCode smart mode) — same session subtree scope.
+    // Codex-style visibility: approvals stay silent (the tool card already
+    // shows the execution); only auto-rejections surface inline so the user
+    // sees why an action did not run. The full audit trail stays server-side.
+    const sessionAutoDecisions = useScopedAutoDecisions(currentSessionId, effectiveSessionDirectory);
+    const visibleAutoDecisions = React.useMemo(
+        () => sessionAutoDecisions.filter((record) => record.decision !== 'approve'),
+        [sessionAutoDecisions],
+    );
 
     const sessionIsWorking = React.useMemo(() => {
         if (!currentSessionId || sessionPermissions.length > 0 || sessionQuestions.length > 0) {
@@ -1140,6 +1158,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ autoOpenDraft = tr
                 scrollToBottom={resumeToLatestInstant}
                 sessionQuestions={sessionQuestions}
                 sessionPermissions={sessionPermissions}
+                sessionAutoDecisions={visibleAutoDecisions}
                 isProgrammaticFollowActive={isFollowingProgrammatically}
                 showLoadOlderButton={showLoadOlderButton}
                 onLoadOlder={handleLoadOlderClick}

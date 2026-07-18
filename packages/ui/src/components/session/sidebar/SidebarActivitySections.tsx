@@ -190,7 +190,7 @@ export function SidebarActivitySections({
               <span className="inline-flex h-4 w-4 items-center justify-center text-muted-foreground">
                 {isCollapsed ? <Icon name="arrow-right-s" className="h-3.5 w-3.5" /> : <Icon name="arrow-down-s" className="h-3.5 w-3.5" />}
               </span>
-              <span className="text-[14px] font-normal text-foreground/95">{section.title}</span>
+              <span data-sidebar-section-label="true" className="text-[14px] font-normal text-foreground/95">{section.title}</span>
             </button>
             {!isCollapsed ? (
               <div className={cn('space-y-0.5 pl-7')}>

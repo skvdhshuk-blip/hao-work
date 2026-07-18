@@ -27,6 +27,33 @@ export type FileDiff = {
   [key: string]: unknown
 }
 
+/**
+ * Adapter-owned SSE event emitted by the HaoCode compatibility server when a
+ * smart-mode worker auto-resolves a permission in-process. Not part of the
+ * SDK `Event` union, so reducers compare against this `string`-typed constant
+ * (a literal-typed constant would fail union comparability checks).
+ */
+export const PERMISSION_AUTO_RESOLVED_EVENT: string = "permission.auto_resolved"
+
+/**
+ * Audit record for one auto-resolved permission decision. Built from
+ * `permission.auto_resolved` SSE payloads and from the HaoCode
+ * `/auto-decisions` backfill route. Bounded per session (see
+ * AUTO_DECISION_LIMIT in ./auto-decisions).
+ */
+export type AutoDecisionRecord = {
+  id: string
+  sessionID: string
+  requestID: string
+  permission: string
+  decision: "approve" | "reject"
+  source: "rule" | "review" | "sandbox"
+  riskLevel: "low" | "medium" | "high" | "critical"
+  reason: string
+  input?: Record<string, unknown>
+  time?: number
+}
+
 export type ProjectMeta = {
   name?: string
   icon?: {
@@ -56,6 +83,7 @@ export type State = {
   todo: Record<string, Todo[]>
   permission: Record<string, PermissionRequest[]>
   question: Record<string, QuestionRequest[]>
+  autoDecision: Record<string, AutoDecisionRecord[]>
   mcp: Record<string, McpStatus>
   lsp: LspStatus[]
   vcs: VcsInfo | undefined
@@ -126,6 +154,7 @@ export const INITIAL_STATE: State = {
   todo: {},
   permission: {},
   question: {},
+  autoDecision: {},
   mcp: {},
   lsp: [],
   vcs: undefined,

@@ -9,6 +9,24 @@ describe('core-routes', () => {
     vi.useRealTimers();
   });
 
+  it('exposes the agent engine marker from the health snapshot on /health', async () => {
+    const app = express();
+    const dependencies = {
+      gracefulShutdown: vi.fn(async () => {}),
+      getHealthSnapshot: () => ({ status: 'ok', agentEngine: 'haocode', isOpenCodeReady: false }),
+      openchamberVersion: '1.0.0',
+      runtimeName: 'test',
+      express,
+    };
+
+    registerServerStatusRoutes(app, dependencies);
+
+    const response = await request(app).get('/health').expect(200);
+
+    expect(response.body.agentEngine).toBe('haocode');
+    expect(response.body.isOpenCodeReady).toBe(false);
+  });
+
   it('should call gracefulShutdown with exitProcess: true on /api/system/shutdown', async () => {
     const app = express();
     let shutdownOpts = null;

@@ -1,0 +1,143 @@
+/* ============================================================
+   Tech / neon visual layer
+
+   Token-derived effects only: every tint is computed from the
+   active theme's semantic CSS variables, so these effects adapt
+   to any built-in or custom theme. No layout, sizing, or
+   component-behavior changes.
+
+   Performance notes:
+   - Background grid/scanlines are static background-image tiles
+     (paint-once, no animation, no compositor cost per frame).
+   - All motion is transform/opacity/box-shadow based and only
+     enabled under `prefers-reduced-motion: no-preference`.
+   - Glass blur is gated on backdrop-filter support and disabled
+     under `prefers-reduced-transparency: reduce`.
+   ============================================================ */
+
+/* --- App backdrop: blueprint grid (+ scanlines in dark) ------ */
+/* Painted on <main> surfaces that carry the app background.
+   background-image layers above the utility's background-color. */
+main.bg-background {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--foreground) 3%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--foreground) 3%, transparent) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+.dark main.bg-background {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--foreground) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--foreground) 4%, transparent) 1px, transparent 1px),
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--foreground) 2%, transparent) 0 1px, transparent 1px 3px);
+  background-size: 44px 44px, 44px 44px, 100% 3px;
+}
+
+/* --- Neon focus glow ----------------------------------------- */
+/* Inputs/selects: keep the existing ring and add a soft halo.
+   The ring itself is box-shadow based, so the halo stacks with an
+   equivalent ring segment to avoid losing the focus indicator. */
+[data-slot="input"]:focus,
+[data-slot="select-trigger"]:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--interactive-focus-ring, var(--ring)),
+    0 0 18px color-mix(in srgb, var(--interactive-focus-ring, var(--ring)) 60%, transparent);
+}
+
+/* Composer container: neon edge + halo while typing.
+   Shell mode keeps its status-info ring cue, so it is excluded. */
+[data-chat-input-container="true"]:not([data-chat-input-mode="shell"]):focus-within {
+  border-color: color-mix(in srgb, var(--interactive-border-focus) 55%, var(--border));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--interactive-border-focus) 50%, transparent),
+    0 0 24px color-mix(in srgb, var(--interactive-border-focus) 16%, transparent);
+}
+
+/* Buttons: brighten the focus ring with a halo. */
+[data-slot="button"]:focus-visible {
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--ring) 45%, transparent),
+    0 0 16px color-mix(in srgb, var(--ring) 50%, transparent);
+}
+
+/* --- Glass panels -------------------------------------------- */
+/* Popovers, menus, selects, dialogs, tooltips get a frosted
+   panel treatment. Opaque backgrounds remain untouched when
+   blur is unsupported or the user asked for less transparency. */
+@media (prefers-reduced-transparency: no-preference) {
+  @supports ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+    [data-slot="dropdown-menu-content"],
+    [data-slot="dropdown-menu-sub-content"],
+    [data-slot="select-content"] {
+      background-color: color-mix(in srgb, var(--popover) 88%, transparent);
+      -webkit-backdrop-filter: blur(14px) saturate(1.5);
+      backdrop-filter: blur(14px) saturate(1.5);
+      border-color: color-mix(in srgb, var(--interactive-border-focus) 22%, var(--border));
+    }
+
+    [data-slot="dialog-content"] {
+      background-color: color-mix(in srgb, var(--popover) 90%, transparent);
+      -webkit-backdrop-filter: blur(18px) saturate(1.4);
+      backdrop-filter: blur(18px) saturate(1.4);
+    }
+
+    .dark [data-slot="dialog-content"] {
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--interactive-border-focus) 18%, transparent),
+        0 24px 64px rgb(0 0 0 / 0.45);
+    }
+
+    [data-slot="tooltip-content"] {
+      background-color: color-mix(in srgb, var(--popover) 85%, transparent);
+      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(8px);
+    }
+  }
+}
+
+/* --- Mono HUD accents ----------------------------------------- */
+/* Monospace + slight tracking for shortcut keys, tooltips and
+   agent badges: status/label chrome reads as instrument text. */
+kbd,
+[data-slot="tooltip-content"],
+.agent-badge {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.02em;
+}
+
+/* --- Selection ------------------------------------------------ */
+::selection {
+  background: color-mix(in srgb, var(--primary-base, var(--ring)) 28%, transparent);
+}
+
+/* --- Micro-interactions ---------------------------------------- */
+/* Transform/opacity only, and only when motion is welcome. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-slot="button"] {
+    transition:
+      transform 120ms ease,
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease,
+      box-shadow 150ms ease,
+      opacity 150ms ease;
+  }
+
+  [data-slot="button"]:not(:disabled):active {
+    transform: scale(0.96);
+  }
+
+  [data-chat-input-container="true"] {
+    transition:
+      border-color 180ms ease,
+      box-shadow 180ms ease;
+  }
+
+  [data-slot="input"],
+  [data-slot="select-trigger"] {
+    transition:
+      box-shadow 180ms ease,
+      border-color 180ms ease,
+      background-color 180ms ease;
+  }
+}

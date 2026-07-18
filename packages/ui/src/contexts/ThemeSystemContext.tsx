@@ -22,6 +22,7 @@ import { ThemeSystemContext, type ThemeContextValue } from './theme-system-conte
 import type { VSCodeThemePayload } from '@/lib/theme/vscode/adapter';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getInitialSystemPreference, readEmbeddedThemeSearchParams } from './theme-embedded-bootstrap';
+import { migrateLegacyDefaultThemeIds } from './theme-default-migration';
 import { isValidTheme } from './theme-validation';
 import { getSyncedThemeFromPayload, getSyncedThemeVariant } from './theme-sync-payload';
 
@@ -91,11 +92,23 @@ const buildInitialPreferences = (defaultThemeId?: string): ThemePreferences => {
     const embeddedLightId = embeddedParams?.get('lightThemeId');
     const embeddedDarkId = embeddedParams?.get('darkThemeId');
     const storedMode = localStorage.getItem('themeMode');
-    const storedLightId = localStorage.getItem('lightThemeId');
-    const storedDarkId = localStorage.getItem('darkThemeId');
     const legacyUseSystem = localStorage.getItem('useSystemTheme');
-    const legacyThemeId = localStorage.getItem('selectedThemeId');
     const legacyVariant = localStorage.getItem('selectedThemeVariant');
+
+    // One-time migration: stored old defaults (flexoki-*) would otherwise
+    // override the neon-grid default theme forever. Embedded search params
+    // keep priority over the migration and suppress its storage write-back.
+    const migrated = migrateLegacyDefaultThemeIds(
+      {
+        lightThemeId: localStorage.getItem('lightThemeId'),
+        darkThemeId: localStorage.getItem('darkThemeId'),
+        selectedThemeId: localStorage.getItem('selectedThemeId'),
+      },
+      { allowPersist: embeddedParams === null },
+    );
+    const storedLightId = migrated.lightThemeId;
+    const storedDarkId = migrated.darkThemeId;
+    const legacyThemeId = migrated.selectedThemeId;
 
     if (embeddedMode === 'light' || embeddedMode === 'dark' || embeddedMode === 'system') {
       themeMode = embeddedMode;

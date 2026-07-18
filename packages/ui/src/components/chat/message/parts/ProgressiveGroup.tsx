@@ -675,11 +675,12 @@ const StaticToolRowInner: React.FC<{
 
     return (
         <div
+            data-tool-status={hasRunningActivity ? 'running' : 'success'}
             className={cn(
                 'flex w-full items-center gap-x-1.5 pr-2 pl-px py-1.5 rounded-xl min-w-0'
             )}
         >
-            <div className="inline-flex h-5 items-center flex-shrink-0" style={{ color: 'var(--tools-icon)' }}>
+            <div className="inline-flex h-5 w-3.5 items-center justify-center flex-shrink-0" style={{ color: 'var(--tools-icon)' }}>
                 {icon}
             </div>
             <MinDurationShineText

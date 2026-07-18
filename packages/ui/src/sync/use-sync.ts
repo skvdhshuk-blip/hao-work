@@ -20,6 +20,7 @@ import {
   clearSessionPrefetch,
 } from "./session-prefetch-cache"
 import { getSessionMaterializationStatus, materializeSessionSnapshots } from "./materialization"
+import { fetchAutoDecisionRecords, mergeAutoDecisionRecords } from "./auto-decisions"
 
 const SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 const INITIAL_MESSAGE_PAGE_SIZE = 50
@@ -195,6 +196,7 @@ export function useSync() {
         todo: { ...current.todo },
         permission: { ...current.permission },
         question: { ...current.question },
+        autoDecision: { ...current.autoDecision },
       }
       dropSessionCaches(draft, sessionIDs)
       dropCachedSessionMessageRecordsSnapshots(dirStore, sessionIDs)
@@ -503,6 +505,22 @@ export function useSync() {
     [store, fetchMessages, getMetaFor, setMetaFor, getOptimistic, clearOptimistic, directory],
   )
 
+  // Backfill persisted auto-decision history (HaoCode smart mode) for a
+  // session. Fetch failure returns null and leaves state untouched — failure
+  // is never written as an empty list. Live SSE records already in the store
+  // are preserved by the requestID-keyed merge.
+  const loadAutoDecisions = useCallback(
+    async (sessionID: string, options?: { isStale?: () => boolean }) => {
+      const records = await fetchAutoDecisionRecords(directory, sessionID)
+      if (!records || options?.isStale?.()) return
+      const current = store.getState()
+      const merged = mergeAutoDecisionRecords(current.autoDecision[sessionID], records)
+      if (!merged || options?.isStale?.()) return
+      store.setState({ autoDecision: { ...store.getState().autoDecision, [sessionID]: merged } })
+    },
+    [store, directory],
+  )
+
   // Sync a session (load if not cached)
   const syncSession = useCallback(
     async (sessionID: string, force?: boolean) => {
@@ -585,6 +603,7 @@ export function useSync() {
               })()
             : Promise.resolve(),
           shouldLoadMessages ? loadMessages(sessionID, { isStale }) : Promise.resolve(),
+          shouldLoadMessages ? loadAutoDecisions(sessionID, { isStale }) : Promise.resolve(),
         ])
 
         // Progressive mount (desktop/VS Code): after the initial page
@@ -612,7 +631,7 @@ export function useSync() {
       })
       return promise
     },
-    [store, sdk, keyFor, touch, getMetaFor, setMetaFor, loadMessages, directory],
+    [store, sdk, keyFor, touch, getMetaFor, setMetaFor, loadMessages, loadAutoDecisions, directory],
   )
 
   // Load more (pagination)

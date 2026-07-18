@@ -8,9 +8,11 @@ import { copyTextToClipboard } from '@/lib/clipboard';
 import { restartDesktopApp } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { isEngineReady, resolveEngineMode, type OnboardingEngineMode } from './engineMode';
 
 const INSTALL_COMMAND = 'curl -fsSL https://opencode.ai/install | bash';
 const DOCS_URL = 'https://opencode.ai/docs';
+const POLL_INTERVAL_MS = 2500;
 
 type OnboardingPlatform = 'macos' | 'linux' | 'windows' | 'unknown';
 
@@ -63,6 +65,7 @@ export function LocalSetupScreen({
   const [checkError, setCheckError] = React.useState<string | null>(null);
   const [opencodeBinary, setOpencodeBinary] = React.useState('');
   const [platform, setPlatform] = React.useState<OnboardingPlatform>('unknown');
+  const [engineMode, setEngineMode] = React.useState<OnboardingEngineMode>('unknown');
 
   React.useEffect(() => {
     const timer = setTimeout(() => setShowHint(true), HINT_DELAY_MS);
@@ -131,11 +134,46 @@ export function LocalSetupScreen({
       const response = await runtimeFetch('/health');
       if (!response.ok) return false;
       const data = await response.json();
-      return data.openCodeRunning === true || data.isOpenCodeReady === true;
+      setEngineMode(resolveEngineMode(data));
+      return isEngineReady(data);
     } catch {
       return false;
     }
   }, []);
+
+  // While the engine mode is not confirmed external (i.e. the bundled hao-code
+  // engine is starting up), poll /health and continue automatically as soon as
+  // the engine reports ready — this screen becomes a pure waiting screen.
+  React.useEffect(() => {
+    if (engineMode === 'external') return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const available = await checkCliAvailability();
+        if (cancelled) return;
+        if (available) {
+          onCliAvailable?.();
+          return;
+        }
+      } catch {
+        // ignore
+      }
+      if (!cancelled) {
+        timer = setTimeout(tick, POLL_INTERVAL_MS);
+      }
+    };
+
+    timer = setTimeout(tick, POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [engineMode, checkCliAvailability, onCliAvailable]);
 
   const handleBrowse = React.useCallback(async () => {
     if (typeof window === 'undefined') {
@@ -227,14 +265,56 @@ export function LocalSetupScreen({
 
         <div className="space-y-4">
           <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-            {t('onboarding.localSetup.title')}
+            {engineMode === 'external'
+              ? t('onboarding.localSetup.title')
+              : t('onboarding.localSetup.bundledEngine.title')}
           </h1>
           <p className="text-muted-foreground">
-            {t('onboarding.localSetup.description')}
+            {engineMode === 'external'
+              ? t('onboarding.localSetup.description')
+              : t('onboarding.localSetup.bundledEngine.description')}
           </p>
         </div>
 
-        {platform === 'windows' && (
+        {engineMode !== 'external' && (
+          <div
+            className="mx-auto max-w-md rounded-lg border px-4 py-3 flex items-center gap-3 text-left"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--primary-base) 20%, transparent)',
+              backgroundColor: 'color-mix(in srgb, var(--primary-base) 6%, transparent)',
+            }}
+            role="status"
+            aria-live="polite"
+          >
+            <span className="relative inline-flex h-2.5 w-2.5 shrink-0" aria-hidden>
+              <span
+                className="absolute inset-0 rounded-full"
+                style={{
+                  backgroundColor: 'var(--primary-base)',
+                  animation: 'pulse-opacity 1.6s ease-in-out infinite',
+                }}
+              />
+              <span
+                className="absolute inset-[-4px] rounded-full"
+                style={{
+                  backgroundColor: 'var(--primary-base)',
+                  animation: 'pulse-opacity-dim 1.6s ease-in-out infinite',
+                  opacity: 0,
+                }}
+              />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-foreground leading-tight">
+                {t('onboarding.localSetup.bundledEngine.status.waiting')}
+              </div>
+              <div className="text-xs text-muted-foreground leading-tight mt-0.5">
+                {t('onboarding.localSetup.bundledEngine.status.autoContinue')}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {engineMode === 'external' && platform === 'windows' && (
           <div className="mx-auto max-w-2xl rounded-lg border border-border bg-background/50 p-4 text-left">
             <div className="text-sm text-foreground">{t('onboarding.localSetup.windows.title')}</div>
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
@@ -244,28 +324,32 @@ export function LocalSetupScreen({
           </div>
         )}
 
-        <div className="flex justify-center">
-          <div className="bg-background/60 backdrop-blur-sm border border-border rounded-lg px-5 py-3 font-mono text-sm w-fit">
-            {copied ? (
-              <div className="flex items-center justify-center gap-2" style={{ color: 'var(--status-success)' }}>
-                <Icon name="check" className="h-4 w-4" />
-                {t('onboarding.common.status.copiedToClipboard')}
+        {engineMode === 'external' && (
+          <>
+            <div className="flex justify-center">
+              <div className="bg-background/60 backdrop-blur-sm border border-border rounded-lg px-5 py-3 font-mono text-sm w-fit">
+                {copied ? (
+                  <div className="flex items-center justify-center gap-2" style={{ color: 'var(--status-success)' }}>
+                    <Icon name="check" className="h-4 w-4" />
+                    {t('onboarding.common.status.copiedToClipboard')}
+                  </div>
+                ) : (
+                  <BashCommand onCopy={handleCopy} copyTitle={t('onboarding.common.copyToClipboard')} />
+                )}
               </div>
-            ) : (
-              <BashCommand onCopy={handleCopy} copyTitle={t('onboarding.common.copyToClipboard')} />
-            )}
-          </div>
-        </div>
+            </div>
 
-        <a
-          href={docsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1 justify-center"
-        >
-          {platform === 'windows' ? t('onboarding.localSetup.docs.windows') : t('onboarding.localSetup.docs.default')}
-          <Icon name="external-link" className="h-3 w-3" />
-        </a>
+            <a
+              href={docsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1 justify-center"
+            >
+              {platform === 'windows' ? t('onboarding.localSetup.docs.windows') : t('onboarding.localSetup.docs.default')}
+              <Icon name="external-link" className="h-3 w-3" />
+            </a>
+          </>
+        )}
 
         {checkError && (
           <div className="mx-auto max-w-md rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
@@ -273,52 +357,56 @@ export function LocalSetupScreen({
           </div>
         )}
 
-        <div className="space-y-3">
-          <Button
-            type="button"
-            onClick={handleCheckAndContinue}
-            disabled={isChecking}
-            className="w-full max-w-xs"
-            size="lg"
-          >
-            {isChecking ? t('onboarding.localSetup.actions.checking') : t('onboarding.localSetup.actions.checkAndContinue')}
-          </Button>
-
-          <p className="text-xs text-muted-foreground">
-            {t('onboarding.localSetup.helper.checkAndContinue')}
-          </p>
-        </div>
-
-        <div className="mx-auto w-full max-w-xl pt-4">
-          <div className="space-y-2">
-            <div className="text-sm text-muted-foreground">{t('onboarding.localSetup.field.alreadyInstalled')}</div>
-            <div className="flex gap-2">
-              <Input
-                value={opencodeBinary}
-                onChange={(e) => setOpencodeBinary(e.target.value)}
-                placeholder={binaryPlaceholder}
-                disabled={isRetrying}
-                className="flex-1 font-mono text-xs"
-              />
+        {engineMode === 'external' && (
+          <>
+            <div className="space-y-3">
               <Button
                 type="button"
-                variant="secondary"
-                onClick={handleBrowse}
-                disabled={isRetrying || !isDesktopApp}
+                onClick={handleCheckAndContinue}
+                disabled={isChecking}
+                className="w-full max-w-xs"
+                size="lg"
               >
-                {t('onboarding.localSetup.actions.browse')}
+                {isChecking ? t('onboarding.localSetup.actions.checking') : t('onboarding.localSetup.actions.checkAndContinue')}
               </Button>
-              <Button
-                type="button"
-                onClick={handleApplyPath}
-                disabled={isRetrying}
-              >
-                {t('onboarding.localSetup.actions.apply')}
-              </Button>
+
+              <p className="text-xs text-muted-foreground">
+                {t('onboarding.localSetup.helper.checkAndContinue')}
+              </p>
             </div>
-            <div className="text-xs text-muted-foreground/70">{t('onboarding.localSetup.helper.saveAndReload')}</div>
-          </div>
-        </div>
+
+            <div className="mx-auto w-full max-w-xl pt-4">
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">{t('onboarding.localSetup.field.alreadyInstalled')}</div>
+                <div className="flex gap-2">
+                  <Input
+                    value={opencodeBinary}
+                    onChange={(e) => setOpencodeBinary(e.target.value)}
+                    placeholder={binaryPlaceholder}
+                    disabled={isRetrying}
+                    className="flex-1 font-mono text-xs"
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={handleBrowse}
+                    disabled={isRetrying || !isDesktopApp}
+                  >
+                    {t('onboarding.localSetup.actions.browse')}
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleApplyPath}
+                    disabled={isRetrying}
+                  >
+                    {t('onboarding.localSetup.actions.apply')}
+                  </Button>
+                </div>
+                <div className="text-xs text-muted-foreground/70">{t('onboarding.localSetup.helper.saveAndReload')}</div>
+              </div>
+            </div>
+          </>
+        )}
 
         {isFromRecovery && onSwitchToRemote && (
           <div className="text-center pt-4">
@@ -335,7 +423,7 @@ export function LocalSetupScreen({
         )}
       </div>
 
-      {showHint && (
+      {showHint && engineMode === 'external' && (
         <div className="absolute bottom-8 left-0 right-0 text-center space-y-1">
           {platform === 'windows' ? (
             <>

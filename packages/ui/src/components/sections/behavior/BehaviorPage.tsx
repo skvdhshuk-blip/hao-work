@@ -22,6 +22,7 @@ import {
 } from '@/lib/responseStyle';
 import type { DesktopSettings } from '@/lib/desktop';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { ToolApprovalSection } from './ToolApprovalSection';
 
 const AGENTS_MD_PATH = '~/.config/opencode/AGENTS.md';
 
@@ -353,6 +354,8 @@ export const BehaviorPage: React.FC = () => {
             />
           </section>
         </div>
+
+        <ToolApprovalSection />
 
       </div>
     </ScrollableOverlay>

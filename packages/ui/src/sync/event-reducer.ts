@@ -10,7 +10,9 @@ import type {
   Todo,
 } from "@opencode-ai/sdk/v2/client"
 import { Binary } from "./binary"
-import type { FileDiff, GlobalState, State } from "./types"
+import type { AutoDecisionRecord, FileDiff, GlobalState, State } from "./types"
+import { PERMISSION_AUTO_RESOLVED_EVENT } from "./types"
+import { AUTO_DECISION_LIMIT } from "./auto-decisions"
 import { dropSessionCaches } from "./session-cache"
 import { stripSessionDiffSnapshots } from "./sanitize"
 import { syncDebug } from "./debug"
@@ -217,6 +219,65 @@ export function applyDirectoryEvent(
     onSetSessionTodo?: (sessionID: string, todos: Todo[] | undefined) => void
   },
 ): DirectoryEventResult {
+  // Adapter-owned event (not in the SDK Event union): a HaoCode smart-mode
+  // worker auto-resolved one permission in-process. Audit trail only — never
+  // creates a pending permission/question. Unknown enum fields fail closed
+  // (unknown decision displays as reject, unknown risk as high), mirroring
+  // the server's normalization.
+  if (event.type === PERMISSION_AUTO_RESOLVED_EVENT) {
+    const props = event.properties as {
+      sessionID?: unknown
+      requestID?: unknown
+      permission?: unknown
+      metadata?: {
+        input?: Record<string, unknown>
+        description?: unknown
+        _fe_autoDecision?: unknown
+        _fe_source?: unknown
+        _fe_riskLevel?: unknown
+      }
+    }
+    const sessionID = typeof props.sessionID === "string" ? props.sessionID : ""
+    const requestID = typeof props.requestID === "string" ? props.requestID : ""
+    if (!sessionID || !requestID) return false
+    const metadata = props.metadata ?? {}
+    const record: AutoDecisionRecord = {
+      id: requestID,
+      sessionID,
+      requestID,
+      permission: typeof props.permission === "string" && props.permission ? props.permission : "tool",
+      decision: metadata._fe_autoDecision === "approve" ? "approve" : "reject",
+      source: metadata._fe_source === "review" || metadata._fe_source === "sandbox" ? metadata._fe_source : "rule",
+      riskLevel: metadata._fe_riskLevel === "low" || metadata._fe_riskLevel === "medium"
+        || metadata._fe_riskLevel === "high" || metadata._fe_riskLevel === "critical"
+        ? metadata._fe_riskLevel
+        : "high",
+      reason: typeof metadata.description === "string" ? metadata.description : "",
+      ...(metadata.input && typeof metadata.input === "object" ? { input: metadata.input } : {}),
+      time: Date.now(),
+    }
+    const existing = draft.autoDecision[sessionID] ?? []
+    const index = existing.findIndex((item) => item.requestID === requestID)
+    if (index >= 0) {
+      const current = existing[index]
+      if (
+        current.decision === record.decision
+        && current.source === record.source
+        && current.riskLevel === record.riskLevel
+        && current.permission === record.permission
+        && current.reason === record.reason
+      ) {
+        return false
+      }
+      const next = [...existing]
+      next[index] = { ...record, time: current.time ?? record.time }
+      draft.autoDecision[sessionID] = next
+      return true
+    }
+    draft.autoDecision[sessionID] = [...existing, record].slice(-AUTO_DECISION_LIMIT)
+    return true
+  }
+
   switch (event.type) {
     case "server.instance.disposed": {
       callbacks?.onRefresh?.("")

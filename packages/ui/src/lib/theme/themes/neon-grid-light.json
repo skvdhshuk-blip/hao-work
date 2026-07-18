@@ -1,0 +1,180 @@
+{
+  "metadata": {
+    "id": "neon-grid-light",
+    "name": "Neon Grid",
+    "description": "Cool daylight UI with electric blue accents - light variant",
+    "version": "1.0.0",
+    "variant": "light",
+    "tags": [
+      "light",
+      "neon",
+      "tech",
+      "cyan"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#0369A1",
+      "hover": "#075985",
+      "active": "#0C4A6E",
+      "foreground": "#FFFFFF",
+      "muted": "#0369A180",
+      "emphasis": "#0EA5E9"
+    },
+    "surface": {
+      "background": "#F3F6FA",
+      "foreground": "#152238",
+      "muted": "#E9EEF5",
+      "mutedForeground": "#5B6B82",
+      "elevated": "#FFFFFF",
+      "elevatedForeground": "#152238",
+      "overlay": "#15223833",
+      "subtle": "#E2E9F2"
+    },
+    "interactive": {
+      "border": "#C9D6E4",
+      "borderHover": "#A8C4DC",
+      "borderFocus": "#0369A1",
+      "selection": "#0284C71F",
+      "selectionForeground": "#0B3A5C",
+      "focus": "#0369A1",
+      "focusRing": "#0369A14D",
+      "cursor": "#152238",
+      "hover": "#0284C712",
+      "active": "#0284C71F"
+    },
+    "status": {
+      "error": "#B91C1C",
+      "errorForeground": "#FFFFFF",
+      "errorBackground": "#DC262620",
+      "errorBorder": "#DC262650",
+      "warning": "#92400E",
+      "warningForeground": "#FFFFFF",
+      "warningBackground": "#D9770620",
+      "warningBorder": "#D9770650",
+      "success": "#047857",
+      "successForeground": "#FFFFFF",
+      "successBackground": "#10B98120",
+      "successBorder": "#10B98150",
+      "info": "#0369A1",
+      "infoForeground": "#FFFFFF",
+      "infoBackground": "#0EA5E920",
+      "infoBorder": "#0EA5E950"
+    },
+    "pr": {
+      "open": "#047857",
+      "draft": "#5B6B82",
+      "blocked": "#92400E",
+      "merged": "#7C3AED",
+      "closed": "#B91C1C"
+    },
+    "syntax": {
+      "base": {
+        "background": "#E8EEF6",
+        "foreground": "#152238",
+        "comment": "#6B7A90",
+        "keyword": "#0277BD",
+        "string": "#0F766E",
+        "number": "#7C3AED",
+        "function": "#0369A1",
+        "variable": "#152238",
+        "type": "#0E7490",
+        "operator": "#BE185D"
+      },
+      "tokens": {
+        "commentDoc": "#93A1B5",
+        "stringEscape": "#152238",
+        "keywordImport": "#BE185D",
+        "storageModifier": "#0277BD",
+        "functionCall": "#0369A1",
+        "method": "#0F766E",
+        "variableProperty": "#0277BD",
+        "variableOther": "#0F766E",
+        "variableGlobal": "#BE185D",
+        "variableLocal": "#C9D6E4",
+        "parameter": "#152238",
+        "constant": "#7C3AED",
+        "class": "#0E7490",
+        "className": "#0E7490",
+        "interface": "#0E7490",
+        "struct": "#0E7490",
+        "enum": "#0E7490",
+        "typeParameter": "#0E7490",
+        "namespace": "#0E7490",
+        "module": "#BE185D",
+        "tag": "#0277BD",
+        "jsxTag": "#BE185D",
+        "tagAttribute": "#0E7490",
+        "tagAttributeValue": "#0F766E",
+        "boolean": "#7C3AED",
+        "decorator": "#7C3AED",
+        "label": "#BE185D",
+        "punctuation": "#6B7A90",
+        "macro": "#0277BD",
+        "preprocessor": "#BE185D",
+        "regex": "#0F766E",
+        "url": "#0369A1",
+        "key": "#0277BD",
+        "exception": "#B91C1C"
+      },
+      "highlights": {
+        "diffAdded": "#047857",
+        "diffAddedBackground": "#10B98120",
+        "diffRemoved": "#B91C1C",
+        "diffRemovedBackground": "#DC262620",
+        "diffModified": "#0369A1",
+        "diffModifiedBackground": "#0EA5E920",
+        "lineNumber": "#C9D6E4",
+        "lineNumberActive": "#152238"
+      }
+    },
+    "markdown": {
+      "heading1": "#0B1B2E",
+      "heading2": "#152238",
+      "heading3": "#152238",
+      "heading4": "#152238",
+      "link": "#0277BD",
+      "linkHover": "#0369A1",
+      "inlineCode": "#0F766E",
+      "inlineCodeBackground": "#E8EEF6",
+      "blockquote": "#5B6B82",
+      "blockquoteBorder": "#C9D6E4",
+      "listMarker": "#0284C799"
+    },
+    "chat": {
+      "userMessage": "#152238",
+      "userMessageBackground": "#DCE9F5",
+      "assistantMessage": "#152238",
+      "assistantMessageBackground": "#F3F6FA",
+      "timestamp": "#5B6B82",
+      "divider": "#C9D6E4"
+    },
+    "tools": {
+      "background": "#E9EEF550",
+      "border": "#B9CBDD80",
+      "headerHover": "#DDE6F0",
+      "icon": "#5B6B82",
+      "title": "#152238",
+      "description": "#5B6B82",
+      "edit": {
+        "added": "#047857",
+        "addedBackground": "#10B98125",
+        "removed": "#B91C1C",
+        "removedBackground": "#DC262625",
+        "lineNumber": "#C9D6E4"
+      }
+    }
+  },
+  "config": {
+    "fonts": {
+      "sans": "\"SF Pro Text\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui, sans-serif",
+      "mono": "ui-monospace, \"SFMono-Regular\", \"Menlo\", \"Cascadia Mono\", \"Segoe UI Mono\", monospace",
+      "heading": "\"SF Pro Text\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui, sans-serif"
+    },
+    "transitions": {
+      "fast": "150ms ease",
+      "normal": "250ms ease",
+      "slow": "350ms ease"
+    }
+  }
+}

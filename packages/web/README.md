@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/openchamber/openchamber/main/script
 
 Or install manually: `bun add -g @openchamber/web` (or npm, pnpm, yarn).
 
-> **Prerequisites:** [OpenCode CLI](https://opencode.ai) installed, Node.js 22+.
+> **Prerequisites:** Node.js 22+. The [OpenCode CLI](https://opencode.ai) is optional — the server bundles the hao-code engine; install the CLI and configure `settings.opencodeBinary` only if you want a managed opencode runtime.
 
 ## Usage
 

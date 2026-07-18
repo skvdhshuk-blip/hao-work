@@ -159,10 +159,19 @@ async function checkOpenCodeCLI(onNotice) {
     return resolvedFromPath;
   }
 
-  throw new Error(
-    `Unable to locate the opencode CLI on PATH (${process.env.PATH || '<empty>'}). ` +
-    'Ensure the CLI is installed and reachable, or set OPENCODE_BINARY to its full path.'
-  );
+  // The opencode CLI is optional: the server bundles the hao-code engine, so
+  // startup must continue without it. Drop any known-invalid override so it is
+  // not propagated to the server child process as if it were valid config.
+  delete process.env.OPENCODE_BINARY;
+  const missingMessage =
+    'opencode CLI not found; continuing with the built-in hao-code engine, which does not require the opencode CLI. ' +
+    'To run a managed opencode runtime instead, install the opencode CLI and configure settings.opencodeBinary (or set OPENCODE_BINARY).';
+  if (typeof onNotice === 'function') {
+    onNotice({ level: 'warning', code: 'OPENCODE_CLI_MISSING', message: missingMessage });
+  } else {
+    console.warn(`Warning: ${missingMessage}`);
+  }
+  return null;
 }
 
 const commands = {
@@ -373,6 +382,7 @@ if (isCliExecution) {
 
 export {
   commands,
+  checkOpenCodeCLI,
   parseArgs,
   assertAuthenticatedNetworkExposure,
   resolveServeHost,

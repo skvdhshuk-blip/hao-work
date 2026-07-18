@@ -583,6 +583,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   const statusMarkerContent = isStreaming
     ? (
         <span
+          data-status-dot="busy"
           className="h-1.5 w-1.5 rounded-full bg-primary animate-busy-pulse"
           aria-label={t('sessions.sidebar.session.status.active')}
           title={t('sessions.sidebar.session.status.active')}
@@ -590,6 +591,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
       )
     : (
         <span
+          data-status-dot="unread"
           className="h-1.5 w-1.5 rounded-full bg-[var(--status-info)]"
           aria-label={t('sessions.sidebar.session.status.unread')}
           title={t('sessions.sidebar.session.status.unread')}
@@ -998,6 +1000,8 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                 data-session-row={session.id}
                 data-session-scope={sessionDirectory ?? ''}
                 data-session-archived={archivedBucket ? '1' : '0'}
+                data-session-active={isActive ? 'true' : undefined}
+                data-session-selected={isRowSelected ? 'true' : undefined}
                 onClick={handleRowBackgroundClick}
                 className={cn(
                   'group relative my-0.5 flex cursor-pointer items-center rounded-md py-1 pr-1.5',

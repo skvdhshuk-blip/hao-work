@@ -8,7 +8,7 @@ import { WorkerHighlightedCode } from '@/components/code/WorkerHighlightedCode';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { Icon } from "@/components/icon/Icon";
 import { DiffPreview, WritePreview } from './DiffPreview';
-import { useI18n } from '@/lib/i18n';
+import { useI18n, type I18nKey } from '@/lib/i18n';
 
 const PERMISSION_BASH_CUSTOM_STYLE: React.CSSProperties = {
   margin: 0,
@@ -87,6 +87,17 @@ const getToolDisplayName = (toolName: string): string => {
   return toolName;
 };
 
+// Smart-HITL escalation reasons emitted by the HaoCode worker as
+// `<code>: <human detail>`; matched by prefix to a localized category label.
+const ESCALATION_REASON_KEYS: ReadonlyArray<readonly [string, I18nKey]> = [
+  ['rule:red_line', 'chat.permissionEscalation.reason.rule_red_line'],
+  ['rule:ask', 'chat.permissionEscalation.reason.rule_ask'],
+  ['review:unavailable', 'chat.permissionEscalation.reason.review_unavailable'],
+  ['review:unsure', 'chat.permissionEscalation.reason.review_unsure'],
+  ['batch:circuit_breaker', 'chat.permissionEscalation.reason.batch_circuit_breaker'],
+  ['batch:escalated', 'chat.permissionEscalation.reason.batch_escalated'],
+];
+
 export const PermissionCard: React.FC<PermissionCardProps> = ({
   permission,
   onResponse
@@ -137,6 +148,14 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
     return Boolean(val);
   };
   const displayToolName = getToolDisplayName(toolName);
+
+  // Smart-mode escalation context merged into metadata by the compat server.
+  const escalationReason = getMeta('_fe_escalationReason');
+  const escalationMatch = ESCALATION_REASON_KEYS.find(([prefix]) => escalationReason.startsWith(prefix));
+  const escalationReasonKey: I18nKey = escalationMatch?.[1] ?? 'chat.permissionEscalation.reason.unknown';
+  const escalationDetail = escalationMatch
+    ? escalationReason.slice(escalationMatch[0].length).replace(/^:\s*/, '')
+    : '';
 
   const renderToolContent = () => {
 
@@ -343,6 +362,18 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
             )}
 
             {renderToolContent()}
+
+            {escalationReason ? (
+              <div className="typography-micro text-muted-foreground mt-2 flex items-start gap-1.5">
+                <Icon name="shield" className="h-3 w-3 mt-px flex-shrink-0" style={{ color: 'var(--status-warning)' }} />
+                <span className="break-words">
+                  <span className="font-medium">{t('chat.permissionEscalation.label')}</span>
+                  {' — '}
+                  {t(escalationReasonKey)}
+                  {escalationDetail ? ` · ${escalationDetail}` : null}
+                </span>
+              </div>
+            ) : null}
           </div>
 
           {}

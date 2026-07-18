@@ -11,6 +11,7 @@ const EMPTY_STATE = Object.freeze({
   questions: [],
   todos: {},
   interrupts: {},
+  autoDecisions: {},
   providers: {},
   config: {},
 });
@@ -95,6 +96,7 @@ export const createHaoCodeStore = ({ rootDir }) => {
     getPermissions: (directory) => read((current) => current.permissions.filter((request) => !directory || request.directory === directory)),
     getQuestions: (directory) => read((current) => current.questions.filter((request) => !directory || request.directory === directory)),
     getTodos: (sessionId) => read((current) => current.todos[sessionId] ?? []),
+    getAutoDecisions: (sessionId) => read((current) => current.autoDecisions[sessionId] ?? []),
     getProviderSettings: (providerId) => read((current) => ({ ...(current.providers[providerId] ?? {}) })),
     getConfig: () => read((current) => ({ ...current.config })),
   };

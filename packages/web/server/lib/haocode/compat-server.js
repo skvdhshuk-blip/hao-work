@@ -102,6 +102,18 @@ const resolveUnderDirectory = (directory, candidate = '.') => {
   return { root, absolute, relative };
 };
 
+const HITL_MODES = new Set(['ask', 'smart', 'auto']);
+
+const normalizeHitlMode = (value) => (HITL_MODES.has(value) ? value : 'smart');
+
+const normalizeHitlReviewModel = (value) => (
+  typeof value === 'string' && value.trim() ? value : null
+);
+
+const AUTO_DECISION_SOURCES = new Set(['rule', 'review', 'sandbox']);
+const AUTO_DECISION_RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
+const ESCALATION_SOURCES = new Set(['rule', 'review', 'batch', 'sandbox']);
+
 const sessionTitleFromPrompt = (prompt) => {
   const singleLine = prompt.replace(/\s+/g, ' ').trim();
   return singleLine.slice(0, 80) || 'New session';
@@ -212,6 +224,162 @@ const gitDiff = async (directory) => {
   }));
 };
 
+// First tokens too powerful to generalize: commands led by them are persisted
+// as exact rules instead of bare prefix rules.
+const HITL_ALLOWLIST_EXACT_ONLY_TOOLS = new Set([
+  'sudo', 'su', 'doas',
+  'python', 'python3', 'node', 'nodejs',
+  'bash', 'sh', 'zsh', 'fish',
+  'php', 'ruby', 'perl', 'lua',
+  'env', 'xargs', 'eval', 'exec', 'source', '.',
+  'curl', 'wget', 'ssh', 'scp', 'rsync',
+  'nc', 'ncat', 'osascript', 'pwsh', 'powershell',
+]);
+
+// Tools whose second token names the real operation, so prefix rules keep two
+// tokens (three when the second token is a run/exec/dlx wrapper).
+const HITL_ALLOWLIST_SUBCOMMAND_TOOLS = new Set([
+  'git', 'npm', 'yarn', 'pnpm', 'bun', 'composer', 'cargo', 'pip', 'pip3',
+  'docker', 'kubectl', 'helm', 'go', 'gem', 'brew',
+]);
+const HITL_ALLOWLIST_WRAPPER_SUBCOMMANDS = new Set(['run', 'exec', 'dlx']);
+
+// Canonical dedup key for an allowlist rule; null for malformed entries.
+// Legacy v1 entries carry no type and behave as exact rules.
+const hitlAllowlistRuleKey = (rule) => {
+  if (!rule || typeof rule !== 'object') return null;
+  if (rule.type === 'prefix') {
+    if (!Array.isArray(rule.tokens) || !rule.tokens.length) return null;
+    if (rule.tokens.some((token) => typeof token !== 'string' || !token)) return null;
+    return `prefix:${JSON.stringify(rule.tokens)}`;
+  }
+  return typeof rule.command === 'string' && rule.command.trim() ? `exact:${rule.command}` : null;
+};
+
+// Split a shell command on &&, ||, ;, and | without splitting inside quotes.
+// Newlines are not separators here: heredoc commands never reach this splitter
+// (they are stored exact), and the SDK applies its own newline splitting.
+const splitShellSegments = (command) => {
+  const segments = [];
+  let current = '';
+  let quote = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote) {
+      current += char;
+      if (char === quote && !(quote === '"' && command[index - 1] === '\\')) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') { quote = char; current += char; continue; }
+    if (char === '\\' && index + 1 < command.length) { current += char + command[index + 1]; index += 1; continue; }
+    if (char === ';' || char === '|') {
+      segments.push(current);
+      current = '';
+      if (char === '|' && command[index + 1] === '|') index += 1;
+      continue;
+    }
+    if (char === '&' && command[index + 1] === '&') {
+      segments.push(current);
+      current = '';
+      index += 1;
+      continue;
+    }
+    current += char;
+  }
+  segments.push(current);
+  return segments;
+};
+
+// Remove leading `VAR=value` environment assignments; the SDK strips them the
+// same way before matching, so generated rules must describe what remains.
+const stripLeadingEnvAssignments = (segment) => {
+  let rest = segment;
+  for (;;) {
+    const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/.exec(rest);
+    if (!assignment) return rest.trim();
+    let index = assignment[0].length;
+    while (index < rest.length && !/\s/.test(rest[index])) {
+      const char = rest[index];
+      if (char === "'" || char === '"') {
+        const close = rest.indexOf(char, index + 1);
+        index = close === -1 ? rest.length : close + 1;
+      } else {
+        index += char === '\\' ? 2 : 1;
+      }
+    }
+    rest = rest.slice(index).trimStart();
+  }
+};
+
+// Whitespace-split a segment and unquote both ends of each token, matching the
+// SDK's tokenization for prefix-rule comparison.
+const shellSegmentTokens = (segment) => segment
+  .split(/\s+/)
+  .filter(Boolean)
+  .map((token) => token.replace(/^['"]+|['"]+$/g, ''));
+
+// Detect file redirections in a segment: `>`, `>>`, `2>`, or a `tee` token in
+// the pipeline. The `2>&1` stderr merge and discards to /dev/null are not file
+// redirections; quoted `>` characters are ignored.
+const segmentHasFileRedirection = (segment, tokens) => {
+  let quote = null;
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index];
+    if (quote) {
+      if (char === quote && !(quote === '"' && segment[index - 1] === '\\')) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') { quote = char; continue; }
+    if (char === '\\') { index += 1; continue; }
+    if (char !== '>') continue;
+    if (segment[index - 1] === '2' && segment.slice(index + 1, index + 3) === '&1') continue;
+    const target = segment.slice(segment[index + 1] === '>' ? index + 2 : index + 1);
+    if (/^\s*\/dev\/null(\s|$)/.test(target)) continue;
+    return true;
+  }
+  return tokens.includes('tee');
+};
+
+// Build the SDK v2 allowlist rules for an always-allowed Bash command. Heredoc
+// commands and segments that cannot be generalized safely (file redirections,
+// path execution, powerful interpreters) stay exact; everything else becomes a
+// codex-style prefix rule per shell segment, so `git commit -m x` pre-approves
+// later `git commit` invocations without approving unrelated commands.
+const buildHitlAllowlistRules = (command) => {
+  const trimmed = command.trim();
+  if (!trimmed) return [];
+  // Heredocs span lines and resist segment generalization; keep exact.
+  if (trimmed.includes('<<')) return [{ type: 'exact', command: trimmed }];
+  const rules = [];
+  const seen = new Set();
+  const push = (rule) => {
+    const key = hitlAllowlistRuleKey(rule);
+    if (seen.has(key)) return;
+    seen.add(key);
+    rules.push(rule);
+  };
+  for (const rawSegment of splitShellSegments(trimmed)) {
+    const segment = stripLeadingEnvAssignments(rawSegment.trim());
+    if (!segment) continue;
+    const tokens = shellSegmentTokens(segment);
+    const first = tokens[0];
+    if (!first) continue;
+    if (segmentHasFileRedirection(segment, tokens) || first.includes('/') || HITL_ALLOWLIST_EXACT_ONLY_TOOLS.has(first)) {
+      push({ type: 'exact', command: segment });
+      continue;
+    }
+    if (HITL_ALLOWLIST_SUBCOMMAND_TOOLS.has(first)) {
+      const count = tokens.length >= 3 && HITL_ALLOWLIST_WRAPPER_SUBCOMMANDS.has(tokens[1])
+        ? 3
+        : Math.min(2, tokens.length);
+      push({ type: 'prefix', tokens: tokens.slice(0, count) });
+      continue;
+    }
+    push({ type: 'prefix', tokens: [first] });
+  }
+  return rules;
+};
+
 export const createHaoCodeCompatibilityServer = ({
   dataDir,
   logger = console,
@@ -225,9 +393,71 @@ export const createHaoCodeCompatibilityServer = ({
   const globalEventClients = new Set();
   const directoryEventClients = new Map();
   const activeRuns = new Set();
+  // Smart-mode escalation reasons waiting for their interrupt to arrive,
+  // keyed by `${interruptId}:${actionId}`.
+  const pendingEscalations = new Map();
   let haoCodeVersionPromise = null;
   let eventSequence = 0;
   let listeningPort = null;
+
+  // Persistent user allowlist behind PermissionCard "Always Allow". Every
+  // worker request carries this path as `hitlAllowlistPath`; the SDK matches
+  // trimmed Bash commands from it before rule grading, so a persisted rule
+  // pre-approves the command on later runs. Format (v2):
+  // { "version": 2, "rules": [
+  //   { "type": "prefix", "tokens": [...], "addedAt", "source": "user" },
+  //   { "type": "exact", "command": "...", "addedAt", "source": "user" },
+  // ] }.
+  // Legacy v1 entries ({ "command", ... } with no type) are kept unchanged and
+  // behave as exact rules.
+  const hitlAllowlistPath = path.join(store.rootDir, 'hitl-allowlist.json');
+  let hitlAllowlistQueue = Promise.resolve();
+
+  // Read-modify-write the allowlist file, serialized like the other state
+  // writes so concurrent replies cannot interleave. A missing or corrupted
+  // file is rebuilt from an empty rule list; rules are deduped by type and
+  // content (tokens array for prefix rules, command string for exact rules,
+  // v1 entries counting as exact). When every generated rule is already
+  // persisted the file is left untouched.
+  const appendHitlAllowlistRule = (command) => {
+    const additions = buildHitlAllowlistRules(command);
+    if (!additions.length) return Promise.resolve(false);
+    const write = hitlAllowlistQueue.then(async () => {
+      let rules = [];
+      try {
+        const decoded = JSON.parse(await fs.readFile(hitlAllowlistPath, 'utf8'));
+        if (decoded && typeof decoded === 'object' && (decoded.version === 1 || decoded.version === 2) && Array.isArray(decoded.rules)) {
+          rules = decoded.rules.filter((rule) => hitlAllowlistRuleKey(rule) !== null);
+        }
+      } catch (error) {
+        if (error?.code !== 'ENOENT') {
+          logger.warn?.(`[HaoCode compat] Rebuilding unreadable HITL allowlist: ${error.message}`);
+        }
+      }
+      const seen = new Set(rules.map((rule) => hitlAllowlistRuleKey(rule)));
+      const pending = additions.filter((rule) => !seen.has(hitlAllowlistRuleKey(rule)));
+      if (!pending.length) return false;
+      const addedAt = new Date().toISOString();
+      rules.push(...pending.map((rule) => ({ ...rule, addedAt, source: 'user' })));
+      await fs.mkdir(path.dirname(hitlAllowlistPath), { recursive: true, mode: 0o700 });
+      const temporary = `${hitlAllowlistPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+      try {
+        await fs.writeFile(temporary, `${JSON.stringify({ version: 2, rules }, null, 2)}\n`, { mode: 0o600 });
+        await fs.rename(temporary, hitlAllowlistPath);
+      } finally {
+        try {
+          await fs.rm(temporary, { force: true });
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+      }
+      return true;
+    });
+    // Keep the queue alive after a failed write while surfacing the real
+    // failure to this caller.
+    hitlAllowlistQueue = write.catch(() => {});
+    return write;
+  };
 
   app.use(express.json({ limit: '20mb' }));
 
@@ -354,8 +584,53 @@ export const createHaoCodeCompatibilityServer = ({
     if (info) publish(directory, event('message.updated', { sessionID: sessionId, info }));
   };
 
+  // Map an interrupted tool action to the permission fields the UI renders.
+  // The command/path must live in `patterns` AND flattened `metadata` — the
+  // card's tool-specific layouts read top-level metadata.command / .file_path,
+  // not the nested input object.
+  const buildPermissionFields = (action, interruptId, escalation = null) => {
+    const toolName = action.tool_name || 'tool';
+    const input = action.input && typeof action.input === 'object' ? action.input : {};
+    const description = action.description ?? '';
+    let pattern = null;
+    if (toolName === 'Bash' && typeof input.command === 'string' && input.command.trim().length > 0) {
+      pattern = input.command;
+    } else if (
+      (toolName === 'Write' || toolName === 'Edit' || toolName === 'apply_patch' || toolName === 'MultiEdit')
+    ) {
+      const filePath = input.file_path ?? input.path ?? input.filePath;
+      if (typeof filePath === 'string' && filePath.length > 0) pattern = filePath;
+    }
+    return {
+      permission: toolName,
+      patterns: [pattern ?? description ?? toolName ?? 'Tool execution'],
+      metadata: {
+        ...input,
+        input,
+        description,
+        _fe_interruptId: interruptId,
+        _fe_actionId: action.id,
+        ...(escalation ? {
+          _fe_escalationReason: escalation.reason,
+          _fe_escalationSource: escalation.source,
+          _fe_escalationRisk: escalation.riskLevel,
+        } : {}),
+      },
+    };
+  };
+
   const createPendingInterrupts = async ({ session, assistantId, interrupt }) => {
     const actions = Array.isArray(interrupt?.actions) ? interrupt.actions : [];
+    // Claim any smart-mode escalation reasons stashed for this interrupt's
+    // actions so both the stored permission and the SSE payload see them.
+    const escalations = new Map();
+    for (const action of actions) {
+      const key = `${interrupt.id}:${action.id}`;
+      if (pendingEscalations.has(key)) {
+        escalations.set(action.id, pendingEscalations.get(key));
+        pendingEscalations.delete(key);
+      }
+    }
     await store.mutate((state) => {
       state.interrupts[interrupt.id] = {
         id: interrupt.id,
@@ -390,14 +665,7 @@ export const createHaoCodeCompatibilityServer = ({
             id: requestId,
             sessionID: session.id,
             directory: session.directory,
-            permission: action.tool_name || 'tool',
-            patterns: [action.description || action.tool_name || 'Tool execution'],
-            metadata: {
-              input: action.input ?? {},
-              description: action.description ?? '',
-              _fe_interruptId: interrupt.id,
-              _fe_actionId: action.id,
-            },
+            ...buildPermissionFields(action, interrupt.id, escalations.get(action.id) ?? null),
             always: [],
             tool: { messageID: assistantId, callID: action.id },
           });
@@ -418,14 +686,7 @@ export const createHaoCodeCompatibilityServer = ({
         publish(session.directory, event('permission.asked', {
           id: requestId,
           sessionID: session.id,
-          permission: action.tool_name || 'tool',
-          patterns: [action.description || action.tool_name || 'Tool execution'],
-          metadata: {
-            input: action.input ?? {},
-            description: action.description ?? '',
-            _fe_interruptId: interrupt.id,
-            _fe_actionId: action.id,
-          },
+          ...buildPermissionFields(action, interrupt.id, escalations.get(action.id) ?? null),
           always: [],
           tool: { messageID: assistantId, callID: action.id },
         }));
@@ -530,6 +791,71 @@ export const createHaoCodeCompatibilityServer = ({
         await upsertPart(session.id, assistantId, part);
         return;
       }
+      if (message.type === 'auto_decision') {
+        // Smart-mode worker auto-resolved one action and continues in-process.
+        // This is an audit/visibility event only; it must never create a
+        // pending permission or question, and unknown enum values are
+        // normalized conservatively (fail-closed display).
+        const actionId = typeof message.actionId === 'string' && message.actionId ? message.actionId : 'unknown';
+        const interruptId = typeof message.interruptId === 'string' ? message.interruptId : null;
+        if (message.decision === 'escalate') {
+          // The worker escalated this action to a human; the interrupt itself
+          // arrives right after and creates the pending permission. Stash the
+          // escalation context so it can be merged into that permission's
+          // metadata — never into state.autoDecisions, and never as an SSE
+          // permission.auto_resolved (nothing was resolved automatically).
+          const source = ESCALATION_SOURCES.has(message.source) ? message.source : 'rule';
+          const riskLevel = AUTO_DECISION_RISK_LEVELS.has(message.riskLevel) ? message.riskLevel : 'high';
+          const reason = typeof message.reason === 'string' ? message.reason : '';
+          if (interruptId && actionId !== 'unknown') {
+            pendingEscalations.set(`${interruptId}:${actionId}`, { reason, source, riskLevel });
+            if (pendingEscalations.size > 500) {
+              // Bound stale entries whose interrupt never arrived.
+              pendingEscalations.delete(pendingEscalations.keys().next().value);
+            }
+          }
+          return;
+        }
+        const decision = message.decision === 'approve' ? 'approve' : 'reject';
+        const source = AUTO_DECISION_SOURCES.has(message.source) ? message.source : 'rule';
+        const riskLevel = AUTO_DECISION_RISK_LEVELS.has(message.riskLevel) ? message.riskLevel : 'high';
+        const reason = typeof message.reason === 'string' ? message.reason : '';
+        const toolName = typeof message.toolName === 'string' && message.toolName ? message.toolName : 'tool';
+        const toolInput = message.toolInput && typeof message.toolInput === 'object' ? message.toolInput : {};
+        await store.mutate((state) => {
+          const records = state.autoDecisions[session.id] ?? [];
+          records.push({
+            id: createId('auto'),
+            sessionId: session.id,
+            directory: session.directory,
+            interruptId,
+            actionId,
+            tool: toolName,
+            input: toolInput,
+            decision,
+            source,
+            riskLevel,
+            reason,
+            time: Date.now(),
+          });
+          state.autoDecisions[session.id] = records.slice(-100);
+        });
+        publish(session.directory, event('permission.auto_resolved', {
+          sessionID: session.id,
+          requestID: `req_${actionId}`,
+          permission: toolName,
+          metadata: {
+            input: toolInput,
+            description: reason,
+            _fe_interruptId: interruptId,
+            _fe_actionId: actionId,
+            _fe_autoDecision: decision,
+            _fe_source: source,
+            _fe_riskLevel: riskLevel,
+          },
+        }));
+        return;
+      }
       if (message.type === 'interrupt' && message.interrupt) {
         terminalEvent = true;
         await createPendingInterrupts({ session, assistantId, interrupt: message.interrupt });
@@ -590,6 +916,7 @@ export const createHaoCodeCompatibilityServer = ({
         await fs.mkdir(path.dirname(mcpSettingsPath), { recursive: true, mode: 0o700 });
         await fs.writeFile(mcpSettingsPath, `${JSON.stringify(mcpSettings(servers), null, 2)}\n`, { mode: 0o600 });
       }
+      const hitlConfig = await store.getConfig();
       await supervisor.run({
         sessionId: session.id,
         request: {
@@ -599,6 +926,9 @@ export const createHaoCodeCompatibilityServer = ({
           provider: await providerSettings(providerId, modelId),
           haocodeSessionId: session.metadata?._fe_haocodeSessionId ?? request.haocodeSessionId ?? null,
           thinkingEnabled: /reason|thinking|r1/i.test(modelId),
+          hitlMode: normalizeHitlMode(hitlConfig._fe_hitlMode),
+          hitlReviewModel: normalizeHitlReviewModel(hitlConfig._fe_hitlReviewModel),
+          hitlAllowlistPath,
           ...(mcpSettingsPath ? { mcpSettingsPath, allowedTools: ['*'] } : {}),
         },
         onEvent: (message) => {
@@ -638,6 +968,7 @@ export const createHaoCodeCompatibilityServer = ({
 
   const resolveInterrupt = async ({ requestId, reply, answers }) => {
     let resolution = null;
+    let allowlistCommand = null;
     await store.mutate((state) => {
       const pending = state.permissions.find((item) => item.id === requestId)
         ?? state.questions.find((item) => item.id === requestId);
@@ -652,6 +983,15 @@ export const createHaoCodeCompatibilityServer = ({
         : reply === 'reject'
           ? { action_id: actionId, type: 'reject', message: 'Rejected by the Hao Work user.' }
           : { action_id: actionId, type: 'approve' };
+      // "Always Allow" on a Bash action derives codex-style allowlist rules
+      // (prefix where safe, exact otherwise) from the command and persists
+      // them into the SDK-facing allowlist so later runs pre-approve matching
+      // commands. Non-Bash tools keep the current approve-only behavior
+      // (nothing is written).
+      if (reply === 'always' && action?.tool_name !== 'AskUserQuestion') {
+        const command = pending.metadata?.input?.command;
+        if (typeof command === 'string' && command.trim()) allowlistCommand = command.trim();
+      }
       state.permissions = state.permissions.filter((item) => item.id !== requestId);
       state.questions = state.questions.filter((item) => item.id !== requestId);
       resolution = {
@@ -668,6 +1008,15 @@ export const createHaoCodeCompatibilityServer = ({
       }
     });
     if (!resolution) return null;
+    if (allowlistCommand) {
+      try {
+        await appendHitlAllowlistRule(allowlistCommand);
+      } catch (error) {
+        // A failed allowlist write must not block the user's reply; the SDK
+        // simply keeps asking until a later always-allow write succeeds.
+        logger.warn?.(`[HaoCode compat] Failed to persist HITL allowlist rule: ${error.message}`);
+      }
+    }
     const continuation = resolution.continuation;
     if (!continuation) return resolution;
     const session = await store.getSession(continuation.sessionId);
@@ -972,6 +1321,7 @@ export const createHaoCodeCompatibilityServer = ({
       delete state.messages[request.params.sessionID];
       delete state.statuses[request.params.sessionID];
       delete state.todos[request.params.sessionID];
+      delete state.autoDecisions[request.params.sessionID];
       state.permissions = state.permissions.filter((item) => item.sessionID !== request.params.sessionID);
       state.questions = state.questions.filter((item) => item.sessionID !== request.params.sessionID);
     });
@@ -983,6 +1333,15 @@ export const createHaoCodeCompatibilityServer = ({
     (await store.listSessions()).filter((session) => session.parentID === request.params.sessionID),
   ));
   app.get('/session/:sessionID/todo', async (request, response) => response.json(await store.getTodos(request.params.sessionID)));
+  // Read-only audit trail for smart-mode worker auto decisions. Returns the
+  // persisted per-session history (newest last) so the UI can backfill cards
+  // after a refresh or reconnect. Directory is stripped like /permission.
+  app.get('/auto-decisions', async (request, response) => {
+    const sessionID = typeof request.query.sessionID === 'string' ? request.query.sessionID : '';
+    if (!sessionID) return response.status(400).json({ error: 'sessionID is required.' });
+    const records = await store.getAutoDecisions(sessionID);
+    return response.json(records.map(({ directory: _directory, ...item }) => item));
+  });
   app.get('/session/:sessionID/diff', async (request, response, next) => {
     try {
       const session = await store.getSession(request.params.sessionID);

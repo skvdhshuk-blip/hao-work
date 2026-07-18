@@ -46,10 +46,18 @@ const emit = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
 if (request.action === 'resume_interrupt') {
   const decision = request.decisions?.[0] ?? {};
   const text = decision.type === 'reject' ? 'rejected' : decision.type === 'respond' ? 'answered' : 'continued';
-  emit({ type: 'text', text });
-  emit({ type: 'result', text, sessionId: request.haocodeSessionId, usage: { input_tokens: 2, output_tokens: 1 }, cost: 0.001 });
+  const echoed = request.interruptId === 'int_probe'
+    ? JSON.stringify({ hitlAllowlistPath: request.hitlAllowlistPath ?? null })
+    : text;
+  emit({ type: 'text', text: echoed });
+  emit({ type: 'result', text: echoed, sessionId: request.haocodeSessionId, usage: { input_tokens: 2, output_tokens: 1 }, cost: 0.001 });
 } else if (request.prompt === 'interrupt') {
   emit({ type: 'interrupt', interrupt: { id: 'int_1', session_id: 'hao_1', actions: [{ id: 'act_1', tool_name: 'Bash', input: { command: 'pwd' }, description: 'Run pwd', allowed_decisions: ['approve', 'reject'] }], created_at: new Date().toISOString() } });
+} else if (request.prompt === 'interrupt-probe') {
+  emit({ type: 'interrupt', interrupt: { id: 'int_probe', session_id: 'hao_probe', actions: [{ id: 'act_probe', tool_name: 'Bash', input: { command: '  ls -la  ' }, description: 'Run ls', allowed_decisions: ['approve', 'reject'] }], created_at: new Date().toISOString() } });
+} else if (request.prompt.startsWith('interrupt-cmd:')) {
+  const command = request.prompt.slice('interrupt-cmd:'.length);
+  emit({ type: 'interrupt', interrupt: { id: 'int_cmd', session_id: 'hao_cmd', actions: [{ id: 'act_cmd', tool_name: 'Bash', input: { command }, description: 'Run command', allowed_decisions: ['approve', 'reject'] }], created_at: new Date().toISOString() } });
 } else if (request.prompt === 'question') {
   emit({ type: 'interrupt', interrupt: { id: 'int_question', session_id: 'hao_question', actions: [{ id: 'act_question', tool_name: 'AskUserQuestion', input: { questions: [{ question: 'Continue?', header: 'Choice', options: [{ label: 'Yes', description: 'Continue' }] }] }, description: 'Ask the user', allowed_decisions: ['respond'] }], created_at: new Date().toISOString() } });
 } else if (request.prompt === 'multi-interrupt') {
@@ -74,9 +82,29 @@ if (request.action === 'resume_interrupt') {
   emit({ type: 'text', text });
   emit({ type: 'result', text, sessionId: 'hao_limits', usage: {}, cost: 0 });
 } else if (request.prompt === 'request-config') {
-  const text = JSON.stringify({ appendSystemPrompt: request.appendSystemPrompt, mcpSettingsPath: request.mcpSettingsPath, allowedTools: request.allowedTools });
+  const text = JSON.stringify({ appendSystemPrompt: request.appendSystemPrompt, mcpSettingsPath: request.mcpSettingsPath, allowedTools: request.allowedTools, hitlAllowlistPath: request.hitlAllowlistPath ?? null });
   emit({ type: 'text', text });
   emit({ type: 'result', text, sessionId: 'hao_config', usage: {}, cost: 0 });
+} else if (request.prompt === 'hitl-config') {
+  const text = JSON.stringify({ hitlMode: request.hitlMode ?? null, hitlReviewModel: request.hitlReviewModel ?? null });
+  emit({ type: 'text', text });
+  emit({ type: 'result', text, sessionId: 'hao_hitl', usage: {}, cost: 0 });
+} else if (request.prompt === 'auto-decision') {
+  emit({ type: 'auto_decision', sessionId: 'hao_auto', interruptId: 'int_auto', actionId: 'act_auto', toolName: 'Bash', toolInput: { command: 'pwd' }, decision: 'approve', source: 'rule', riskLevel: 'low', reason: 'Read-only command allowlist' });
+  emit({ type: 'text', text: 'auto continued' });
+  emit({ type: 'result', text: 'auto continued', sessionId: 'hao_auto', usage: {}, cost: 0 });
+} else if (request.prompt === 'auto-decision-sandbox') {
+  emit({ type: 'auto_decision', sessionId: 'hao_sandbox', interruptId: 'int_sandbox', actionId: 'act_sandbox', toolName: 'Bash', toolInput: { command: 'make build' }, decision: 'approve', source: 'sandbox', riskLevel: 'low', reason: 'sandbox:contained: Runs inside the configured sandbox.' });
+  emit({ type: 'text', text: 'auto continued' });
+  emit({ type: 'result', text: 'auto continued', sessionId: 'hao_sandbox', usage: {}, cost: 0 });
+} else if (request.prompt === 'escalate-decision') {
+  emit({ type: 'auto_decision', sessionId: 'hao_esc', interruptId: 'int_esc', actionId: 'act_esc', toolName: 'Bash', toolInput: { command: 'sudo ls' }, decision: 'escalate', source: 'rule', riskLevel: 'high', reason: "rule:red_line: Red-line command 'sudo': privilege escalation." });
+  emit({ type: 'interrupt', interrupt: { id: 'int_esc', session_id: 'hao_esc', actions: [{ id: 'act_esc', tool_name: 'Bash', input: { command: 'sudo ls' }, description: 'Run sudo ls', allowed_decisions: ['approve', 'reject'] }], created_at: new Date().toISOString() } });
+} else if (request.prompt === 'auto-decision-flood') {
+  for (let index = 0; index < 105; index += 1) {
+    emit({ type: 'auto_decision', sessionId: 'hao_flood', interruptId: 'int_flood', actionId: 'act_flood_' + index, toolName: 'Read', toolInput: { file_path: 'f' + index + '.txt' }, decision: 'approve', source: 'review', riskLevel: 'medium', reason: 'flood ' + index });
+  }
+  emit({ type: 'result', text: 'flooded', sessionId: 'hao_flood', usage: {}, cost: 0 });
 } else if (request.prompt === 'todos') {
   emit({ type: 'tool_start', toolName: 'TodoWrite', toolInput: { todos: [{ content: 'Ship it', status: 'in_progress', priority: 'high' }] } });
   emit({ type: 'tool_result', toolName: 'TodoWrite', toolOutput: 'updated', toolIsError: false });
@@ -145,6 +173,66 @@ const waitFor = async (callback, timeoutMs = 3000) => {
   throw new Error('Timed out waiting for compatibility runtime state.');
 };
 
+const readSseEvent = async (response, type, timeoutMs = 5000) => {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const deadline = Date.now() + timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      const read = await Promise.race([
+        reader.read(),
+        new Promise((resolve) => setTimeout(() => resolve(null), Math.max(1, deadline - Date.now()))),
+      ]);
+      if (read === null || read.done) return null;
+      buffer += decoder.decode(read.value, { stream: true });
+      const frames = buffer.split('\n\n');
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        const dataLine = frame.split('\n').find((line) => line.startsWith('data: '));
+        if (!dataLine) continue;
+        const payload = JSON.parse(dataLine.slice(6));
+        if (payload.type === type) return payload;
+      }
+    }
+    return null;
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+};
+
+const waitForAssistantStop = async (baseUrl, sessionId) => waitFor(async () => {
+  const messages = await fetch(`${baseUrl}/session/${sessionId}/message`).then((item) => item.json());
+  const stopped = messages.filter((record) => record.info.role === 'assistant' && record.info.finish === 'stop');
+  return stopped.length ? stopped : null;
+});
+
+// Drive one always-allow reply for an arbitrary Bash command and return the
+// persisted allowlist rules. The allowlist file is removed first so each
+// command is asserted in isolation. The reply triggers a resume run, so the
+// helper waits for that run to finish before returning — prompting while the
+// session is still busy would drop the next interrupt.
+const alwaysAllowRules = async (runtime, session, command) => {
+  const allowlistPath = path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json');
+  await fs.rm(allowlistPath, { force: true });
+  const stoppedCount = async () => (await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json()))
+    .filter((record) => record.info.role === 'assistant' && record.info.finish === 'stop').length;
+  expect((await prompt(runtime.baseUrl, runtime.project, session.id, `interrupt-cmd:${command}`)).status).toBe(200);
+  const permission = await waitFor(async () => (await fetch(`${runtime.baseUrl}/permission`).then((item) => item.json()))[0] ?? null);
+  expect(permission.metadata.command).toBe(command);
+  const stoppedBefore = await stoppedCount();
+  const reply = await fetch(`${runtime.baseUrl}/permission/${permission.id}/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reply: 'always' }),
+  });
+  expect(await reply.json()).toBe(true);
+  await waitFor(async () => (await stoppedCount()) > stoppedBefore ? true : null);
+  const allowlist = JSON.parse(await fs.readFile(allowlistPath, 'utf8'));
+  expect(allowlist.version).toBe(2);
+  return allowlist.rules;
+};
+
 describe('HaoCode compatibility server', () => {
   test('loads project agents, commands, and MCP into HaoCode runs', async () => {
     const runtime = await createRuntime();
@@ -172,6 +260,7 @@ describe('HaoCode compatibility server', () => {
     const config = JSON.parse(records.find((record) => record.info.role === 'assistant').parts.find((part) => part.type === 'text').text);
     expect(config.appendSystemPrompt).toBe('Be exact.');
     expect(config.allowedTools).toEqual(['*']);
+    expect(config.hitlAllowlistPath).toBe(path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json'));
     expect(JSON.parse(await fs.readFile(config.mcpSettingsPath, 'utf8')).mcp_servers.context7).toMatchObject({ transport: 'http', url: 'https://mcp.example.test' });
   });
 
@@ -314,6 +403,12 @@ describe('HaoCode compatibility server', () => {
       return pending[0] ?? null;
     });
     expect(permission.permission).toBe('Bash');
+    // The command must be visible to reviewers: top-level metadata for the
+    // card's bash layout, and patterns for the pattern row.
+    expect(permission.patterns).toEqual(['pwd']);
+    expect(permission.metadata.command).toBe('pwd');
+    expect(permission.metadata.input).toEqual({ command: 'pwd' });
+    expect(permission.metadata.description).toBe('Run pwd');
 
     const reply = await fetch(`${runtime.baseUrl}/permission/${permission.id}/reply`, {
       method: 'POST',
@@ -378,6 +473,11 @@ describe('HaoCode compatibility server', () => {
       const pending = await fetch(`${runtime.baseUrl}/permission?directory=${encodeURIComponent(runtime.project)}`).then((item) => item.json());
       return pending.length === 2 ? pending : null;
     });
+    const bashPermission = permissions.find((item) => item.permission === 'Bash');
+    const writePermission = permissions.find((item) => item.permission === 'Write');
+    expect(bashPermission?.patterns).toEqual(['pwd']);
+    expect(writePermission?.patterns).toEqual(['result.txt']);
+    expect(writePermission?.metadata.file_path).toBe('result.txt');
     for (const permission of permissions) {
       const reply = await fetch(`${runtime.baseUrl}/permission/${permission.id}/reply`, {
         method: 'POST',
@@ -514,5 +614,405 @@ describe('HaoCode compatibility server', () => {
       });
       expect(errorRecord.info.error.data.message).toBeTruthy();
     }
+  });
+
+  test('translates worker auto_decision into permission.auto_resolved without a pending card', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    const sseResponse = await fetch(`${runtime.baseUrl}/event?directory=${encodeURIComponent(runtime.project)}`);
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'auto-decision')).status).toBe(200);
+    const payload = await readSseEvent(sseResponse, 'permission.auto_resolved');
+    expect(payload).not.toBeNull();
+    expect(payload.properties.sessionID).toBe(session.id);
+    expect(payload.properties.requestID).toBe('req_act_auto');
+    expect(payload.properties.permission).toBe('Bash');
+    expect(payload.properties.metadata).toMatchObject({
+      input: { command: 'pwd' },
+      description: 'Read-only command allowlist',
+      _fe_interruptId: 'int_auto',
+      _fe_actionId: 'act_auto',
+      _fe_autoDecision: 'approve',
+      _fe_source: 'rule',
+      _fe_riskLevel: 'low',
+    });
+
+    await waitForAssistantStop(runtime.baseUrl, session.id);
+    const pending = await fetch(`${runtime.baseUrl}/permission?directory=${encodeURIComponent(runtime.project)}`).then((item) => item.json());
+    expect(pending).toEqual([]);
+
+    const records = await runtime.runtime.store.read((state) => state.autoDecisions[session.id] ?? []);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      sessionId: session.id,
+      interruptId: 'int_auto',
+      actionId: 'act_auto',
+      tool: 'Bash',
+      input: { command: 'pwd' },
+      decision: 'approve',
+      source: 'rule',
+      riskLevel: 'low',
+      reason: 'Read-only command allowlist',
+    });
+  });
+
+  test('merges smart-mode escalation context into the pending permission metadata', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    const sseResponse = await fetch(`${runtime.baseUrl}/event?directory=${encodeURIComponent(runtime.project)}`);
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'escalate-decision')).status).toBe(200);
+
+    // The escalate line must not surface as permission.auto_resolved; the
+    // first permission-related SSE event is the interrupt's permission.asked.
+    const asked = await readSseEvent(sseResponse, 'permission.asked');
+    expect(asked).not.toBeNull();
+    expect(asked.properties.metadata).toMatchObject({
+      _fe_interruptId: 'int_esc',
+      _fe_actionId: 'act_esc',
+      _fe_escalationReason: "rule:red_line: Red-line command 'sudo': privilege escalation.",
+      _fe_escalationSource: 'rule',
+      _fe_escalationRisk: 'high',
+    });
+
+    const permission = await waitFor(async () => {
+      const pending = await fetch(`${runtime.baseUrl}/permission?directory=${encodeURIComponent(runtime.project)}`).then((item) => item.json());
+      return pending[0] ?? null;
+    });
+    expect(permission.metadata._fe_escalationReason).toBe("rule:red_line: Red-line command 'sudo': privilege escalation.");
+    expect(permission.metadata._fe_escalationSource).toBe('rule');
+    expect(permission.metadata._fe_escalationRisk).toBe('high');
+
+    // Escalations are not auto decisions: no audit record, no resolved card.
+    const records = await runtime.runtime.store.read((state) => state.autoDecisions[session.id] ?? []);
+    expect(records).toEqual([]);
+  });
+
+  test('normalizes sandbox-sourced auto decisions into the audit trail', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    const sseResponse = await fetch(`${runtime.baseUrl}/event?directory=${encodeURIComponent(runtime.project)}`);
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'auto-decision-sandbox')).status).toBe(200);
+    const payload = await readSseEvent(sseResponse, 'permission.auto_resolved');
+    expect(payload).not.toBeNull();
+    expect(payload.properties.metadata).toMatchObject({
+      input: { command: 'make build' },
+      _fe_autoDecision: 'approve',
+      _fe_source: 'sandbox',
+      _fe_riskLevel: 'low',
+    });
+
+    await waitForAssistantStop(runtime.baseUrl, session.id);
+    const records = await runtime.runtime.store.read((state) => state.autoDecisions[session.id] ?? []);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      tool: 'Bash',
+      input: { command: 'make build' },
+      decision: 'approve',
+      source: 'sandbox',
+      riskLevel: 'low',
+      reason: 'sandbox:contained: Runs inside the configured sandbox.',
+    });
+  });
+
+  test('persists an always-allow Bash reply into the HITL allowlist file', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'interrupt')).status).toBe(200);
+
+    const permission = await waitFor(async () => (await fetch(`${runtime.baseUrl}/permission`).then((item) => item.json()))[0] ?? null);
+    const reply = await fetch(`${runtime.baseUrl}/permission/${permission.id}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reply: 'always' }),
+    });
+    expect(await reply.json()).toBe(true);
+
+    const allowlistPath = path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json');
+    const allowlist = JSON.parse(await fs.readFile(allowlistPath, 'utf8'));
+    expect(allowlist.version).toBe(2);
+    expect(allowlist.rules).toHaveLength(1);
+    expect(allowlist.rules[0]).toMatchObject({ type: 'prefix', tokens: ['pwd'], source: 'user' });
+    expect(typeof allowlist.rules[0].addedAt).toBe('string');
+
+    await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+      return messages.some((record) => record.parts.some((part) => part.text === 'continued')) ? true : null;
+    });
+  });
+
+  test('trims and dedupes allowlist commands and forwards the path on resume', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    const allowlistPath = path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json');
+
+    const replyAlways = async () => {
+      const permission = await waitFor(async () => (await fetch(`${runtime.baseUrl}/permission`).then((item) => item.json()))[0] ?? null);
+      const reply = await fetch(`${runtime.baseUrl}/permission/${permission.id}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reply: 'always' }),
+      });
+      expect(await reply.json()).toBe(true);
+      await waitFor(async () => {
+        const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+        return messages.some((record) => record.parts.some((part) => part.text.includes('hitlAllowlistPath'))) ? true : null;
+      });
+    };
+
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'interrupt-probe')).status).toBe(200);
+    await replyAlways();
+
+    // The resumed worker request carried the allowlist path.
+    const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+    const probeText = messages.flatMap((record) => record.parts).find((part) => part.text?.includes('hitlAllowlistPath'))?.text;
+    expect(JSON.parse(probeText).hitlAllowlistPath).toBe(allowlistPath);
+
+    // The command was trimmed before deriving rules.
+    const first = JSON.parse(await fs.readFile(allowlistPath, 'utf8'));
+    expect(first.version).toBe(2);
+    expect(first.rules).toHaveLength(1);
+    expect(first.rules[0]).toMatchObject({ type: 'prefix', tokens: ['ls'] });
+
+    // A second always-allow of the same command is deduped.
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'interrupt-probe')).status).toBe(200);
+    await replyAlways();
+    const second = JSON.parse(await fs.readFile(allowlistPath, 'utf8'));
+    expect(second.rules).toHaveLength(1);
+  });
+
+  test('rebuilds a corrupted HITL allowlist file on always-allow', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    const allowlistPath = path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json');
+    await fs.mkdir(path.dirname(allowlistPath), { recursive: true });
+    await fs.writeFile(allowlistPath, 'not json {{{');
+
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'interrupt')).status).toBe(200);
+    const permission = await waitFor(async () => (await fetch(`${runtime.baseUrl}/permission`).then((item) => item.json()))[0] ?? null);
+    const reply = await fetch(`${runtime.baseUrl}/permission/${permission.id}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reply: 'always' }),
+    });
+    expect(await reply.json()).toBe(true);
+
+    const allowlist = JSON.parse(await fs.readFile(allowlistPath, 'utf8'));
+    expect(allowlist.version).toBe(2);
+    expect(allowlist.rules).toHaveLength(1);
+    expect(allowlist.rules[0]).toMatchObject({ type: 'prefix', tokens: ['pwd'] });
+  });
+
+  test('does not persist always-allow replies for non-Bash tools', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'multi-interrupt')).status).toBe(200);
+
+    const permissions = await waitFor(async () => {
+      const pending = await fetch(`${runtime.baseUrl}/permission`).then((item) => item.json());
+      return pending.length === 2 ? pending : null;
+    });
+    const writePermission = permissions.find((item) => item.permission === 'Write');
+    const bashPermission = permissions.find((item) => item.permission === 'Bash');
+    for (const [target, decision] of [[writePermission, 'always'], [bashPermission, 'once']]) {
+      const reply = await fetch(`${runtime.baseUrl}/permission/${target.id}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reply: decision }),
+      });
+      expect(await reply.json()).toBe(true);
+    }
+
+    await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+      return messages.some((record) => record.parts.some((part) => part.text === 'continued')) ? true : null;
+    });
+    const allowlistPath = path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json');
+    await expect(fs.access(allowlistPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('derives codex-style prefix and exact rules for always-allowed Bash commands', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    const cases = [
+      ['git commit -m x', [{ type: 'prefix', tokens: ['git', 'commit'] }]],
+      ['npm run build', [{ type: 'prefix', tokens: ['npm', 'run', 'build'] }]],
+      ['npm exec tsc --noEmit', [{ type: 'prefix', tokens: ['npm', 'exec', 'tsc'] }]],
+      ['npm install', [{ type: 'prefix', tokens: ['npm', 'install'] }]],
+      ['make -j4', [{ type: 'prefix', tokens: ['make'] }]],
+      ['ls -la', [{ type: 'prefix', tokens: ['ls'] }]],
+      ['sudo ls', [{ type: 'exact', command: 'sudo ls' }]],
+      ['node foo.js', [{ type: 'exact', command: 'node foo.js' }]],
+      ['./bin/tool --x', [{ type: 'exact', command: './bin/tool --x' }]],
+      ['echo hi > /tmp/a', [{ type: 'exact', command: 'echo hi > /tmp/a' }]],
+      ['git diff > /tmp/out.txt', [{ type: 'exact', command: 'git diff > /tmp/out.txt' }]],
+      ['make | tee /tmp/log', [{ type: 'prefix', tokens: ['make'] }, { type: 'exact', command: 'tee /tmp/log' }]],
+      ['echo hi > /dev/null', [{ type: 'prefix', tokens: ['echo'] }]],
+      ['make 2>&1 | grep err', [{ type: 'prefix', tokens: ['make'] }, { type: 'prefix', tokens: ['grep'] }]],
+      ['FOO=bar BAZ=qux git status', [{ type: 'prefix', tokens: ['git', 'status'] }]],
+      ['cd /a && make -j4 && grep x y', [
+        { type: 'prefix', tokens: ['cd'] },
+        { type: 'prefix', tokens: ['make'] },
+        { type: 'prefix', tokens: ['grep'] },
+      ]],
+      // Duplicate segments within one command collapse to a single rule.
+      ['ls && ls', [{ type: 'prefix', tokens: ['ls'] }]],
+    ];
+
+    for (const [command, expected] of cases) {
+      const rules = await alwaysAllowRules(runtime, session, command);
+      expect(rules).toEqual(expected.map((rule) => expect.objectContaining(rule)));
+    }
+  });
+
+  test('stores an always-allowed heredoc command as one exact rule', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    const command = 'cat > /tmp/a << EOF\nhello\nEOF';
+    const rules = await alwaysAllowRules(runtime, session, command);
+    expect(rules).toEqual([expect.objectContaining({ type: 'exact', command })]);
+  });
+
+  test('keeps legacy v1 allowlist entries unchanged and appends v2 rules', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    const allowlistPath = path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json');
+    await fs.mkdir(path.dirname(allowlistPath), { recursive: true });
+    const legacy = { command: 'sudo legacy --cmd', addedAt: '2024-01-02T03:04:05.000Z', source: 'user' };
+    await fs.writeFile(allowlistPath, `${JSON.stringify({ version: 1, rules: [legacy] }, null, 2)}\n`);
+
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'interrupt-cmd:git status')).status).toBe(200);
+    const permission = await waitFor(async () => (await fetch(`${runtime.baseUrl}/permission`).then((item) => item.json()))[0] ?? null);
+    const reply = await fetch(`${runtime.baseUrl}/permission/${permission.id}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reply: 'always' }),
+    });
+    expect(await reply.json()).toBe(true);
+
+    const allowlist = JSON.parse(await fs.readFile(allowlistPath, 'utf8'));
+    expect(allowlist.version).toBe(2);
+    expect(allowlist.rules).toHaveLength(2);
+    expect(allowlist.rules[0]).toEqual(legacy);
+    expect(allowlist.rules[1]).toMatchObject({ type: 'prefix', tokens: ['git', 'status'], source: 'user' });
+  });
+
+  test('dedupes a new exact rule against a legacy v1 entry without rewriting', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    const allowlistPath = path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json');
+    await fs.mkdir(path.dirname(allowlistPath), { recursive: true });
+    const legacy = { command: 'sudo ls', addedAt: '2024-01-02T03:04:05.000Z', source: 'user' };
+    await fs.writeFile(allowlistPath, `${JSON.stringify({ version: 1, rules: [legacy] }, null, 2)}\n`);
+
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'interrupt-cmd:sudo ls')).status).toBe(200);
+    const permission = await waitFor(async () => (await fetch(`${runtime.baseUrl}/permission`).then((item) => item.json()))[0] ?? null);
+    const reply = await fetch(`${runtime.baseUrl}/permission/${permission.id}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reply: 'always' }),
+    });
+    expect(await reply.json()).toBe(true);
+
+    // Nothing new to persist: the file is left untouched (still v1, one rule).
+    const allowlist = JSON.parse(await fs.readFile(allowlistPath, 'utf8'));
+    expect(allowlist.version).toBe(1);
+    expect(allowlist.rules).toEqual([legacy]);
+  });
+
+  test('serves persisted auto-decision history through GET /auto-decisions', async () => {
+    const runtime = await createRuntime();
+
+    const missing = await fetch(`${runtime.baseUrl}/auto-decisions`);
+    expect(missing.status).toBe(400);
+
+    const unknown = await fetch(`${runtime.baseUrl}/auto-decisions?sessionID=ses_unknown`);
+    expect(unknown.status).toBe(200);
+    expect(await unknown.json()).toEqual([]);
+
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'auto-decision')).status).toBe(200);
+    await waitForAssistantStop(runtime.baseUrl, session.id);
+
+    const response = await fetch(`${runtime.baseUrl}/auto-decisions?sessionID=${encodeURIComponent(session.id)}`);
+    expect(response.status).toBe(200);
+    const records = await response.json();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      sessionId: session.id,
+      interruptId: 'int_auto',
+      actionId: 'act_auto',
+      tool: 'Bash',
+      input: { command: 'pwd' },
+      decision: 'approve',
+      source: 'rule',
+      riskLevel: 'low',
+      reason: 'Read-only command allowlist',
+    });
+    expect(typeof records[0].id).toBe('string');
+    expect(typeof records[0].time).toBe('number');
+    expect(records[0]).not.toHaveProperty('directory');
+  });
+
+  test('caps persisted auto-decision history at 100 entries per session', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'auto-decision-flood')).status).toBe(200);
+    await waitForAssistantStop(runtime.baseUrl, session.id);
+
+    const records = await runtime.runtime.store.read((state) => state.autoDecisions[session.id] ?? []);
+    expect(records).toHaveLength(100);
+    expect(records[0]).toMatchObject({ actionId: 'act_flood_5', reason: 'flood 5' });
+    expect(records.at(-1)).toMatchObject({ actionId: 'act_flood_104', reason: 'flood 104' });
+  });
+
+  test('forwards normalized HITL mode config to every worker request', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    let stoppedCount = 0;
+    const echoedHitlConfig = async () => {
+      expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'hitl-config')).status).toBe(200);
+      const stopped = await waitFor(async () => {
+        const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+        const list = messages.filter((record) => record.info.role === 'assistant' && record.info.finish === 'stop');
+        return list.length > stoppedCount ? list : null;
+      });
+      stoppedCount = stopped.length;
+      return JSON.parse(stopped.at(-1).parts.find((part) => part.type === 'text').text);
+    };
+
+    expect(await echoedHitlConfig()).toEqual({ hitlMode: 'smart', hitlReviewModel: null });
+
+    const patched = await fetch(`${runtime.baseUrl}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ _fe_hitlMode: 'smart', _fe_hitlReviewModel: 'deepseek-reasoner' }),
+    });
+    expect(patched.status).toBe(200);
+    expect(await echoedHitlConfig()).toEqual({ hitlMode: 'smart', hitlReviewModel: 'deepseek-reasoner' });
+
+    await fetch(`${runtime.baseUrl}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ _fe_hitlMode: 'bogus' }),
+    });
+    expect(await echoedHitlConfig()).toEqual({ hitlMode: 'smart', hitlReviewModel: 'deepseek-reasoner' });
   });
 });

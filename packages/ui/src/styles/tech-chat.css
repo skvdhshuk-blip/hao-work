@@ -1,0 +1,188 @@
+/* ============================================================
+   Tech / neon visual layer — chat & message surface
+
+   Token-derived effects only: every tint is computed from the
+   active theme's semantic CSS variables (--primary-base,
+   --interactive-border-focus, --surface-*, --status-*,
+   --syntax-*, --chat-*, --tools-*), so these effects adapt to
+   any built-in or custom theme (neon-grid, flexoki, light/dark).
+   No layout, sizing, spacing, or component-behavior changes:
+   edges and rings use box-shadow/background-image overlays so
+   element boxes stay untouched.
+
+   Performance notes:
+   - All motion is transform/opacity/box-shadow based and only
+     enabled under `prefers-reduced-motion: no-preference`.
+   - Only the actively running tool rows / streaming message
+     animate; static history rows paint once with no animation.
+   - Selectors hook existing data-* attributes and variant
+     classes stamped by the chat components; no per-row
+     JavaScript is involved.
+   ============================================================ */
+
+/* --- User message bubble ------------------------------------- */
+/* The bubble's background-color is an inline style, so the neon
+   tint is layered as a background-image overlay instead of
+   overriding the fill. Border already exists (border-primary/5);
+   we only retint it plus a soft outer halo in dark themes. */
+[data-slot="user-message"] {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--primary-base, var(--primary)) 8%, transparent),
+    color-mix(in srgb, var(--primary-base, var(--primary)) 8%, transparent)
+  );
+  border-color: color-mix(in srgb, var(--primary-base, var(--primary)) 22%, transparent);
+}
+
+.dark [data-slot="user-message"] {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--primary-base, var(--primary)) 12%, transparent),
+    color-mix(in srgb, var(--primary-base, var(--primary)) 12%, transparent)
+  );
+  box-shadow:
+    0 0 18px color-mix(in srgb, var(--primary-base, var(--primary)) 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+/* --- Agent badge (MessageHeader) ------------------------------ */
+/* Inset ring via box-shadow: zero layout impact, gives the badge
+   an instrument-chip edge derived from its own --agent-color. */
+.agent-badge {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-color, var(--primary-base, var(--primary))) 22%, transparent);
+  background-color: color-mix(in srgb, var(--agent-color, var(--primary-base, var(--primary))) 6%, transparent);
+}
+
+/* --- Code blocks ---------------------------------------------- */
+/* Wrapper is stamped by markdown/decorate.ts as
+   [data-component="markdown-code"]. Body takes the theme's
+   --syntax-background; the border picks up a faint primary edge. */
+[data-component="markdown-code"] {
+  background-color: color-mix(in srgb, var(--syntax-background, var(--surface-elevated)) 72%, var(--surface-elevated));
+  border-color: color-mix(in srgb, var(--primary-base, var(--primary)) 16%, var(--border));
+}
+
+.dark [data-component="markdown-code"] {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--primary-base, var(--primary)) 7%, transparent),
+    0 10px 28px rgb(0 0 0 / 0.28);
+}
+
+/* Language / filename header strip: monospace HUD label over a
+   faint primary wash. The header is the first child div (the body
+   carries data-md-code-body). Font-only change; no size/spacing. */
+[data-component="markdown-code"] > div:first-child:not([data-md-code-body]) {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.05em;
+  background-color: color-mix(in srgb, var(--primary-base, var(--primary)) 5%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--primary-base, var(--primary)) 14%, var(--border));
+}
+
+/* --- Tool call cards: left status edge ------------------------- */
+/* data-tool-status is stamped by ToolPart (expandable tools) and
+   StaticToolRow (grouped static tools). The edge is a straight
+   pseudo-element bar with capsule ends: unlike an inset box-shadow
+   it does not follow the row's rounded corners, so stacked rows keep
+   one clean vertical rhythm instead of a zigzag. Rows are nudged
+   right so the leading icon clears the bar. */
+[data-tool-status] {
+  position: relative;
+}
+
+[data-tool-status].pl-px,
+[data-tool-status] > .pl-px {
+  padding-left: 0.5rem;
+}
+
+[data-tool-status]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+[data-tool-status="idle"]::before {
+  background-color: color-mix(in srgb, var(--tools-border, var(--border)) 90%, transparent);
+}
+
+[data-tool-status="success"]::before {
+  background-color: color-mix(in srgb, var(--status-success) 45%, transparent);
+}
+
+[data-tool-status="error"]::before {
+  background-color: color-mix(in srgb, var(--status-error) 75%, transparent);
+}
+
+[data-tool-status="running"]::before {
+  background-color: color-mix(in srgb, var(--primary-base, var(--primary)) 80%, transparent);
+}
+
+/* Running rows get a slow breathing edge + faint halo. The pulse
+   animates the ::before bar only, one or two rows at a time,
+   motion-gated. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes tech-chat-tool-pulse {
+    0%, 100% {
+      opacity: 0.85;
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary-base, var(--primary)) 0%, transparent);
+    }
+    50% {
+      opacity: 0.35;
+      box-shadow: 0 0 14px 0 color-mix(in srgb, var(--primary-base, var(--primary)) 12%, transparent);
+    }
+  }
+
+  [data-tool-status="running"]::before {
+    animation: tech-chat-tool-pulse 2.2s ease-in-out infinite;
+  }
+}
+
+/* --- Thinking / reasoning blocks -------------------------------- */
+/* .markdown-reasoning is already dimmed by index.css; here it only
+   gains the instrument monospace voice so reasoning reads as trace
+   output, distinct from assistant prose. */
+.markdown-content.markdown-reasoning {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.01em;
+}
+
+/* --- Streaming indicators --------------------------------------- */
+/* Caret appended after the last text block of the streaming part
+   (data-streaming is stamped by AssistantTextPart). Opacity-only
+   blink, gated; absent entirely when reduced motion is requested. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes tech-chat-caret-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  [data-streaming="true"] [data-markdown-content] > :last-child:is(p, li, blockquote, h1, h2, h3, h4, h5, h6)::after {
+    content: '';
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    background-color: var(--primary-base, var(--primary));
+    box-shadow: 0 0 8px color-mix(in srgb, var(--primary-base, var(--primary)) 65%, transparent);
+    animation: tech-chat-caret-blink 1.05s step-end infinite;
+  }
+}
+
+/* WorkingPlaceholder / BusyDots: the generation-status dots take
+   the primary neon tint (color only; the pulse itself is defined
+   in index.css with its own reduced-motion handling). */
+[role="status"] .animate-busy-pulse {
+  color: var(--primary-base, var(--primary));
+}
+
+/* --- Message meta (timestamps, turn duration) ------------------- */
+/* Mono micro treatment for footer labels: instrument readout
+   styling using the theme's chat timestamp token. */
+.message-footer__label {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.04em;
+  color: var(--chat-timestamp, var(--muted-foreground));
+}

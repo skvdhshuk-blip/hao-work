@@ -1,0 +1,155 @@
+/* ============================================================
+   Tech / neon visual layer — session sidebar
+
+   Same contract as tech-effects.css: every tint is computed from
+   the active theme's semantic CSS variables (color-mix only, no
+   hardcoded hex), so these effects adapt to neon-grid, flexoki,
+   light and dark themes alike. No layout, sizing, spacing, or
+   component-behavior changes — hooks are data-* attributes only.
+
+   Performance notes:
+   - Session lists are large/virtualized: rows get static tints and
+     paint-once decorations (inset edge bar, dot halo) only.
+   - All motion is box-shadow/opacity based and only enabled under
+     `prefers-reduced-motion: no-preference`. The only looping
+     animation is the tiny running-session dot glow, which rides on
+     the existing `animate-busy-pulse` cadence.
+   ============================================================ */
+
+/* --- Session rows -------------------------------------------- */
+/* Hover: subtle lift derived from the theme's interactive hover
+   token. Excluded on active/multi-selected rows so selection and
+   primary semantics stay distinct. */
+[data-session-row]:not([data-session-active="true"]):not([data-session-selected="true"]):hover {
+  background-color: color-mix(in srgb, var(--interactive-hover) 40%, transparent);
+}
+
+/* Active (currently open) session: neon edge bar + theme-derived
+   wash. The bar is an absolutely positioned pseudo-element, so row
+   geometry is untouched; its halo comes from --primary-base. The
+   multi-select highlight keeps precedence when both states apply. */
+[data-session-row][data-session-active="true"]:not([data-session-selected="true"]) {
+  background-color: color-mix(in srgb, var(--primary-base, var(--primary)) 10%, transparent);
+}
+
+[data-session-row][data-session-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 18%;
+  bottom: 18%;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--primary-base, var(--primary));
+  box-shadow: 0 0 8px color-mix(in srgb, var(--primary-base, var(--primary)) 70%, transparent);
+  pointer-events: none;
+}
+
+/* --- Status dots ---------------------------------------------- */
+/* Dot indicators stay aligned with status tokens: running uses the
+   primary accent, unread uses --status-info. Halos are box-shadow
+   only; the pulse is gated on reduced-motion below. */
+[data-status-dot="unread"] {
+  box-shadow: 0 0 5px color-mix(in srgb, var(--status-info) 55%, transparent);
+}
+
+@keyframes oc-sidebar-dot-glow {
+  0%, 100% {
+    box-shadow: 0 0 2px color-mix(in srgb, var(--primary-base, var(--ring)) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 7px color-mix(in srgb, var(--primary-base, var(--ring)) 80%, transparent);
+  }
+}
+
+/* --- Section labels (Recent etc.) ----------------------------- */
+/* Mono + uppercase + tracking: section headers read as instrument
+   micro-labels. Font size is inherited, so row metrics are unchanged. */
+[data-sidebar-section-label] {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: color-mix(in srgb, var(--foreground) 68%, transparent);
+}
+
+/* --- Project / directory rows --------------------------------- */
+/* Project names: monospace + slight tracking for a path-like feel. */
+[data-project-label] {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.03em;
+}
+
+/* Worktree/archived group headers: quiet hover tint. Group headers
+   are few per project, so a background tint here stays cheap. */
+[data-group-header]:hover {
+  background-color: color-mix(in srgb, var(--interactive-hover) 35%, transparent);
+}
+
+/* --- Worktree / branch chips ----------------------------------- */
+/* Branch / PR status line: monospace chip with a hairline ring. The
+   ring is an inset box-shadow (not border) and horizontal padding is
+   cancelled by negative margins, so the outer box is pixel-identical.
+   Colors derive from currentColor, which the component already sets
+   to a muted or --pr-* token value. */
+[data-branch-chip] {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.02em;
+  border-radius: 3px;
+  padding-left: 3px;
+  padding-right: 3px;
+  margin-left: -3px;
+  margin-right: -3px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 26%, transparent);
+  background-color: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+/* --- Sidebar tool areas (header / footer) ---------------------- */
+/* Plain icon buttons (not data-slot="button", so tech-effects.css
+   does not cover them): a soft primary-derived halo on hover. The
+   shared Button in the footer keeps tech-effects' own treatment. */
+[data-sidebar-header] button:not([data-slot="button"]):hover:not(:disabled),
+[data-sidebar-footer] button:not([data-slot="button"]):hover:not(:disabled) {
+  box-shadow: 0 0 10px color-mix(in srgb, var(--primary-base, var(--ring)) 22%, transparent);
+}
+
+/* Header search input: neon focus halo matching the tech-effects
+   input treatment (ring segment first, so the indicator is kept). */
+[data-sidebar-header] input:focus-visible {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--interactive-focus-ring, var(--ring)) 45%, transparent),
+    0 0 14px color-mix(in srgb, var(--interactive-focus-ring, var(--ring)) 30%, transparent);
+}
+
+/* --- Micro-interactions ---------------------------------------- */
+/* Transform/opacity/box-shadow only, and only when motion is welcome. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-session-row] {
+    transition: background-color 150ms ease;
+  }
+
+  [data-group-header] {
+    transition: background-color 150ms ease;
+  }
+
+  [data-sidebar-header] button,
+  [data-sidebar-footer] button {
+    transition:
+      box-shadow 160ms ease,
+      background-color 160ms ease,
+      color 160ms ease;
+  }
+
+  [data-sidebar-header] input {
+    transition: box-shadow 180ms ease;
+  }
+
+  /* Running-session dot: keep the existing oc-busy-pulse opacity
+     pulse (animate-busy-pulse) and layer the halo pulse on the
+     same cadence. The two-attribute selector outranks the plain
+     .animate-busy-pulse rule, which is defined later in index.css. */
+  [data-session-row] [data-status-dot="busy"] {
+    animation:
+      oc-busy-pulse 1.2s ease-in-out infinite,
+      oc-sidebar-dot-glow 1.2s ease-in-out infinite;
+  }
+}

@@ -1216,7 +1216,7 @@ const TaskToolSummary: React.FC<{
 
     if (entries.length === 0 && !hasOutput && !sessionId) {
         return (
-            <div className="relative pr-2 pb-2 pt-2 space-y-2 pl-[1.4375rem]">
+            <div className="relative pr-2 pb-2 pt-2 space-y-2 pl-[1.75rem]">
                 <div className="typography-meta text-muted-foreground/70">
                     {isActive ? 'Waiting for subagent activity...' : 'No subagent session id on task metadata.'}
                 </div>
@@ -1227,8 +1227,8 @@ const TaskToolSummary: React.FC<{
     return (
         <div
             className={cn(
-                'relative pr-2 pb-2 pt-2 space-y-2 pl-[1.4375rem]',
-                'before:absolute before:left-[0.4375rem] before:w-px before:bg-border/80 before:content-[""]',
+                'relative pr-2 pb-2 pt-2 space-y-2 pl-[1.75rem]',
+                'before:absolute before:left-[0.9375rem] before:w-px before:bg-border/80 before:content-[""]',
                 'before:top-[-0.25rem] before:bottom-0'
             )}
         >
@@ -2300,7 +2300,9 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
     }
 
     return (
-        <div>
+        <div
+            data-tool-status={isError ? 'error' : isActive ? 'running' : status === 'completed' ? 'success' : 'idle'}
+        >
             {}
             <div
                 className={cn(
@@ -2452,7 +2454,7 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
                 >
                     {shouldRenderExpandedContent ? (
                         <div
-                            className="relative ml-2 pl-3"
+                            className="relative ml-4 pl-3"
                         >
                             <span
                                 aria-hidden="true"

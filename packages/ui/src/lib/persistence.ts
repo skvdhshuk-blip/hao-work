@@ -6,6 +6,11 @@ import { isFollowUpBehavior, normalizeFollowUpBehavior, useMessageQueueStore, ty
 import { setDirectoryShowHidden } from '@/lib/directoryShowHidden';
 import { setFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
 import { loadAppearancePreferences, applyAppearancePreferences } from '@/lib/appearancePersistence';
+import {
+  isServerThemeMigrationDone,
+  markServerThemeMigrationDone,
+  migrateDesktopSettingsThemeIds,
+} from '@/contexts/theme-default-migration';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { sanitizeStarterRefs } from '@/lib/draftStarters';
 import { normalizeMobileKeyboardMode, setStoredMobileKeyboardMode } from '@/lib/mobileKeyboardMode';
@@ -1427,7 +1432,23 @@ export const syncDesktopSettings = async (): Promise<void> => {
   try {
     const webSettings = await fetchWebSettings();
     if (webSettings) {
-      await applySettings(webSettings);
+      let settingsToApply = webSettings;
+      // Heal the server-persisted theme ids once: the boot-time localStorage
+      // migration alone is silently undone when these older flexoki defaults
+      // are written back into localStorage below.
+      if (!isServerThemeMigrationDone()) {
+        const { settings: migratedSettings, changes: themeChanges } = migrateDesktopSettingsThemeIds(webSettings);
+        if (Object.keys(themeChanges).length > 0) {
+          settingsToApply = migratedSettings;
+          try {
+            await updateDesktopSettings(themeChanges);
+          } catch (error) {
+            console.warn('Failed to persist migrated theme defaults:', error);
+          }
+        }
+        markServerThemeMigrationDone();
+      }
+      await applySettings(settingsToApply);
     }
   } catch (error) {
     console.warn('Failed to synchronise settings:', error);

@@ -271,7 +271,9 @@ async function serveCommand(options) {
         ...process.env,
         OPENCHAMBER_PORT: String(targetPort),
         OPENCHAMBER_RUNTIME: 'web',
-        OPENCODE_BINARY: opencodeBinary,
+        // opencodeBinary may be null (opencode CLI is optional); only pass a
+        // resolved path so the child never receives a stringified "null".
+        ...(opencodeBinary ? { OPENCODE_BINARY: opencodeBinary } : {}),
         OPENCHAMBER_HOST: effectiveHost,
         ...(effectiveUiPassword ? { OPENCHAMBER_UI_PASSWORD: effectiveUiPassword } : {}),
         ...(options.apiOnly === true ? { OPENCHAMBER_API_ONLY: 'true' } : {}),

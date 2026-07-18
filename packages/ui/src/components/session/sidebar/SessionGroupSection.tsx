@@ -1046,6 +1046,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   return (
     <div className="oc-group">
       <div
+        data-group-header="true"
         className={cn('group/gh relative flex items-start justify-between gap-1 py-1 min-w-0 rounded-md', 'cursor-pointer')}
         onClick={() => onToggleCollapsedGroup(groupKey)}
         role="button"
@@ -1210,6 +1211,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
                   )
                 ) : null}
                 <span
+                  data-branch-chip="true"
                   className={cn('min-w-0 truncate text-[11px] font-medium', !statusLine.color && 'text-muted-foreground/80')}
                   style={statusLine.color ? { color: statusLine.color } : undefined}
                 >

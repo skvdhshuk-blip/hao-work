@@ -90,6 +90,7 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
     return (
         <div
             className={`group/assistant-text relative break-words ${chatRenderMode === 'live' ? 'my-1' : ''}`}
+            data-streaming={isStreaming ? 'true' : undefined}
             key={part.id || `${messageId}-text`}
         >
             <MarkdownRenderer

@@ -36,6 +36,7 @@ import { toast } from "@/components/ui"
 import { appendNotification } from "./notification-store"
 import { applyGlobalSessionStatusEvent } from "./global-session-status"
 import type { State } from "./types"
+import { PERMISSION_AUTO_RESOLVED_EVENT, type AutoDecisionRecord } from "./types"
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
 import type { PermissionRequest } from "@/types/permission"
 import type { QuestionRequest } from "@/types/question"
@@ -644,6 +645,7 @@ const getSessionIdFromPayload = (event: Event): string | null => {
     || event.type === "todo.updated"
     || event.type === "permission.asked"
     || event.type === "permission.replied"
+    || event.type === PERMISSION_AUTO_RESOLVED_EVENT
     || event.type === "question.asked"
     || event.type === "question.replied"
     || event.type === "question.rejected"
@@ -1596,6 +1598,9 @@ function handleEvent(
     case "permission.replied":
       draft.permission = { ...current.permission }
       break
+    case PERMISSION_AUTO_RESOLVED_EVENT:
+      draft.autoDecision = { ...current.autoDecision }
+      break
     case "question.asked":
     case "question.replied":
     case "question.rejected":
@@ -2277,6 +2282,7 @@ export function useSessions(directory?: string) {
 
 const selectPermissionRequestsBySession = (state: State) => state.permission
 const selectQuestionRequestsBySession = (state: State) => state.question
+const selectAutoDecisionsBySession = (state: State) => state.autoDecision
 
 type ScopedBlockingRequestCache<T extends { id: string }> = {
   sessionID: string | null
@@ -2330,6 +2336,10 @@ export function useScopedBlockingPermissions(sessionID: string | null, directory
 
 export function useScopedBlockingQuestions(sessionID: string | null, directory?: string): QuestionRequest[] {
   return useScopedBlockingRequests(sessionID, directory, selectQuestionRequestsBySession, EMPTY_QUESTION_REQUESTS)
+}
+
+export function useScopedAutoDecisions(sessionID: string | null, directory?: string): AutoDecisionRecord[] {
+  return useScopedBlockingRequests(sessionID, directory, selectAutoDecisionsBySession, EMPTY_AUTO_DECISIONS)
 }
 
 export function useParentSession(sessionID: string | null, directory?: string): Session | null {
@@ -2819,3 +2829,4 @@ const EMPTY_MESSAGES: Message[] = []
 const EMPTY_PARTS: Part[] = []
 const EMPTY_PERMISSION_REQUESTS: PermissionRequest[] = []
 const EMPTY_QUESTION_REQUESTS: QuestionRequest[] = []
+const EMPTY_AUTO_DECISIONS: AutoDecisionRecord[] = []

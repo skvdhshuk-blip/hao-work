@@ -10,6 +10,7 @@ function state(overrides: Partial<State> = {}): State {
     message: {},
     part: {},
     session_status: {},
+    autoDecision: {},
     ...overrides,
   }
 }
@@ -279,5 +280,140 @@ describe("applyDirectoryEvent", () => {
 
     expect(draft.question.ses_1).not.toBe(afterReply)
     expect(draft.question.ses_1).toEqual([])
+  })
+
+  test("records permission.auto_resolved into autoDecision without touching pending permissions", () => {
+    const draft = state()
+
+    const changed = applyDirectoryEvent(draft, {
+      type: "permission.auto_resolved",
+      properties: {
+        sessionID: "ses_1",
+        requestID: "req_act_1",
+        permission: "Bash",
+        metadata: {
+          input: { command: "pwd" },
+          description: "Read-only command allowlist",
+          _fe_interruptId: "int_1",
+          _fe_actionId: "act_1",
+          _fe_autoDecision: "approve",
+          _fe_source: "rule",
+          _fe_riskLevel: "low",
+        },
+      },
+    } as unknown as Event)
+
+    expect(changed).toBe(true)
+    expect(draft.permission).toEqual({})
+    expect(draft.autoDecision.ses_1).toHaveLength(1)
+    const record = draft.autoDecision.ses_1[0]
+    expect(record?.id).toBe("req_act_1")
+    expect(record?.sessionID).toBe("ses_1")
+    expect(record?.requestID).toBe("req_act_1")
+    expect(record?.permission).toBe("Bash")
+    expect(record?.decision).toBe("approve")
+    expect(record?.source).toBe("rule")
+    expect(record?.riskLevel).toBe("low")
+    expect(record?.reason).toBe("Read-only command allowlist")
+    expect(record?.input).toEqual({ command: "pwd" })
+    expect(typeof record?.time).toBe("number")
+  })
+
+  test("normalizes unknown auto_resolved enums conservatively and ignores malformed payloads", () => {
+    const draft = state()
+
+    const changed = applyDirectoryEvent(draft, {
+      type: "permission.auto_resolved",
+      properties: {
+        sessionID: "ses_1",
+        requestID: "req_act_2",
+        permission: "Write",
+        metadata: {
+          _fe_autoDecision: "bogus",
+          _fe_source: "bogus",
+          _fe_riskLevel: "bogus",
+          description: 42,
+        },
+      },
+    } as unknown as Event)
+
+    expect(changed).toBe(true)
+    const record = draft.autoDecision.ses_1[0]
+    expect(record?.decision).toBe("reject")
+    expect(record?.source).toBe("rule")
+    expect(record?.riskLevel).toBe("high")
+    expect(record?.reason).toBe("")
+
+    expect(applyDirectoryEvent(draft, {
+      type: "permission.auto_resolved",
+      properties: { sessionID: "", requestID: "req_act_3" },
+    } as unknown as Event)).toBe(false)
+    expect(applyDirectoryEvent(draft, {
+      type: "permission.auto_resolved",
+      properties: { sessionID: "ses_1" },
+    } as unknown as Event)).toBe(false)
+    expect(draft.autoDecision.ses_1).toHaveLength(1)
+  })
+
+  test("dedupes auto_resolved by requestID and skips identical repeats", () => {
+    const draft = state()
+    const event = {
+      type: "permission.auto_resolved",
+      properties: {
+        sessionID: "ses_1",
+        requestID: "req_act_1",
+        permission: "Bash",
+        metadata: {
+          description: "allowlisted",
+          _fe_autoDecision: "approve",
+          _fe_source: "rule",
+          _fe_riskLevel: "low",
+        },
+      },
+    } as unknown as Event
+
+    expect(applyDirectoryEvent(draft, event)).toBe(true)
+    expect(applyDirectoryEvent(draft, event)).toBe(false)
+    expect(draft.autoDecision.ses_1).toHaveLength(1)
+
+    const changedDecision = {
+      type: "permission.auto_resolved",
+      properties: {
+        sessionID: "ses_1",
+        requestID: "req_act_1",
+        permission: "Bash",
+        metadata: {
+          description: "allowlisted",
+          _fe_autoDecision: "reject",
+          _fe_source: "review",
+          _fe_riskLevel: "medium",
+        },
+      },
+    } as unknown as Event
+    expect(applyDirectoryEvent(draft, changedDecision)).toBe(true)
+    expect(draft.autoDecision.ses_1).toHaveLength(1)
+    const record = draft.autoDecision.ses_1[0]
+    expect(record?.decision).toBe("reject")
+    expect(record?.source).toBe("review")
+    expect(record?.riskLevel).toBe("medium")
+  })
+
+  test("caps autoDecision history per session", () => {
+    const draft = state()
+    for (let index = 0; index < 105; index += 1) {
+      applyDirectoryEvent(draft, {
+        type: "permission.auto_resolved",
+        properties: {
+          sessionID: "ses_1",
+          requestID: `req_act_${index}`,
+          permission: "Read",
+          metadata: { _fe_autoDecision: "approve", _fe_source: "rule", _fe_riskLevel: "low" },
+        },
+      } as unknown as Event)
+    }
+
+    expect(draft.autoDecision.ses_1).toHaveLength(100)
+    expect(draft.autoDecision.ses_1[0]?.requestID).toBe("req_act_5")
+    expect(draft.autoDecision.ses_1.at(-1)?.requestID).toBe("req_act_104")
   })
 })

@@ -11,6 +11,7 @@ import { RemoteConnectionForm } from './RemoteConnectionForm';
 import { desktopHostsGet, desktopHostsSet } from '@/lib/desktopHosts';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { isEngineReady, resolveEngineMode, type OnboardingEngineMode } from './engineMode';
 
 const INSTALL_COMMAND = 'curl -fsSL https://opencode.ai/install | bash';
 const DOCS_URL = 'https://opencode.ai/docs';
@@ -56,6 +57,7 @@ export function ChooserScreen({ onCliAvailable }: ChooserScreenProps) {
   const [activeTab, setActiveTab] = React.useState<'local' | 'remote'>('local');
   const [advancedOpen, setAdvancedOpen] = React.useState(false);
   const [troubleOpen, setTroubleOpen] = React.useState(false);
+  const [engineMode, setEngineMode] = React.useState<OnboardingEngineMode>('unknown');
 
   React.useEffect(() => {
     setIsDesktopApp(isDesktopShell());
@@ -108,7 +110,8 @@ export function ChooserScreen({ onCliAvailable }: ChooserScreenProps) {
       const response = await runtimeFetch('/health');
       if (!response.ok) return false;
       const data = await response.json();
-      return data.openCodeRunning === true || data.isOpenCodeReady === true;
+      setEngineMode(resolveEngineMode(data));
+      return isEngineReady(data);
     } catch {
       return false;
     }
@@ -279,7 +282,51 @@ export function ChooserScreen({ onCliAvailable }: ChooserScreenProps) {
           </div>
         ) : null}
 
-        {showLocal && (
+        {showLocal && engineMode !== 'external' && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground text-center leading-relaxed">
+              {t('onboarding.localSetup.bundledEngine.description')}
+            </p>
+
+            <div
+              className="rounded-lg border px-4 py-3 flex items-center gap-3"
+              style={{
+                borderColor: 'color-mix(in srgb, var(--primary-base) 20%, transparent)',
+                backgroundColor: 'color-mix(in srgb, var(--primary-base) 6%, transparent)',
+              }}
+              role="status"
+              aria-live="polite"
+            >
+              <span className="relative inline-flex h-2.5 w-2.5 shrink-0" aria-hidden>
+                <span
+                  className="absolute inset-0 rounded-full"
+                  style={{
+                    backgroundColor: 'var(--primary-base)',
+                    animation: 'pulse-opacity 1.6s ease-in-out infinite',
+                  }}
+                />
+                <span
+                  className="absolute inset-[-4px] rounded-full"
+                  style={{
+                    backgroundColor: 'var(--primary-base)',
+                    animation: 'pulse-opacity-dim 1.6s ease-in-out infinite',
+                    opacity: 0,
+                  }}
+                />
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-foreground leading-tight">
+                  {t('onboarding.localSetup.bundledEngine.status.waiting')}
+                </div>
+                <div className="text-xs text-muted-foreground leading-tight mt-0.5">
+                  {t('onboarding.localSetup.bundledEngine.status.autoContinue')}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showLocal && engineMode === 'external' && (
           <div className="space-y-4">
             {platform === 'windows' && (
               <div className="rounded-lg border border-border bg-background/50 p-4">
