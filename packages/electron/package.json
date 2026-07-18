@@ -1,6 +1,6 @@
 {
   "name": "@openchamber/electron",
-  "version": "1.16.16",
+  "version": "1.16.17",
   "private": true,
   "description": "Hao Work desktop runtime powered by HaoCode",
   "author": "Hao Work contributors",

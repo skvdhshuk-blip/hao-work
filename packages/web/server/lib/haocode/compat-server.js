@@ -42,6 +42,112 @@ const PROVIDER_DEFINITIONS = {
   },
 };
 
+const BUILTIN_PROVIDER_IDS = new Set(Object.keys(PROVIDER_DEFINITIONS));
+const PROVIDER_TYPES = new Set(['anthropic', 'openai', 'openai_chat']);
+
+// OAuth login flows (subscription tokens) for the built-in providers that
+// support them. Anthropic uses the manual paste-code flow (method 'code');
+// OpenAI uses a browser flow with a localhost redirect listener (method
+// 'auto'). Client ids are public OAuth client ids and may be overridden via
+// environment for gateways or testing.
+const OAUTH_FLOWS = Object.freeze({
+  anthropic: {
+    method: 'code',
+    label: 'Claude Pro/Max（浏览器授权）',
+    clientIdEnv: 'HAOWORK_OAUTH_ANTHROPIC_CLIENT_ID',
+    defaultClientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+    authorizeUrl: 'https://claude.ai/oauth/authorize',
+    tokenUrl: 'https://console.anthropic.com/v1/oauth/token',
+    redirectUri: 'https://console.anthropic.com/oauth/code/callback',
+    scope: 'org:create_api_key user:profile user:inference',
+    extraAuthorizeParams: { code: 'true' },
+    instructions: '在打开的浏览器页面中完成授权，复制页面显示的验证码（形如 code#state），粘贴回这里完成登录。',
+  },
+  openai: {
+    method: 'auto',
+    label: 'ChatGPT Pro/Plus（浏览器授权）',
+    clientIdEnv: 'HAOWORK_OAUTH_OPENAI_CLIENT_ID',
+    defaultClientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
+    authorizeUrl: 'https://auth.openai.com/oauth/authorize',
+    tokenUrl: 'https://auth.openai.com/oauth/token',
+    scope: 'openid profile email offline_access',
+    extraAuthorizeParams: { originator: 'opencode' },
+    instructions: '在打开的浏览器页面中完成 ChatGPT 授权；授权成功后浏览器会自动跳回本地页面完成登录。',
+  },
+});
+
+const OAUTH_CALLBACK_PORTS = Object.freeze(
+  Array.from({ length: 11 }, (_unused, index) => 1455 + index),
+);
+const OAUTH_PENDING_TTL_MS = 10 * 60 * 1000;
+const OAUTH_REFRESH_SKEW_MS = 5 * 60 * 1000;
+const OAUTH_CALLBACK_TIMEOUT_MS = 120_000;
+
+const base64url = (buffer) => buffer
+  .toString('base64')
+  .replaceAll('+', '-')
+  .replaceAll('/', '_')
+  .replace(/=+$/, '');
+
+const createPkcePair = () => {
+  const verifier = base64url(crypto.randomBytes(32));
+  const challenge = base64url(crypto.createHash('sha256').update(verifier).digest());
+  return { verifier, challenge };
+};
+
+const decodeJwtPayload = (token) => {
+  if (typeof token !== 'string') return null;
+  const segment = token.split('.')[1];
+  if (!segment) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(segment.replaceAll('-', '+').replaceAll('_', '/'), 'base64').toString('utf8'));
+    return decoded && typeof decoded === 'object' ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
+const oauthClientId = (flow) => process.env[flow.clientIdEnv] || flow.defaultClientId;
+
+// POST an application/x-www-form-urlencoded OAuth token request and return the
+// decoded payload. Any transport error, non-2xx status, or payload without an
+// access_token throws so callers can fall back to other credentials.
+const postOAuthTokenRequest = async (fetchImpl, url, params) => {
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams(params).toString(),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || typeof payload.access_token !== 'string' || !payload.access_token) {
+    const detail = (payload && (payload.error_description || payload.error)) || `HTTP ${response.status}`;
+    throw new Error(`OAuth token request failed: ${detail}`);
+  }
+  return payload;
+};
+
+// Token endpoint payload -> persisted oauth record shape
+// { access, refresh, expires (ms epoch), accountId? }. A missing refresh_token
+// in a refresh response keeps the previous one (several providers rotate
+// access tokens only).
+const oauthRecordFromTokenPayload = (payload, previous = null, accountId = null) => ({
+  access: payload.access_token,
+  refresh: typeof payload.refresh_token === 'string' && payload.refresh_token
+    ? payload.refresh_token
+    : previous?.refresh ?? null,
+  expires: Date.now() + Math.max(1, Number(payload.expires_in) || 3600) * 1000,
+  ...(accountId ? { accountId } : (previous?.accountId ? { accountId: previous.accountId } : {})),
+});
+
+const slugifyProviderId = (value) => value
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '')
+  .slice(0, 64)
+  .replace(/-+$/g, '');
+
+const hasEnvCredential = (definition) => definition.env.some((name) => Boolean(process.env[name]));
+
 const positiveInteger = (value) => {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : null;
@@ -65,10 +171,10 @@ const resolveModelLimit = ({ metadata, providerId, modelId, saved = {} }) => {
   };
 };
 
-const modelDefinition = (providerID, id, limit) => ({
+const modelDefinition = (providerID, id, limit, baseUrl = '') => ({
   id,
   providerID,
-  api: { id, url: PROVIDER_DEFINITIONS[providerID]?.baseUrl ?? '', npm: '' },
+  api: { id, url: baseUrl || PROVIDER_DEFINITIONS[providerID]?.baseUrl || '', npm: '' },
   name: id,
   capabilities: {
     temperature: true,
@@ -385,6 +491,9 @@ export const createHaoCodeCompatibilityServer = ({
   logger = console,
   workerOptions = {},
   modelsMetadataLoader = getModelsMetadata,
+  fetchImpl = globalThis.fetch?.bind(globalThis),
+  oauthCallbackPorts = OAUTH_CALLBACK_PORTS,
+  oauthCallbackTimeoutMs = OAUTH_CALLBACK_TIMEOUT_MS,
 }) => {
   const app = express();
   const server = http.createServer(app);
@@ -393,6 +502,12 @@ export const createHaoCodeCompatibilityServer = ({
   const globalEventClients = new Set();
   const directoryEventClients = new Map();
   const activeRuns = new Set();
+  // In-flight OAuth flows keyed by provider id. Anthropic pendings hold the
+  // PKCE verifier/state for the paste-code callback; OpenAI pendings also own
+  // the localhost redirect listener and the promise the callback route awaits.
+  const pendingOAuth = new Map();
+  // Single-flight map so concurrent runs share one token refresh per provider.
+  const oauthRefreshInflight = new Map();
   // Smart-mode escalation reasons waiting for their interrupt to arrive,
   // keyed by `${interruptId}:${actionId}`.
   const pendingEscalations = new Map();
@@ -535,23 +650,366 @@ export const createHaoCodeCompatibilityServer = ({
     }
   };
 
+  // Merged provider registry: built-in definitions plus user-defined custom
+  // providers persisted in state.customProviders. Persisted entries are
+  // validated on write, but normalize defensively so a hand-edited state file
+  // cannot break the listing.
+  const providerDefinitions = async () => {
+    const custom = await store.read((state) => state.customProviders ?? {});
+    const definitions = {};
+    for (const [id, definition] of Object.entries(PROVIDER_DEFINITIONS)) {
+      definitions[id] = {
+        name: definition.name,
+        providerType: definition.providerType,
+        baseUrl: definition.baseUrl,
+        env: [definition.env],
+        models: [...definition.models],
+        custom: false,
+      };
+    }
+    for (const [id, definition] of Object.entries(custom)) {
+      if (!definition || typeof definition !== 'object') continue;
+      definitions[id] = {
+        name: typeof definition.name === 'string' && definition.name ? definition.name : id,
+        providerType: PROVIDER_TYPES.has(definition.providerType) ? definition.providerType : 'openai_chat',
+        baseUrl: typeof definition.baseUrl === 'string' ? definition.baseUrl : '',
+        env: [],
+        models: Array.isArray(definition.models) ? definition.models.filter((model) => typeof model === 'string' && model) : [],
+        custom: true,
+        contextWindow: positiveInteger(definition.contextWindow) ?? undefined,
+        maxTokens: positiveInteger(definition.maxTokens) ?? undefined,
+      };
+    }
+    return definitions;
+  };
+
+  // Custom providers keep their creation-time limits on the definition;
+  // per-provider PATCH overrides live in state.providers and win when set.
+  const limitSourceFor = (definition, saved) => (definition.custom
+    ? { contextWindow: definition.contextWindow, maxTokens: definition.maxTokens, ...saved }
+    : saved);
+
+  const buildProviderEntry = ({ id, definition, saved, metadata }) => {
+    const baseUrl = saved.baseUrl || definition.baseUrl;
+    const models = [...new Set([...(definition.models ?? []), ...(Array.isArray(saved.models) ? saved.models : [])])];
+    return {
+      id,
+      name: definition.name,
+      source: saved.apiKey || saved.oauth?.access || hasEnvCredential(definition) ? 'api' : 'custom',
+      env: definition.env,
+      options: {
+        baseURL: baseUrl,
+        _fe_providerType: saved.providerType || definition.providerType,
+      },
+      models: Object.fromEntries(models.map((model) => [model, modelDefinition(
+        id,
+        model,
+        resolveModelLimit({ metadata, providerId: id, modelId: model, saved: limitSourceFor(definition, saved) }),
+        baseUrl,
+      )])),
+    };
+  };
+
+  const listProviders = async () => {
+    const metadata = await loadModelsMetadata();
+    const definitions = await providerDefinitions();
+    const providers = await Promise.all(Object.entries(definitions).map(async ([id, definition]) => buildProviderEntry({
+      id,
+      definition,
+      saved: await store.getProviderSettings(id),
+      metadata,
+    })));
+    return {
+      providers,
+      connected: providers.filter((provider) => provider.source === 'api').map((provider) => provider.id),
+      defaults: Object.fromEntries(providers
+        .map((provider) => [provider.id, Object.keys(provider.models)[0]])
+        .filter(([, model]) => Boolean(model))),
+    };
+  };
+
+  const providerSettingsResponse = async (providerId, definition) => {
+    const saved = await store.getProviderSettings(providerId);
+    return {
+      providerId,
+      baseUrl: saved.baseUrl || definition.baseUrl,
+      providerType: saved.providerType || definition.providerType,
+      models: Array.isArray(saved.models) ? saved.models : [],
+      contextWindow: positiveInteger(saved.contextWindow) ?? (definition.custom ? positiveInteger(definition.contextWindow) : null),
+      maxTokens: positiveInteger(saved.maxTokens) ?? (definition.custom ? positiveInteger(definition.maxTokens) : null),
+      _fe_agentEngine: 'haocode',
+    };
+  };
+
+  // --- OAuth login flows ---------------------------------------------------
+
+  const getPendingOAuth = (providerId) => {
+    const pending = pendingOAuth.get(providerId);
+    if (!pending) return null;
+    if (pending.expiresAt <= Date.now()) {
+      cancelPendingOAuth(providerId);
+      return null;
+    }
+    return pending;
+  };
+
+  function cancelPendingOAuth(providerId, result = { error: 'OAuth flow was cancelled.' }) {
+    const pending = pendingOAuth.get(providerId);
+    if (!pending) return;
+    pendingOAuth.delete(providerId);
+    clearTimeout(pending.timeout);
+    if (pending.resolveWait) pending.resolveWait(result);
+    if (pending.server) {
+      try { pending.server.close(); } catch { /* listener already closed */ }
+    }
+  }
+
+  // Start the localhost redirect listener for the OpenAI browser flow. Ports
+  // are tried in order (1455-1465 by default) so a busy port falls through;
+  // port 0 in the list binds an ephemeral port (used by tests).
+  const startOAuthCallbackListener = async (providerId) => {
+    let lastError = null;
+    for (const candidate of oauthCallbackPorts) {
+      const listener = http.createServer((incoming, outgoing) => {
+        const url = new URL(incoming.url ?? '/', 'http://localhost');
+        const result = {
+          code: url.searchParams.get('code'),
+          state: url.searchParams.get('state'),
+          error: url.searchParams.get('error_description') || url.searchParams.get('error'),
+        };
+        // Route the redirect to the pending flow whose state matches; fall
+        // back to this provider's pending so a state mismatch surfaces as a
+        // validation error instead of a hung callback.
+        const pending = [...pendingOAuth.values()].find((entry) => entry.flow === 'openai' && entry.state === result.state)
+          ?? pendingOAuth.get(providerId);
+        if (pending?.resolveWait) {
+          clearTimeout(pending.timeout);
+          pending.resolveWait(result);
+        }
+        outgoing.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        outgoing.end(`<!doctype html><html><head><meta charset="utf-8"><title>Hao Work</title></head><body style="font-family:system-ui;padding:2rem"><h2>${result.error ? '授权失败' : '授权完成'}</h2><p>${result.error ? '浏览器授权未完成，请返回应用重试。' : '登录已完成，可以关闭此页面并返回应用。'}</p></body></html>`);
+      });
+      try {
+        await new Promise((resolve, reject) => {
+          listener.once('error', reject);
+          listener.listen(candidate, '127.0.0.1', resolve);
+        });
+        const address = listener.address();
+        return { server: listener, port: typeof address === 'object' && address ? address.port : candidate };
+      } catch (error) {
+        lastError = error;
+        try { listener.close(); } catch { /* not listening */ }
+      }
+    }
+    throw new Error(`Unable to start the OAuth callback listener: ${lastError?.message || 'no port available'}`);
+  };
+
+  const beginAnthropicOAuth = (providerId, flow) => {
+    const { verifier, challenge } = createPkcePair();
+    // Anthropic convention: the OAuth state doubles as the PKCE verifier, and
+    // the page shows "<code>#<state>" for the user to paste back.
+    const state = verifier;
+    pendingOAuth.set(providerId, {
+      flow: 'anthropic',
+      verifier,
+      state,
+      expiresAt: Date.now() + OAUTH_PENDING_TTL_MS,
+    });
+    const url = new URL(flow.authorizeUrl);
+    for (const [key, value] of Object.entries(flow.extraAuthorizeParams)) url.searchParams.set(key, value);
+    url.searchParams.set('client_id', oauthClientId(flow));
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('redirect_uri', flow.redirectUri);
+    url.searchParams.set('scope', flow.scope);
+    url.searchParams.set('code_challenge', challenge);
+    url.searchParams.set('code_challenge_method', 'S256');
+    url.searchParams.set('state', state);
+    return { url: url.toString(), method: flow.method, instructions: flow.instructions };
+  };
+
+  const beginOpenAiOAuth = async (providerId, flow) => {
+    cancelPendingOAuth(providerId);
+    const { server: listener, port } = await startOAuthCallbackListener(providerId);
+    const { verifier, challenge } = createPkcePair();
+    const state = base64url(crypto.randomBytes(16));
+    let resolveWait;
+    const wait = new Promise((resolve) => { resolveWait = resolve; });
+    const timeout = setTimeout(() => {
+      resolveWait({ error: 'Timed out waiting for the browser to finish authorization.' });
+    }, oauthCallbackTimeoutMs);
+    timeout.unref?.();
+    const redirectUri = `http://localhost:${port}/auth/callback`;
+    pendingOAuth.set(providerId, {
+      flow: 'openai',
+      verifier,
+      state,
+      redirectUri,
+      server: listener,
+      wait,
+      resolveWait,
+      timeout,
+      expiresAt: Date.now() + OAUTH_PENDING_TTL_MS,
+    });
+    const url = new URL(flow.authorizeUrl);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('client_id', oauthClientId(flow));
+    url.searchParams.set('redirect_uri', redirectUri);
+    url.searchParams.set('scope', flow.scope);
+    url.searchParams.set('code_challenge', challenge);
+    url.searchParams.set('code_challenge_method', 'S256');
+    url.searchParams.set('state', state);
+    for (const [key, value] of Object.entries(flow.extraAuthorizeParams)) url.searchParams.set(key, value);
+    return { url: url.toString(), method: flow.method, instructions: flow.instructions };
+  };
+
+  const completeAnthropicOAuth = async (providerId, flow, rawCode) => {
+    const pending = getPendingOAuth(providerId);
+    if (!pending || pending.flow !== 'anthropic') {
+      throw Object.assign(new Error('No Anthropic OAuth flow is in progress; start authorization first.'), { status: 400 });
+    }
+    if (!rawCode) {
+      throw Object.assign(new Error('Paste the authorization code shown in the browser.'), { status: 400 });
+    }
+    const [code, providedState] = rawCode.split('#');
+    if (!code) {
+      throw Object.assign(new Error('The pasted value does not look like an authorization code.'), { status: 400 });
+    }
+    if (providedState && providedState !== pending.state) {
+      throw Object.assign(new Error('The pasted code does not match the pending authorization (state mismatch); start over.'), { status: 400 });
+    }
+    const payload = await postOAuthTokenRequest(fetchImpl, flow.tokenUrl, {
+      grant_type: 'authorization_code',
+      client_id: oauthClientId(flow),
+      code,
+      state: providedState || pending.state,
+      redirect_uri: flow.redirectUri,
+      code_verifier: pending.verifier,
+    });
+    pendingOAuth.delete(providerId);
+    return oauthRecordFromTokenPayload(payload);
+  };
+
+  const completeOpenAiOAuth = async (providerId, flow) => {
+    const pending = getPendingOAuth(providerId);
+    if (!pending || pending.flow !== 'openai') {
+      throw Object.assign(new Error('No OpenAI OAuth flow is in progress; start authorization first.'), { status: 400 });
+    }
+    let result;
+    try {
+      result = await pending.wait;
+    } finally {
+      cancelPendingOAuth(providerId);
+    }
+    if (result?.error || !result?.code) {
+      throw Object.assign(new Error(`OpenAI authorization failed: ${result?.error || 'no code returned'}`), { status: 400 });
+    }
+    if (result.state !== pending.state) {
+      throw Object.assign(new Error('The browser redirect does not match the pending authorization (state mismatch); start over.'), { status: 400 });
+    }
+    const payload = await postOAuthTokenRequest(fetchImpl, flow.tokenUrl, {
+      grant_type: 'authorization_code',
+      code: result.code,
+      redirect_uri: pending.redirectUri,
+      client_id: oauthClientId(flow),
+      code_verifier: pending.verifier,
+    });
+    const accountId = decodeJwtPayload(payload.id_token)?.chatgpt_account_id
+      ?? decodeJwtPayload(payload.access_token)?.chatgpt_account_id
+      ?? null;
+    return oauthRecordFromTokenPayload(payload, null, typeof accountId === 'string' && accountId ? accountId : null);
+  };
+
+  const storeOAuthRecord = async (providerId, record) => {
+    await store.mutate((state) => {
+      const entry = state.providers[providerId] ?? {};
+      entry.oauth = record;
+      state.providers[providerId] = entry;
+    });
+  };
+
+  // Refresh a near-expiry oauth record through the provider's refresh_token
+  // grant. Single-flight per provider so concurrent runs share one request.
+  // Returns the fresh access token, or null when the refresh failed (callers
+  // then fall back to a saved apiKey or environment credentials).
+  const refreshOAuthTokens = (providerId, flow) => {
+    const inflight = oauthRefreshInflight.get(providerId);
+    if (inflight) return inflight;
+    const task = (async () => {
+      const saved = await store.getProviderSettings(providerId);
+      const oauth = saved.oauth;
+      if (!oauth?.refresh) return null;
+      try {
+        const payload = await postOAuthTokenRequest(fetchImpl, flow.tokenUrl, {
+          grant_type: 'refresh_token',
+          refresh_token: oauth.refresh,
+          client_id: oauthClientId(flow),
+        });
+        const record = oauthRecordFromTokenPayload(payload, oauth);
+        await store.mutate((state) => {
+          const entry = state.providers[providerId] ?? {};
+          // Only write back when the stored refresh token is still the one we
+          // used, so a concurrent fresh login is never clobbered.
+          if (entry.oauth?.refresh === oauth.refresh) entry.oauth = record;
+          state.providers[providerId] = entry;
+        });
+        return record.access;
+      } catch (error) {
+        logger.warn?.(`[HaoCode compat] OAuth token refresh for ${providerId} failed: ${error.message}`);
+        return null;
+      }
+    })();
+    oauthRefreshInflight.set(providerId, task);
+    try {
+      return task;
+    } finally {
+      task.finally(() => {
+        if (oauthRefreshInflight.get(providerId) === task) oauthRefreshInflight.delete(providerId);
+      });
+    }
+  };
+
+  // Credential resolution order for a provider with a stored oauth record:
+  // a non-expiring access token is used directly; a token within the 5-minute
+  // expiry skew is refreshed synchronously first; any failure falls through
+  // to null so the caller can use saved.apiKey / environment credentials.
+  const resolveOAuthAccessToken = async (providerId) => {
+    const flow = OAUTH_FLOWS[providerId];
+    if (!flow) return null;
+    const saved = await store.getProviderSettings(providerId);
+    const oauth = saved.oauth;
+    if (!oauth || typeof oauth.access !== 'string' || !oauth.access) return null;
+    const expires = Number(oauth.expires) || 0;
+    if (expires - Date.now() > OAUTH_REFRESH_SKEW_MS) return oauth.access;
+    if (typeof oauth.refresh === 'string' && oauth.refresh) {
+      return refreshOAuthTokens(providerId, flow);
+    }
+    return expires > Date.now() ? oauth.access : null;
+  };
+
   const providerSettings = async (providerId, requestedModel) => {
-    const definition = PROVIDER_DEFINITIONS[providerId] ?? PROVIDER_DEFINITIONS.deepseek;
+    const definitions = await providerDefinitions();
+    const definition = definitions[providerId] ?? definitions.deepseek;
     const saved = await store.getProviderSettings(providerId);
     const model = requestedModel || saved.model || definition.models[0];
     const limit = resolveModelLimit({
       metadata: await loadModelsMetadata(),
       providerId,
       modelId: model,
-      saved,
+      saved: limitSourceFor(definition, saved),
     });
+    // Credential resolution order: oauth access token (refreshed when near
+    // expiry) -> saved apiKey -> environment variable. Anthropic OAuth access
+    // tokens are Bearer credentials rather than x-api-key keys, so the worker
+    // request marks them with oauthBearer.
+    const oauthAccess = await resolveOAuthAccessToken(providerId);
     return {
-      apiKey: saved.apiKey || process.env[definition.env] || null,
+      apiKey: oauthAccess || saved.apiKey || definition.env.map((name) => process.env[name]).find(Boolean) || null,
       baseUrl: saved.baseUrl || definition.baseUrl,
       providerType: saved.providerType || definition.providerType,
       model,
       contextWindow: limit.context,
       maxTokens: limit.output,
+      ...(oauthAccess && providerId === 'anthropic' ? { oauthBearer: true } : {}),
     };
   };
 
@@ -1091,74 +1549,199 @@ export const createHaoCodeCompatibilityServer = ({
   });
 
   app.get('/config/providers', async (_request, response) => {
-    const metadata = await loadModelsMetadata();
-    const providers = await Promise.all(Object.entries(PROVIDER_DEFINITIONS).map(async ([id, definition]) => {
-      const saved = await store.getProviderSettings(id);
-      const models = [...new Set([...(definition.models ?? []), ...(Array.isArray(saved.models) ? saved.models : [])])];
-      return {
-        id,
-        name: definition.name,
-        source: saved.apiKey || process.env[definition.env] ? 'api' : 'custom',
-        env: [definition.env],
-        options: {
-          baseURL: saved.baseUrl || definition.baseUrl,
-          _fe_providerType: saved.providerType || definition.providerType,
-        },
-        models: Object.fromEntries(models.map((model) => [model, modelDefinition(
-          id,
-          model,
-          resolveModelLimit({ metadata, providerId: id, modelId: model, saved }),
-        )])),
-      };
-    }));
-    response.json({
-      providers,
-      default: Object.fromEntries(providers.map((provider) => [provider.id, Object.keys(provider.models)[0]])),
-    });
+    const { providers, defaults } = await listProviders();
+    response.json({ providers, default: defaults });
   });
-  app.get('/provider/auth', (_request, response) => response.json(Object.fromEntries(
-    Object.keys(PROVIDER_DEFINITIONS).map((id) => [id, [{ type: 'api', label: `${PROVIDER_DEFINITIONS[id].name} API key` }]]),
-  )));
+  // SDK provider.list() contract: the same entries as /config/providers plus
+  // the ids with usable credentials (saved apiKey or environment variable).
+  app.get('/provider', async (_request, response) => {
+    const { providers, connected, defaults } = await listProviders();
+    response.json({ all: providers, connected, default: defaults });
+  });
+  app.put('/provider/custom', async (request, response) => {
+    const body = request.body && typeof request.body === 'object' ? request.body : {};
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name) return response.status(400).json({ error: 'Provider name is required.' });
+    const providerType = typeof body.providerType === 'string' ? body.providerType.trim() : '';
+    if (!PROVIDER_TYPES.has(providerType)) return response.status(400).json({ error: 'Unsupported HaoCode provider type.' });
+    const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+    let parsedUrl = null;
+    try { parsedUrl = new URL(baseUrl); } catch { parsedUrl = null; }
+    if (!parsedUrl || !['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return response.status(400).json({ error: 'Base URL must be a valid http or https URL.' });
+    }
+    const limits = {};
+    for (const key of ['contextWindow', 'maxTokens']) {
+      if (body[key] === undefined || body[key] === null || body[key] === '') continue;
+      const parsed = positiveInteger(body[key]);
+      if (parsed === null) return response.status(400).json({ error: `${key} must be a positive integer.` });
+      limits[key] = parsed;
+    }
+    let id;
+    if (body.id !== undefined && body.id !== null && String(body.id).trim() !== '') {
+      id = String(body.id).trim();
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+        return response.status(400).json({ error: 'Provider id must use lowercase letters, digits, and hyphens.' });
+      }
+    } else {
+      id = slugifyProviderId(name);
+      if (!id) return response.status(400).json({ error: 'Provider name must contain letters or digits.' });
+    }
+    const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+    const models = Array.isArray(body.models)
+      ? [...new Set(body.models.map((model) => (typeof model === 'string' ? model.trim() : '')).filter(Boolean))]
+      : [];
+
+    let conflict = false;
+    await store.mutate((state) => {
+      state.customProviders ??= {};
+      if (BUILTIN_PROVIDER_IDS.has(id) || state.customProviders[id]) {
+        conflict = true;
+        return;
+      }
+      state.customProviders[id] = {
+        name,
+        providerType,
+        baseUrl,
+        env: [],
+        models,
+        ...limits,
+        createdAt: new Date().toISOString(),
+      };
+      if (apiKey) state.providers[id] = { ...(state.providers[id] ?? {}), apiKey };
+    });
+    if (conflict) return response.status(409).json({ error: 'A provider with this id already exists.' });
+
+    const definitions = await providerDefinitions();
+    return response.json(buildProviderEntry({
+      id,
+      definition: definitions[id],
+      saved: await store.getProviderSettings(id),
+      metadata: await loadModelsMetadata(),
+    }));
+  });
+  app.delete('/provider/custom/:providerID', async (request, response) => {
+    const providerId = request.params.providerID;
+    if (BUILTIN_PROVIDER_IDS.has(providerId)) {
+      return response.status(400).json({ error: 'Built-in providers cannot be removed.' });
+    }
+    let removed = false;
+    await store.mutate((state) => {
+      state.customProviders ??= {};
+      if (!state.customProviders[providerId]) return;
+      delete state.customProviders[providerId];
+      delete state.providers[providerId];
+      removed = true;
+    });
+    if (!removed) return response.status(404).json({ error: 'Unknown custom provider.' });
+    return response.json({ removed: true });
+  });
+  // SDK provider.auth() contract: { [providerId]: ProviderAuthMethod[] }.
+  // Built-in Anthropic/OpenAI additionally expose one oauth method; DeepSeek
+  // and custom providers stay api-key only.
+  app.get('/provider/auth', async (_request, response) => {
+    const definitions = await providerDefinitions();
+    response.json(Object.fromEntries(Object.entries(definitions).map(([id, definition]) => {
+      const methods = [{ type: 'api', label: `${definition.name} API key` }];
+      const flow = OAUTH_FLOWS[id];
+      if (flow && !definition.custom) methods.push({ type: 'oauth', label: flow.label });
+      return [id, methods];
+    })));
+  });
+  // SDK provider.oauth.authorize() contract: body { method } ->
+  // { url, method: 'auto' | 'code', instructions }. Anthropic starts a manual
+  // paste-code flow (PKCE verifier doubles as the OAuth state); OpenAI starts
+  // a browser flow with a localhost redirect listener.
+  app.post('/provider/:providerID/oauth/authorize', async (request, response) => {
+    const providerId = request.params.providerID;
+    const flow = OAUTH_FLOWS[providerId];
+    const definitions = await providerDefinitions();
+    if (!flow || !definitions[providerId] || definitions[providerId].custom) {
+      return response.status(400).json({ error: `Provider ${providerId} does not support OAuth login.` });
+    }
+    try {
+      const authorization = providerId === 'anthropic'
+        ? beginAnthropicOAuth(providerId, flow)
+        : await beginOpenAiOAuth(providerId, flow);
+      return response.json(authorization);
+    } catch (error) {
+      return response.status(400).json({ error: error?.message || 'Failed to start OAuth authorization.' });
+    }
+  });
+  // SDK provider.oauth.callback() contract: body { method, code? } -> boolean.
+  // Anthropic expects the pasted "<code>#<state>" (or bare code); OpenAI
+  // awaits the localhost browser redirect (no code in the body).
+  app.post('/provider/:providerID/oauth/callback', async (request, response) => {
+    const providerId = request.params.providerID;
+    const flow = OAUTH_FLOWS[providerId];
+    const definitions = await providerDefinitions();
+    if (!flow || !definitions[providerId] || definitions[providerId].custom) {
+      return response.status(400).json({ error: `Provider ${providerId} does not support OAuth login.` });
+    }
+    try {
+      const record = providerId === 'anthropic'
+        ? await completeAnthropicOAuth(providerId, flow, typeof request.body?.code === 'string' ? request.body.code.trim() : '')
+        : await completeOpenAiOAuth(providerId, flow);
+      await storeOAuthRecord(providerId, record);
+      return response.json(true);
+    } catch (error) {
+      return response.status(error?.status || 400).json({ error: error?.message || 'OAuth callback failed.' });
+    }
+  });
   app.get('/provider/:providerID/source', async (request, response) => {
     const providerId = request.params.providerID;
-    const definition = PROVIDER_DEFINITIONS[providerId];
+    const definitions = await providerDefinitions();
+    const definition = definitions[providerId];
     if (!definition) return response.status(404).json({ error: 'Unknown provider.' });
     const saved = await store.getProviderSettings(providerId);
-    const authExists = Boolean(saved.apiKey || process.env[definition.env]);
+    const authExists = Boolean(saved.apiKey || saved.oauth?.access || hasEnvCredential(definition));
     return response.json({
       providerId,
       sources: {
         auth: { exists: authExists, path: null },
         user: { exists: false, path: null },
         project: { exists: false, path: null },
-        custom: { exists: Boolean(saved.baseUrl || saved.providerType || saved.models?.length), path: path.join(dataDir, 'haocode', 'runtime-state.json') },
+        custom: {
+          exists: Boolean(definition.custom || saved.baseUrl || saved.providerType || saved.models?.length || saved.contextWindow || saved.maxTokens),
+          path: path.join(dataDir, 'haocode', 'runtime-state.json'),
+        },
       },
       _fe_agentEngine: 'haocode',
     });
   });
   app.get('/provider/:providerID/settings', async (request, response) => {
     const providerId = request.params.providerID;
-    const definition = PROVIDER_DEFINITIONS[providerId];
+    const definitions = await providerDefinitions();
+    const definition = definitions[providerId];
     if (!definition) return response.status(404).json({ error: 'Unknown provider.' });
-    const saved = await store.getProviderSettings(providerId);
-    return response.json({
-      providerId,
-      baseUrl: saved.baseUrl || definition.baseUrl,
-      providerType: saved.providerType || definition.providerType,
-      models: Array.isArray(saved.models) ? saved.models : [],
-      _fe_agentEngine: 'haocode',
-    });
+    return response.json(await providerSettingsResponse(providerId, definition));
   });
   app.patch('/provider/:providerID/settings', async (request, response) => {
     const providerId = request.params.providerID;
-    const definition = PROVIDER_DEFINITIONS[providerId];
+    const definitions = await providerDefinitions();
+    const definition = definitions[providerId];
     if (!definition) return response.status(404).json({ error: 'Unknown provider.' });
-    const baseUrl = typeof request.body?.baseUrl === 'string' ? request.body.baseUrl.trim() : '';
-    const providerType = typeof request.body?.providerType === 'string' ? request.body.providerType.trim() : '';
-    const model = typeof request.body?.model === 'string' ? request.body.model.trim() : '';
+    const body = request.body && typeof request.body === 'object' ? request.body : {};
+    const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+    const providerType = typeof body.providerType === 'string' ? body.providerType.trim() : '';
+    const model = typeof body.model === 'string' ? body.model.trim() : '';
     if (baseUrl && !/^https?:\/\//i.test(baseUrl)) return response.status(400).json({ error: 'Base URL must use http or https.' });
-    if (providerType && !['anthropic', 'openai', 'openai_chat'].includes(providerType)) {
+    if (providerType && !PROVIDER_TYPES.has(providerType)) {
       return response.status(400).json({ error: 'Unsupported HaoCode provider type.' });
+    }
+    // contextWindow/maxTokens: a positive integer overrides the catalog value;
+    // null, 0, or '' deletes the override and restores catalog resolution.
+    const limitUpdates = {};
+    for (const key of ['contextWindow', 'maxTokens']) {
+      if (!(key in body)) continue;
+      const raw = body[key];
+      if (raw === null || raw === '' || Number(raw) === 0) {
+        limitUpdates[key] = null;
+        continue;
+      }
+      const parsed = positiveInteger(raw);
+      if (parsed === null) return response.status(400).json({ error: `${key} must be a positive integer.` });
+      limitUpdates[key] = parsed;
     }
     await store.mutate((state) => {
       const saved = state.providers[providerId] ?? {};
@@ -1167,20 +1750,18 @@ export const createHaoCodeCompatibilityServer = ({
       if (providerType) saved.providerType = providerType;
       else delete saved.providerType;
       if (model) saved.models = [...new Set([...(Array.isArray(saved.models) ? saved.models : []), model])];
+      for (const [key, value] of Object.entries(limitUpdates)) {
+        if (value === null) delete saved[key];
+        else saved[key] = value;
+      }
       state.providers[providerId] = saved;
     });
-    const saved = await store.getProviderSettings(providerId);
-    return response.json({
-      providerId,
-      baseUrl: saved.baseUrl || definition.baseUrl,
-      providerType: saved.providerType || definition.providerType,
-      models: Array.isArray(saved.models) ? saved.models : [],
-      _fe_agentEngine: 'haocode',
-    });
+    return response.json(await providerSettingsResponse(providerId, definition));
   });
   app.put('/auth/:providerID', async (request, response) => {
     const providerId = request.params.providerID;
-    if (!PROVIDER_DEFINITIONS[providerId]) return response.status(404).json({ error: 'Unknown provider.' });
+    const definitions = await providerDefinitions();
+    if (!definitions[providerId]) return response.status(404).json({ error: 'Unknown provider.' });
     const key = typeof request.body?.key === 'string' ? request.body.key.trim() : '';
     if (!key) return response.status(400).json({ error: 'API key is required.' });
     await store.mutate((state) => {
@@ -1189,8 +1770,12 @@ export const createHaoCodeCompatibilityServer = ({
     return response.json(true);
   });
   app.delete('/auth/:providerID', async (request, response) => {
+    cancelPendingOAuth(request.params.providerID);
     await store.mutate((state) => {
-      if (state.providers[request.params.providerID]) delete state.providers[request.params.providerID].apiKey;
+      if (state.providers[request.params.providerID]) {
+        delete state.providers[request.params.providerID].apiKey;
+        delete state.providers[request.params.providerID].oauth;
+      }
     });
     response.json(true);
   });
@@ -1381,7 +1966,9 @@ export const createHaoCodeCompatibilityServer = ({
     const prompt = extractPrompt(request.body?.parts);
     if (!prompt) return response.status(400).json({ error: 'Message must include text or a file.' });
     const providerId = request.body?.model?.providerID || 'deepseek';
-    const modelId = request.body?.model?.modelID || PROVIDER_DEFINITIONS[providerId]?.models?.[0] || 'deepseek-chat';
+    const modelId = request.body?.model?.modelID
+      || (await providerDefinitions())[providerId]?.models?.[0]
+      || 'deepseek-chat';
     const configuredProvider = await providerSettings(providerId, modelId);
     if (!configuredProvider.apiKey) {
       return response.status(401).json({
@@ -1552,6 +2139,7 @@ export const createHaoCodeCompatibilityServer = ({
     const closePromise = listeningPort
       ? new Promise((resolve) => server.close(resolve))
       : Promise.resolve();
+    for (const providerId of [...pendingOAuth.keys()]) cancelPendingOAuth(providerId);
     await supervisor.stopAll();
     await Promise.allSettled([...activeRuns]);
     await store.flush();

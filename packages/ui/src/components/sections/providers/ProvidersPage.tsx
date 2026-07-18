@@ -24,7 +24,26 @@ import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { opencodeClient } from '@/lib/opencode/client';
 import { shouldLoadAvailableProviders } from './providerAvailability';
+import {
+  isOAuthAuthSource,
+  normalizeAuthType,
+  parseAuthPayload,
+  parseOAuthAuthorizePayload,
+  type AuthMethod,
+  type OAuthAuthorizeDetails,
+} from './providerOAuth';
 import { QuotaCredentials } from './QuotaCredentials';
+import {
+  buildCustomProviderBody,
+  buildHaoCodeSettingsPatch,
+  DEFAULT_CUSTOM_PROVIDER_TYPE,
+  extractCreatedProviderId,
+  parsePositiveIntOverride,
+  parseProvidersPayload,
+  settingsNumberToInput,
+  type ProviderOption,
+  type ProviderSources,
+} from './providerSettings';
 
 const formatCompactNumber = (value: number) => new Intl.NumberFormat(getCurrentIntlLocale(), {
   notation: 'compact',
@@ -46,104 +65,6 @@ const formatTokens = (value?: number | null) => {
 
 const ADD_PROVIDER_ID = '__add_provider__';
 
-interface AuthMethod {
-  type?: string;
-  name?: string;
-  label?: string;
-  description?: string;
-  help?: string;
-  method?: number;
-  [key: string]: unknown;
-}
-
-interface ProviderOption {
-  id: string;
-  name?: string;
-}
-
-interface ProviderSourceInfo {
-  exists: boolean;
-  path?: string | null;
-}
-
-interface ProviderSources {
-  auth: ProviderSourceInfo;
-  user: ProviderSourceInfo;
-  project: ProviderSourceInfo;
-  custom?: ProviderSourceInfo;
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null;
-
-const normalizeAuthType = (method: AuthMethod) => {
-  const raw = typeof method.type === 'string' ? method.type : '';
-  const label = `${method.name ?? ''} ${method.label ?? ''}`.toLowerCase();
-  const merged = `${raw} ${label}`.toLowerCase();
-  if (merged.includes('oauth')) return 'oauth';
-  if (merged.includes('api')) return 'api';
-  return raw.toLowerCase();
-};
-
-const parseAuthPayload = (payload: unknown): Record<string, AuthMethod[]> => {
-  if (!isRecord(payload)) {
-    return {};
-  }
-  const result: Record<string, AuthMethod[]> = {};
-  for (const [providerId, value] of Object.entries(payload)) {
-    if (Array.isArray(value)) {
-      result[providerId] = value.filter((entry) => isRecord(entry)) as AuthMethod[];
-    }
-  }
-  return result;
-};
-
-const normalizeProviderEntry = (entry: unknown): ProviderOption | null => {
-  if (typeof entry === 'string') {
-    return { id: entry };
-  }
-  if (!isRecord(entry)) {
-    return null;
-  }
-  const idCandidate =
-    (typeof entry.id === 'string' && entry.id) ||
-    (typeof entry.providerID === 'string' && entry.providerID) ||
-    (typeof entry.slug === 'string' && entry.slug) ||
-    (typeof entry.name === 'string' && entry.name);
-  if (!idCandidate) {
-    return null;
-  }
-  const nameCandidate = typeof entry.name === 'string' ? entry.name : undefined;
-  return { id: idCandidate, name: nameCandidate };
-};
-
-const parseProvidersPayload = (payload: unknown): ProviderOption[] => {
-  let entries: unknown[] = [];
-
-  if (Array.isArray(payload)) {
-    entries = payload;
-  } else if (isRecord(payload)) {
-    if (Array.isArray(payload.all)) {
-      entries = payload.all;
-    } else if (Array.isArray(payload.providers)) {
-      entries = payload.providers;
-    }
-  }
-
-  const mapped = entries
-    .map((entry) => normalizeProviderEntry(entry))
-    .filter((entry): entry is ProviderOption => Boolean(entry));
-
-  const seen = new Set<string>();
-  return mapped.filter((entry) => {
-    if (seen.has(entry.id)) {
-      return false;
-    }
-    seen.add(entry.id);
-    return true;
-  });
-};
-
 export const ProvidersPage: React.FC = () => {
   const { t } = useI18n();
   const providers = useConfigStore((state) => state.providers);
@@ -162,7 +83,8 @@ export const ProvidersPage: React.FC = () => {
   const [modelQuery, setModelQuery] = React.useState('');
   const [pendingOAuth, setPendingOAuth] = React.useState<{ providerId: string; methodIndex: number } | null>(null);
   const [oauthCodes, setOauthCodes] = React.useState<Record<string, string>>({});
-  const [oauthDetails, setOauthDetails] = React.useState<Record<string, { url?: string; instructions?: string; userCode?: string }>>({});
+  const [oauthDetails, setOauthDetails] = React.useState<Record<string, OAuthAuthorizeDetails>>({});
+  const [oauthConnectedProviderIds, setOauthConnectedProviderIds] = React.useState<ReadonlySet<string>>(new Set());
   const [availableProviders, setAvailableProviders] = React.useState<ProviderOption[]>([]);
   const [availableLoading, setAvailableLoading] = React.useState(false);
   const [availableError, setAvailableError] = React.useState<string | null>(null);
@@ -174,7 +96,17 @@ export const ProvidersPage: React.FC = () => {
   const [haoCodeBaseUrl, setHaoCodeBaseUrl] = React.useState('');
   const [haoCodeProviderType, setHaoCodeProviderType] = React.useState('');
   const [haoCodeModel, setHaoCodeModel] = React.useState('');
+  const [haoCodeContextWindow, setHaoCodeContextWindow] = React.useState('');
+  const [haoCodeMaxTokens, setHaoCodeMaxTokens] = React.useState('');
   const [haoCodeSettingsBusy, setHaoCodeSettingsBusy] = React.useState(false);
+  const [customName, setCustomName] = React.useState('');
+  const [customBaseUrl, setCustomBaseUrl] = React.useState('');
+  const [customProviderType, setCustomProviderType] = React.useState('');
+  const [customApiKey, setCustomApiKey] = React.useState('');
+  const [customModels, setCustomModels] = React.useState('');
+  const [customContextWindow, setCustomContextWindow] = React.useState('');
+  const [customMaxTokens, setCustomMaxTokens] = React.useState('');
+  const [customBusy, setCustomBusy] = React.useState(false);
   const isAddMode = selectedProviderId === ADD_PROVIDER_ID;
 
   React.useEffect(() => {
@@ -184,10 +116,6 @@ export const ProvidersPage: React.FC = () => {
   }, [providers, selectedProviderId, setSelectedProvider]);
 
   React.useEffect(() => {
-    if (!isAddMode) {
-      return;
-    }
-
     let isMounted = true;
 
     const loadAuthMethods = async () => {
@@ -215,7 +143,7 @@ export const ProvidersPage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [isAddMode, t]);
+  }, [t]);
 
   React.useEffect(() => {
     if (!shouldLoadAvailableProviders(isAddMode)) {
@@ -300,54 +228,48 @@ export const ProvidersPage: React.FC = () => {
       setHaoCodeBaseUrl(typeof payload?.baseUrl === 'string' ? payload.baseUrl : '');
       setHaoCodeProviderType(typeof payload?.providerType === 'string' ? payload.providerType : '');
       setHaoCodeModel('');
+      setHaoCodeContextWindow(settingsNumberToInput(payload?.contextWindow));
+      setHaoCodeMaxTokens(settingsNumberToInput(payload?.maxTokens));
     }).catch((error) => {
       if (!cancelled) console.error('Failed to load HaoCode provider settings:', error);
     });
     return () => { cancelled = true; };
   }, [selectedProviderId]);
 
+  const loadProviderSources = React.useCallback(async (providerId: string) => {
+    try {
+      // OpenChamber-only metadata endpoint: the SDK exposes provider data but
+      // not local auth/source-file provenance used by this settings UI.
+      const response = await runtimeFetch(`/api/provider/${encodeURIComponent(providerId)}/source`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.error || t('settings.providers.page.toast.providerSourcesLoadFailed'));
+      }
+
+      const sources = (payload?.sources ?? payload?.data?.sources) as ProviderSources | undefined;
+      if (sources) {
+        setProviderSources((prev) => ({
+          ...prev,
+          [providerId]: sources,
+        }));
+        setShowAuthPanel(!sources.auth.exists);
+      }
+    } catch (error) {
+      console.error('Failed to load provider sources:', error);
+    }
+  }, [t]);
+
   React.useEffect(() => {
     if (!selectedProviderId || selectedProviderId === ADD_PROVIDER_ID) {
       return;
     }
 
-    let cancelled = false;
-
-    const loadSources = async () => {
-      try {
-        // OpenChamber-only metadata endpoint: the SDK exposes provider data but
-        // not local auth/source-file provenance used by this settings UI.
-        const response = await runtimeFetch(`/api/provider/${encodeURIComponent(selectedProviderId)}/source`, {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-        });
-
-        const payload = await response.json().catch(() => null);
-        if (!response.ok) {
-          throw new Error(payload?.error || t('settings.providers.page.toast.providerSourcesLoadFailed'));
-        }
-
-        const sources = (payload?.sources ?? payload?.data?.sources) as ProviderSources | undefined;
-        if (!cancelled && sources) {
-          setProviderSources((prev) => ({
-            ...prev,
-            [selectedProviderId]: sources,
-          }));
-          setShowAuthPanel(!sources.auth.exists);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.error('Failed to load provider sources:', error);
-        }
-      }
-    };
-
-    loadSources();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedProviderId, t]);
+    void loadProviderSources(selectedProviderId);
+  }, [selectedProviderId, loadProviderSources]);
 
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
   const selectedSources = selectedProviderId ? providerSources[selectedProviderId] : undefined;
@@ -384,24 +306,97 @@ export const ProvidersPage: React.FC = () => {
   };
 
   const handleSaveHaoCodeSettings = async (providerId: string) => {
+    const contextWindowParse = parsePositiveIntOverride(haoCodeContextWindow);
+    const maxTokensParse = parsePositiveIntOverride(haoCodeMaxTokens);
+    if (contextWindowParse.kind === 'invalid' || maxTokensParse.kind === 'invalid') {
+      toast.error(t('settings.providers.page.haocode.invalidNumber'));
+      return;
+    }
+
     setHaoCodeSettingsBusy(true);
     try {
       const response = await runtimeFetch(`/api/provider/${encodeURIComponent(providerId)}/settings`, {
         method: 'PATCH',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl: haoCodeBaseUrl, providerType: haoCodeProviderType, model: haoCodeModel }),
+        body: JSON.stringify(buildHaoCodeSettingsPatch({
+          baseUrl: haoCodeBaseUrl,
+          providerType: haoCodeProviderType,
+          model: haoCodeModel,
+          contextWindow: haoCodeContextWindow,
+          maxTokens: haoCodeMaxTokens,
+        })),
       });
       const payload = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(payload?.error || 'Failed to save HaoCode provider settings.');
+      if (!response.ok) throw new Error(payload?.error || t('settings.providers.page.haocode.toast.saveFailed'));
       setHaoCodeBaseUrl(typeof payload?.baseUrl === 'string' ? payload.baseUrl : haoCodeBaseUrl);
       setHaoCodeProviderType(typeof payload?.providerType === 'string' ? payload.providerType : haoCodeProviderType);
       setHaoCodeModel('');
+      setHaoCodeContextWindow(settingsNumberToInput(payload?.contextWindow));
+      setHaoCodeMaxTokens(settingsNumberToInput(payload?.maxTokens));
       await reloadOpenCodeConfiguration({ scopes: ['providers'], mode: 'active' });
-      toast.success('HaoCode provider settings saved');
+      toast.success(t('settings.providers.page.haocode.toast.saved'));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to save HaoCode provider settings.');
+      toast.error(error instanceof Error ? error.message : t('settings.providers.page.haocode.toast.saveFailed'));
     } finally {
       setHaoCodeSettingsBusy(false);
+    }
+  };
+
+  const handleCreateCustomProvider = async () => {
+    const result = buildCustomProviderBody({
+      name: customName,
+      baseUrl: customBaseUrl,
+      providerType: customProviderType,
+      apiKey: customApiKey,
+      models: customModels,
+      contextWindow: customContextWindow,
+      maxTokens: customMaxTokens,
+    });
+    if (!result.ok) {
+      if (result.error === 'nameRequired') {
+        toast.error(t('settings.providers.page.custom.toast.nameRequired'));
+      } else if (result.error === 'baseUrlRequired') {
+        toast.error(t('settings.providers.page.custom.toast.baseUrlRequired'));
+      } else {
+        toast.error(t('settings.providers.page.custom.toast.invalidNumber'));
+      }
+      return;
+    }
+
+    setCustomBusy(true);
+    try {
+      const response = await runtimeFetch('/api/provider/custom', {
+        method: 'PUT',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(result.body),
+      });
+      const payload = await response.json().catch(() => null);
+      if (response.status === 409) {
+        toast.error(t('settings.providers.page.custom.toast.nameConflict'));
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(payload?.error || t('settings.providers.page.custom.toast.createFailed'));
+      }
+
+      const createdId = extractCreatedProviderId(payload);
+      toast.success(t('settings.providers.page.custom.toast.created'));
+      setCustomName('');
+      setCustomBaseUrl('');
+      setCustomProviderType('');
+      setCustomApiKey('');
+      setCustomModels('');
+      setCustomContextWindow('');
+      setCustomMaxTokens('');
+      await reloadOpenCodeConfiguration({ scopes: ['providers'], mode: 'active' });
+      if (createdId) {
+        setSelectedProvider(createdId);
+      }
+    } catch (error) {
+      console.error('Failed to create custom provider:', error);
+      toast.error(error instanceof Error ? error.message : t('settings.providers.page.custom.toast.createFailed'));
+    } finally {
+      setCustomBusy(false);
     }
   };
 
@@ -418,48 +413,35 @@ export const ProvidersPage: React.FC = () => {
         throw new Error(t('settings.providers.page.toast.oauthStartFailed'));
       }
 
-      const payloadRecord: Record<string, unknown> = isRecord(result.data) ? result.data : {};
-      const nestedData = payloadRecord.data;
-      const dataRecord: Record<string, unknown> = isRecord(nestedData) ? nestedData : payloadRecord;
-      const urlCandidate =
-        (typeof dataRecord.url === 'string' && dataRecord.url) ||
-        (typeof dataRecord.verification_uri_complete === 'string' && dataRecord.verification_uri_complete) ||
-        (typeof dataRecord.verification_uri === 'string' && dataRecord.verification_uri) ||
-        undefined;
-      const instructions =
-        (typeof dataRecord.instructions === 'string' && dataRecord.instructions) ||
-        (typeof dataRecord.message === 'string' && dataRecord.message) ||
-        undefined;
-      const userCode =
-        (typeof dataRecord.user_code === 'string' && dataRecord.user_code) ||
-        (typeof dataRecord.code === 'string' && dataRecord.code) ||
-        (typeof dataRecord.userCode === 'string' && dataRecord.userCode) ||
-        undefined;
-
-      if (!urlCandidate && !instructions && !userCode) {
+      const details = parseOAuthAuthorizePayload(result.data);
+      if (!details) {
         throw new Error(t('settings.providers.page.toast.oauthDetailsMissing'));
       }
 
       const detailsKey = `${providerId}:${methodIndex}`;
       setOauthDetails((prev) => ({
         ...prev,
-        [detailsKey]: {
-          url: urlCandidate,
-          instructions,
-          userCode,
-        },
+        [detailsKey]: details,
       }));
 
-      if (urlCandidate) {
-        void openExternalUrl(urlCandidate);
+      if (details.url) {
+        void openExternalUrl(details.url);
       }
       setPendingOAuth({ providerId, methodIndex });
       toast.message(t('settings.providers.page.toast.completeOAuthInBrowser'));
+
+      // 'auto' flows finish server-side once the browser redirect lands; kick
+      // off the callback immediately so the UI can wait on it.
+      if (details.method === 'auto') {
+        void handleOAuthComplete(providerId, methodIndex);
+      }
     } catch (error) {
       console.error('Failed to start OAuth flow:', error);
       toast.error(t('settings.providers.page.toast.oauthStartFailed'));
     } finally {
-      setAuthBusyKey(null);
+      // Preserve the busy key of an auto-flow callback that was just kicked
+      // off; only clear the key this handler set itself.
+      setAuthBusyKey((current) => (current === busyKey ? null : current));
     }
   };
 
@@ -487,12 +469,24 @@ export const ProvidersPage: React.FC = () => {
 
       toast.success(t('settings.providers.page.toast.oauthCompleted'));
       setOauthCodes((prev) => ({ ...prev, [codeKey]: '' }));
+      setOauthDetails((prev) => {
+        const next = { ...prev };
+        delete next[codeKey];
+        return next;
+      });
       setPendingOAuth(null);
+      setOauthConnectedProviderIds((prev) => new Set(prev).add(providerId));
       await reloadOpenCodeConfiguration({ scopes: ["providers"], mode: "active" });
+      await loadProviderSources(providerId);
       setSelectedProvider(providerId);
     } catch (error) {
       console.error('Failed to complete OAuth flow:', error);
       toast.error(t('settings.providers.page.toast.oauthCompleteFailed'));
+      // 'auto' flows fail when the browser callback is denied or times out;
+      // clear the pending state so the waiting indicator does not stick.
+      if (oauthDetails[codeKey]?.method === 'auto') {
+        setPendingOAuth(null);
+      }
     } finally {
       setAuthBusyKey(null);
     }
@@ -534,6 +528,14 @@ export const ProvidersPage: React.FC = () => {
       }
 
       toast.success(t('settings.providers.page.toast.providerDisconnected'));
+      setOauthConnectedProviderIds((prev) => {
+        if (!prev.has(providerId)) {
+          return prev;
+        }
+        const next = new Set(prev);
+        next.delete(providerId);
+        return next;
+      });
       await reloadOpenCodeConfiguration({ scopes: ["providers"], mode: "active" });
     } catch (error) {
       console.error('Failed to disconnect provider:', error);
@@ -657,6 +659,108 @@ export const ProvidersPage: React.FC = () => {
             </section>
           </div>
 
+          {(() => {
+            const customContextWindowInvalid = parsePositiveIntOverride(customContextWindow).kind === 'invalid';
+            const customMaxTokensInvalid = parsePositiveIntOverride(customMaxTokens).kind === 'invalid';
+            const customOverridesInvalid = customContextWindowInvalid || customMaxTokensInvalid;
+            const customDisabled =
+              customBusy || customOverridesInvalid || !customName.trim() || !customBaseUrl.trim();
+
+            return (
+              <div data-settings-item="providers.custom" className="mb-8">
+                <div className="mb-1 px-1">
+                  <h2 className="typography-ui-header font-medium text-foreground">{t('settings.providers.page.custom.title')}</h2>
+                  <p className="typography-meta text-muted-foreground">{t('settings.providers.page.custom.description')}</p>
+                </div>
+                <section className="grid gap-3 px-2 py-1.5 sm:grid-cols-2">
+                  <label className="typography-meta text-muted-foreground">
+                    {t('settings.providers.page.custom.nameLabel')}
+                    <Input
+                      value={customName}
+                      onChange={(event) => setCustomName(event.target.value)}
+                      placeholder={t('settings.providers.page.custom.namePlaceholder')}
+                      className="mt-1 text-xs"
+                    />
+                  </label>
+                  <label className="typography-meta text-muted-foreground">
+                    {t('settings.providers.page.custom.providerTypeLabel')}
+                    <Input
+                      value={customProviderType}
+                      onChange={(event) => setCustomProviderType(event.target.value)}
+                      placeholder={DEFAULT_CUSTOM_PROVIDER_TYPE}
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </label>
+                  <label className="typography-meta text-muted-foreground sm:col-span-2">
+                    {t('settings.providers.page.custom.baseUrlLabel')}
+                    <Input
+                      value={customBaseUrl}
+                      onChange={(event) => setCustomBaseUrl(event.target.value)}
+                      placeholder="https://api.example.com"
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </label>
+                  <label className="typography-meta text-muted-foreground sm:col-span-2">
+                    {t('settings.providers.page.custom.apiKeyLabel')}
+                    <Input
+                      type="password"
+                      value={customApiKey}
+                      onChange={(event) => setCustomApiKey(event.target.value)}
+                      placeholder={t('settings.providers.page.auth.apiKeyPlaceholder')}
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </label>
+                  <label className="typography-meta text-muted-foreground sm:col-span-2">
+                    {t('settings.providers.page.custom.modelsLabel')}
+                    <Input
+                      value={customModels}
+                      onChange={(event) => setCustomModels(event.target.value)}
+                      placeholder={t('settings.providers.page.custom.modelsPlaceholder')}
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </label>
+                  <label className="typography-meta text-muted-foreground">
+                    {t('settings.providers.page.custom.contextWindowLabel')}
+                    <Input
+                      value={customContextWindow}
+                      onChange={(event) => setCustomContextWindow(event.target.value)}
+                      placeholder={t('settings.providers.page.haocode.inheritPlaceholder')}
+                      inputMode="numeric"
+                      aria-invalid={customContextWindowInvalid}
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </label>
+                  <label className="typography-meta text-muted-foreground">
+                    {t('settings.providers.page.custom.maxTokensLabel')}
+                    <Input
+                      value={customMaxTokens}
+                      onChange={(event) => setCustomMaxTokens(event.target.value)}
+                      placeholder={t('settings.providers.page.haocode.inheritPlaceholder')}
+                      inputMode="numeric"
+                      aria-invalid={customMaxTokensInvalid}
+                      className="mt-1 font-mono text-xs"
+                    />
+                  </label>
+                  {customOverridesInvalid && (
+                    <p className="typography-meta text-[var(--status-error)] sm:col-span-2">
+                      {t('settings.providers.page.custom.toast.invalidNumber')}
+                    </p>
+                  )}
+                  <div className="sm:col-span-2">
+                    <Button
+                      size="xs"
+                      className="!font-normal"
+                      onClick={() => void handleCreateCustomProvider()}
+                      disabled={customDisabled}
+                    >
+                      {customBusy ? t('settings.providers.page.custom.creating') : t('settings.providers.page.custom.create')}
+                    </Button>
+                  </div>
+                </section>
+              </div>
+            );
+          })()}
+
           {candidateProviderId && (
             <div data-settings-item="providers.auth" className="mb-8">
               <div className="mb-1 px-1">
@@ -720,6 +824,8 @@ export const ProvidersPage: React.FC = () => {
                           const codeKey = `${candidateProviderId}:${index}`;
                           const isPending =
                             pendingOAuth?.providerId === candidateProviderId && pendingOAuth?.methodIndex === index;
+                          const isAutoFlow = oauthDetails[codeKey]?.method === 'auto';
+                          const isAutoWaiting = isPending && isAutoFlow;
 
                           return (
                             <div key={`${candidateProviderId}-${methodLabel}`} className="space-y-3">
@@ -766,7 +872,17 @@ export const ProvidersPage: React.FC = () => {
                                 </div>
                               )}
 
-                              {isPending && (
+                              {isAutoWaiting && (
+                                <div className="flex items-center gap-2 mt-2 rounded bg-[var(--surface-muted)] px-2 py-1.5">
+                                  <Icon name="loader-4" className="h-4 w-4 shrink-0 animate-spin text-[var(--primary-base)]" />
+                                  <div className="min-w-0">
+                                    <div className="typography-meta text-foreground">{t('settings.providers.page.auth.oauthWaitingForBrowser')}</div>
+                                    <div className="typography-micro text-muted-foreground">{t('settings.providers.page.auth.oauthWaitingHint')}</div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {isPending && !isAutoFlow && (
                                 <div className="flex items-center gap-2 mt-2">
                                   <Input
                                     value={oauthCodes[codeKey] ?? ''}
@@ -819,6 +935,8 @@ export const ProvidersPage: React.FC = () => {
   const providerModels = Array.isArray(selectedProvider.models) ? selectedProvider.models : [];
   const providerAuthMethods = authMethodsByProvider[selectedProvider.id] ?? [];
   const oauthAuthMethods = providerAuthMethods.filter((method) => normalizeAuthType(method) === 'oauth');
+  const connectedViaOAuth =
+    oauthConnectedProviderIds.has(selectedProvider.id) || isOAuthAuthSource(selectedSources?.auth);
 
   const filteredModels = providerModels.filter((model) => {
     const name = typeof model?.name === 'string' ? model.name : '';
@@ -827,6 +945,10 @@ export const ProvidersPage: React.FC = () => {
     if (!query) return true;
     return name.toLowerCase().includes(query) || id.toLowerCase().includes(query);
   });
+
+  const haoCodeContextWindowInvalid = parsePositiveIntOverride(haoCodeContextWindow).kind === 'invalid';
+  const haoCodeMaxTokensInvalid = parsePositiveIntOverride(haoCodeMaxTokens).kind === 'invalid';
+  const haoCodeOverridesInvalid = haoCodeContextWindowInvalid || haoCodeMaxTokensInvalid;
 
   return (
     <ScrollableOverlay outerClassName="h-full" className="w-full">
@@ -863,7 +985,11 @@ export const ProvidersPage: React.FC = () => {
             {!showAuthPanel ? (
               <div className="flex items-center gap-1.5 py-1.5">
                 <Icon name="check" className="w-4 h-4 text-[var(--status-success)] shrink-0" />
-                <span className="typography-ui-label text-foreground">{t('settings.providers.page.auth.connected')}</span>
+                <span className="typography-ui-label text-foreground">
+                  {connectedViaOAuth
+                    ? t('settings.providers.page.auth.connectedViaOAuth')
+                    : t('settings.providers.page.auth.connected')}
+                </span>
                 <span className="typography-meta text-muted-foreground ml-1">{t('settings.providers.page.auth.useReconnectHint')}</span>
               </div>
             ) : authLoading ? (
@@ -913,6 +1039,8 @@ export const ProvidersPage: React.FC = () => {
                       const codeKey = `${selectedProvider.id}:${index}`;
                       const isPending =
                         pendingOAuth?.providerId === selectedProvider.id && pendingOAuth?.methodIndex === index;
+                      const isAutoFlow = oauthDetails[codeKey]?.method === 'auto';
+                      const isAutoWaiting = isPending && isAutoFlow;
 
                       return (
                         <div key={`${selectedProvider.id}-${methodLabel}`} className="space-y-3">
@@ -959,7 +1087,17 @@ export const ProvidersPage: React.FC = () => {
                             </div>
                           )}
 
-                          {isPending && (
+                          {isAutoWaiting && (
+                            <div className="flex items-center gap-2 mt-2 rounded bg-[var(--surface-muted)] px-2 py-1.5">
+                              <Icon name="loader-4" className="h-4 w-4 shrink-0 animate-spin text-[var(--primary-base)]" />
+                              <div className="min-w-0">
+                                <div className="typography-meta text-foreground">{t('settings.providers.page.auth.oauthWaitingForBrowser')}</div>
+                                <div className="typography-micro text-muted-foreground">{t('settings.providers.page.auth.oauthWaitingHint')}</div>
+                              </div>
+                            </div>
+                          )}
+
+                          {isPending && !isAutoFlow && (
                             <div className="flex items-center gap-2 mt-2">
                               <Input
                                 value={oauthCodes[codeKey] ?? ''}
@@ -994,12 +1132,12 @@ export const ProvidersPage: React.FC = () => {
 
         <div data-settings-item="providers.haocode" className="mb-8">
           <div className="mb-1 px-1">
-            <h3 className="typography-ui-header font-medium text-foreground">HaoCode connection</h3>
-            <p className="typography-meta text-muted-foreground">Override the gateway or add a model exposed by this provider.</p>
+            <h3 className="typography-ui-header font-medium text-foreground">{t('settings.providers.page.haocode.title')}</h3>
+            <p className="typography-meta text-muted-foreground">{t('settings.providers.page.haocode.description')}</p>
           </div>
           <section className="grid gap-3 px-2 py-1.5 sm:grid-cols-2">
             <label className="typography-meta text-muted-foreground sm:col-span-2">
-              Base URL
+              {t('settings.providers.page.haocode.baseUrlLabel')}
               <Input
                 value={haoCodeBaseUrl}
                 onChange={(event) => setHaoCodeBaseUrl(event.target.value)}
@@ -1008,7 +1146,7 @@ export const ProvidersPage: React.FC = () => {
               />
             </label>
             <label className="typography-meta text-muted-foreground">
-              Provider type
+              {t('settings.providers.page.haocode.providerTypeLabel')}
               <Input
                 value={haoCodeProviderType}
                 onChange={(event) => setHaoCodeProviderType(event.target.value)}
@@ -1017,7 +1155,7 @@ export const ProvidersPage: React.FC = () => {
               />
             </label>
             <label className="typography-meta text-muted-foreground">
-              Add model ID
+              {t('settings.providers.page.haocode.addModelLabel')}
               <Input
                 value={haoCodeModel}
                 onChange={(event) => setHaoCodeModel(event.target.value)}
@@ -1025,14 +1163,41 @@ export const ProvidersPage: React.FC = () => {
                 className="mt-1 font-mono text-xs"
               />
             </label>
+            <label className="typography-meta text-muted-foreground">
+              {t('settings.providers.page.haocode.contextWindowLabel')}
+              <Input
+                value={haoCodeContextWindow}
+                onChange={(event) => setHaoCodeContextWindow(event.target.value)}
+                placeholder={t('settings.providers.page.haocode.inheritPlaceholder')}
+                inputMode="numeric"
+                aria-invalid={haoCodeContextWindowInvalid}
+                className="mt-1 font-mono text-xs"
+              />
+            </label>
+            <label className="typography-meta text-muted-foreground">
+              {t('settings.providers.page.haocode.maxTokensLabel')}
+              <Input
+                value={haoCodeMaxTokens}
+                onChange={(event) => setHaoCodeMaxTokens(event.target.value)}
+                placeholder={t('settings.providers.page.haocode.inheritPlaceholder')}
+                inputMode="numeric"
+                aria-invalid={haoCodeMaxTokensInvalid}
+                className="mt-1 font-mono text-xs"
+              />
+            </label>
+            {haoCodeOverridesInvalid && (
+              <p className="typography-meta text-[var(--status-error)] sm:col-span-2">
+                {t('settings.providers.page.haocode.invalidNumber')}
+              </p>
+            )}
             <div className="sm:col-span-2">
               <Button
                 size="xs"
                 className="!font-normal"
                 onClick={() => handleSaveHaoCodeSettings(selectedProvider.id)}
-                disabled={haoCodeSettingsBusy || !haoCodeBaseUrl.trim() || !haoCodeProviderType.trim()}
+                disabled={haoCodeSettingsBusy || haoCodeOverridesInvalid || !haoCodeBaseUrl.trim() || !haoCodeProviderType.trim()}
               >
-                {haoCodeSettingsBusy ? 'Saving…' : 'Save HaoCode settings'}
+                {haoCodeSettingsBusy ? t('settings.providers.page.actions.saving') : t('settings.providers.page.haocode.save')}
               </Button>
             </div>
           </section>

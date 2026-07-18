@@ -689,6 +689,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['add provider', 'connect provider', 'credentials'],
   },
   {
+    id: 'providers.custom',
+    page: 'providers',
+    titleKey: 'settings.providers.page.custom.title',
+    descriptionKey: 'settings.providers.page.custom.description',
+    keywords: ['custom provider', 'base url', 'endpoint', 'openai compatible'],
+  },
+  {
     id: 'providers.auth',
     page: 'providers',
     titleKey: 'settings.providers.page.auth.title',

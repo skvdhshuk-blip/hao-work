@@ -28,6 +28,7 @@ const createRuntime = async ({
       },
     },
   }),
+  ...serverOptions
 } = {}) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'hao-work-compat-'));
   const project = path.join(root, 'project');
@@ -109,6 +110,10 @@ if (request.action === 'resume_interrupt') {
   emit({ type: 'tool_start', toolName: 'TodoWrite', toolInput: { todos: [{ content: 'Ship it', status: 'in_progress', priority: 'high' }] } });
   emit({ type: 'tool_result', toolName: 'TodoWrite', toolOutput: 'updated', toolIsError: false });
   emit({ type: 'result', text: 'done', sessionId: 'hao_todos', usage: {}, cost: 0 });
+} else if (request.prompt === 'provider-probe') {
+  const text = JSON.stringify({ apiKey: request.provider?.apiKey ?? null, oauthBearer: request.provider?.oauthBearer ?? null });
+  emit({ type: 'text', text });
+  emit({ type: 'result', text, sessionId: 'hao_provider_probe', usage: {}, cost: 0 });
 } else {
   emit({ type: 'text', text: 'hello ' });
   emit({ type: 'tool_start', toolName: 'Read', toolInput: { file_path: 'README.md' } });
@@ -122,6 +127,7 @@ if (request.action === 'resume_interrupt') {
     logger: { log() {}, error() {} },
     workerOptions: { phpBinary: process.execPath, workerPath: worker },
     modelsMetadataLoader,
+    ...serverOptions,
   });
   await runtime.start();
   runtimes.push(runtime);
@@ -1014,5 +1020,497 @@ describe('HaoCode compatibility server', () => {
       body: JSON.stringify({ _fe_hitlMode: 'bogus' }),
     });
     expect(await echoedHitlConfig()).toEqual({ hitlMode: 'smart', hitlReviewModel: 'deepseek-reasoner' });
+  });
+
+  test('serves GET /provider with all, connected, and default', async () => {
+    const runtime = await createRuntime();
+    const before = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
+    expect(before.all.map((provider) => provider.id)).toEqual(['anthropic', 'openai', 'deepseek']);
+    expect(before.connected).not.toContain('deepseek');
+    expect(before.default.deepseek).toBe('deepseek-chat');
+    expect(before.all.find((provider) => provider.id === 'deepseek').models['deepseek-chat'].limit).toEqual({
+      context: 1_000_000,
+      output: 384_000,
+    });
+
+    await configureDeepSeek(runtime.baseUrl);
+    const after = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
+    expect(after.connected).toContain('deepseek');
+  });
+
+  test('creates, authenticates, overrides, and deletes a custom provider', async () => {
+    const runtime = await createRuntime();
+    const created = await fetch(`${runtime.baseUrl}/provider/custom`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Acme Gateway',
+        providerType: 'openai_chat',
+        baseUrl: 'https://acme.example.test/v1',
+        models: ['acme-pro'],
+        contextWindow: 123_456,
+        maxTokens: 8_192,
+        apiKey: 'sk-acme',
+      }),
+    });
+    expect(created.status).toBe(200);
+    const entry = await created.json();
+    expect(entry).toMatchObject({
+      id: 'acme-gateway',
+      name: 'Acme Gateway',
+      source: 'api',
+      options: { baseURL: 'https://acme.example.test/v1', _fe_providerType: 'openai_chat' },
+    });
+    expect(entry.models['acme-pro'].limit).toEqual({ context: 123_456, output: 8_192 });
+
+    const listed = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
+    expect(listed.all.map((provider) => provider.id)).toContain('acme-gateway');
+    expect(listed.connected).toContain('acme-gateway');
+    expect(listed.default['acme-gateway']).toBe('acme-pro');
+
+    const configProviders = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
+    expect(configProviders.providers.map((provider) => provider.id)).toContain('acme-gateway');
+
+    const settings = await fetch(`${runtime.baseUrl}/provider/acme-gateway/settings`).then((response) => response.json());
+    expect(settings).toMatchObject({
+      baseUrl: 'https://acme.example.test/v1',
+      providerType: 'openai_chat',
+      contextWindow: 123_456,
+      maxTokens: 8_192,
+    });
+
+    const source = await fetch(`${runtime.baseUrl}/provider/acme-gateway/source`).then((response) => response.json());
+    expect(source.sources.auth.exists).toBe(true);
+
+    // A PATCH override on the custom id wins over the creation-time limits;
+    // deleting the override restores the custom provider defaults.
+    const patched = await fetch(`${runtime.baseUrl}/provider/acme-gateway/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contextWindow: 64_000 }),
+    });
+    expect(patched.status).toBe(200);
+    expect(await patched.json()).toMatchObject({ contextWindow: 64_000, maxTokens: 8_192 });
+    const overridden = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
+    expect(overridden.providers.find((provider) => provider.id === 'acme-gateway').models['acme-pro'].limit)
+      .toEqual({ context: 64_000, output: 8_192 });
+    const reset = await fetch(`${runtime.baseUrl}/provider/acme-gateway/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contextWindow: null }),
+    });
+    expect(await reset.json()).toMatchObject({ contextWindow: 123_456, maxTokens: 8_192 });
+
+    const removed = await fetch(`${runtime.baseUrl}/provider/custom/acme-gateway`, { method: 'DELETE' });
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toEqual({ removed: true });
+
+    const afterRemoval = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
+    expect(afterRemoval.all.map((provider) => provider.id)).not.toContain('acme-gateway');
+    const state = await runtime.runtime.store.read((current) => current);
+    expect(state.customProviders['acme-gateway']).toBeUndefined();
+    expect(state.providers['acme-gateway']).toBeUndefined();
+    expect((await fetch(`${runtime.baseUrl}/provider/acme-gateway/settings`)).status).toBe(404);
+  });
+
+  test('validates custom provider payloads and protects built-in providers', async () => {
+    const runtime = await createRuntime();
+    const create = (body) => fetch(`${runtime.baseUrl}/provider/custom`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect((await create({ providerType: 'openai_chat', baseUrl: 'https://a.example.test' })).status).toBe(400);
+    expect((await create({ name: 'X', providerType: 'bogus', baseUrl: 'https://a.example.test' })).status).toBe(400);
+    expect((await create({ name: 'X', providerType: 'openai_chat', baseUrl: 'not-a-url' })).status).toBe(400);
+    expect((await create({ name: 'X', providerType: 'openai_chat', baseUrl: 'ftp://a.example.test' })).status).toBe(400);
+    expect((await create({ name: 'X', providerType: 'openai_chat', baseUrl: 'https://a.example.test', contextWindow: 'lots' })).status).toBe(400);
+    expect((await create({ name: 'X', providerType: 'openai_chat', baseUrl: 'https://a.example.test', maxTokens: -1 })).status).toBe(400);
+    expect((await create({ id: 'Bad ID!', name: 'X', providerType: 'openai_chat', baseUrl: 'https://a.example.test' })).status).toBe(400);
+    // Slugifying the name or passing an explicit id cannot shadow a built-in.
+    expect((await create({ name: 'DeepSeek', providerType: 'openai_chat', baseUrl: 'https://a.example.test' })).status).toBe(409);
+    expect((await create({ id: 'anthropic', name: 'X', providerType: 'openai_chat', baseUrl: 'https://a.example.test' })).status).toBe(409);
+
+    const ok = await create({ name: 'Acme', providerType: 'openai', baseUrl: 'https://a.example.test' });
+    expect(ok.status).toBe(200);
+    expect((await create({ name: 'Acme', providerType: 'openai', baseUrl: 'https://a.example.test' })).status).toBe(409);
+
+    expect((await fetch(`${runtime.baseUrl}/provider/custom/deepseek`, { method: 'DELETE' })).status).toBe(400);
+    expect((await fetch(`${runtime.baseUrl}/provider/custom/nope`, { method: 'DELETE' })).status).toBe(404);
+  });
+
+  test('overrides and resets model limits through provider settings PATCH', async () => {
+    const runtime = await createRuntime();
+    const patch = (body) => fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const overridden = await patch({ contextWindow: 500_000, maxTokens: 4_096 });
+    expect(overridden.status).toBe(200);
+    expect(await overridden.json()).toMatchObject({ contextWindow: 500_000, maxTokens: 4_096 });
+
+    const settings = await fetch(`${runtime.baseUrl}/provider/deepseek/settings`).then((response) => response.json());
+    expect(settings).toMatchObject({ contextWindow: 500_000, maxTokens: 4_096 });
+
+    // The saved override beats the models.dev catalog (1_000_000/384_000).
+    const providers = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
+    expect(providers.providers.find((provider) => provider.id === 'deepseek').models['deepseek-chat'].limit)
+      .toEqual({ context: 500_000, output: 4_096 });
+
+    expect((await patch({ contextWindow: -10 })).status).toBe(400);
+    expect((await patch({ maxTokens: 'big' })).status).toBe(400);
+
+    // null and 0 delete the override; catalog resolution takes over again.
+    const reset = await patch({ contextWindow: null, maxTokens: 0 });
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toMatchObject({ contextWindow: null, maxTokens: null });
+    const restored = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
+    expect(restored.providers.find((provider) => provider.id === 'deepseek').models['deepseek-chat'].limit)
+      .toEqual({ context: 1_000_000, output: 384_000 });
+  });
+
+  test('sends custom provider settings and limit overrides to the worker', async () => {
+    const runtime = await createRuntime();
+    const created = await fetch(`${runtime.baseUrl}/provider/custom`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Acme',
+        providerType: 'openai_chat',
+        baseUrl: 'https://acme.example.test/v1',
+        models: ['acme-pro'],
+        contextWindow: 77_777,
+        apiKey: 'sk-acme',
+      }),
+    });
+    expect(created.status).toBe(200);
+
+    const session = await createSession(runtime);
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'limits', {
+      model: { providerID: 'acme', modelID: 'acme-pro' },
+    });
+    expect(response.status).toBe(200);
+    const records = await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+      return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
+    });
+    const limit = JSON.parse(records
+      .find((record) => record.info.role === 'assistant')
+      .parts.find((part) => part.type === 'text').text);
+    expect(limit).toEqual({ context: 77_777, output: 16_384 });
+  });
+
+  // --- OAuth login flows ---------------------------------------------------
+
+  const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  // Fake fetch injected into the compatibility server for OAuth token
+  // endpoints; records every call so tests can assert the request shape.
+  const createFetchStub = (handler) => {
+    const calls = [];
+    const fetchStub = async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      return handler(String(url), init);
+    };
+    fetchStub.calls = calls;
+    fetchStub.formCalls = () => calls.map((call) => ({
+      url: call.url,
+      params: Object.fromEntries(new URLSearchParams(call.init.body)),
+    }));
+    return fetchStub;
+  };
+
+  const fakeJwt = (payload) => {
+    const segment = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    return `${segment({ alg: 'none' })}.${segment(payload)}.signature`;
+  };
+
+  const storeOAuth = (runtime, providerId, oauth) => runtime.runtime.store.mutate((state) => {
+    state.providers[providerId] = { ...(state.providers[providerId] ?? {}), oauth };
+  });
+
+  const readOAuth = (runtime, providerId) => runtime.runtime.store
+    .read((state) => state.providers[providerId]?.oauth ?? null);
+
+  const oauthAuthorize = (baseUrl, providerId) => fetch(`${baseUrl}/provider/${providerId}/oauth/authorize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ method: 0 }),
+  });
+
+  const oauthCallback = (baseUrl, providerId, body = { method: 0 }) => fetch(`${baseUrl}/provider/${providerId}/oauth/callback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  const runProviderProbe = async (runtime, providerId, modelId) => {
+    const session = await createSession(runtime);
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'provider-probe', {
+      model: { providerID: providerId, modelID: modelId },
+    });
+    expect(response.status).toBe(200);
+    const records = await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+      return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
+    });
+    return JSON.parse(records
+      .find((record) => record.info.role === 'assistant')
+      .parts.find((part) => part.type === 'text').text);
+  };
+
+  test('lists oauth auth methods for Anthropic and OpenAI only', async () => {
+    const runtime = await createRuntime();
+    const methods = await fetch(`${runtime.baseUrl}/provider/auth`).then((response) => response.json());
+    expect(methods.anthropic).toEqual([
+      { type: 'api', label: 'Anthropic API key' },
+      { type: 'oauth', label: 'Claude Pro/Max（浏览器授权）' },
+    ]);
+    expect(methods.openai).toEqual([
+      { type: 'api', label: 'OpenAI API key' },
+      { type: 'oauth', label: 'ChatGPT Pro/Plus（浏览器授权）' },
+    ]);
+    expect(methods.deepseek).toEqual([{ type: 'api', label: 'DeepSeek API key' }]);
+
+    const created = await fetch(`${runtime.baseUrl}/provider/custom`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Acme', providerType: 'openai_chat', baseUrl: 'https://acme.example.test/v1' }),
+    });
+    expect(created.status).toBe(200);
+    const after = await fetch(`${runtime.baseUrl}/provider/auth`).then((response) => response.json());
+    expect(after.acme).toEqual([{ type: 'api', label: 'Acme API key' }]);
+
+    const unsupported = await oauthAuthorize(runtime.baseUrl, 'deepseek');
+    expect(unsupported.status).toBe(400);
+  });
+
+  test('completes the Anthropic paste-code flow and stores tokens without leaking them', async () => {
+    const fetchStub = createFetchStub(async (url) => {
+      expect(url).toBe('https://console.anthropic.com/v1/oauth/token');
+      return jsonResponse({ access_token: 'at_1', refresh_token: 'rt_1', expires_in: 3600 });
+    });
+    const runtime = await createRuntime({ fetchImpl: fetchStub });
+
+    const authorize = await oauthAuthorize(runtime.baseUrl, 'anthropic');
+    expect(authorize.status).toBe(200);
+    const authorization = await authorize.json();
+    expect(authorization.method).toBe('code');
+    expect(authorization.instructions).toBeTruthy();
+    const url = new URL(authorization.url);
+    expect(`${url.origin}${url.pathname}`).toBe('https://claude.ai/oauth/authorize');
+    expect(url.searchParams.get('code')).toBe('true');
+    expect(url.searchParams.get('client_id')).toBe('9d1c250a-e61b-44d9-88ed-5944d1962f5e');
+    expect(url.searchParams.get('response_type')).toBe('code');
+    expect(url.searchParams.get('redirect_uri')).toBe('https://console.anthropic.com/oauth/code/callback');
+    expect(url.searchParams.get('scope')).toBe('org:create_api_key user:profile user:inference');
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(url.searchParams.get('code_challenge')).toBeTruthy();
+    const state = url.searchParams.get('state');
+    expect(state).toBeTruthy();
+
+    // A wrong pasted state is rejected before any token request.
+    const wrongState = await oauthCallback(runtime.baseUrl, 'anthropic', { method: 0, code: 'code_abc#bogus-state' });
+    expect(wrongState.status).toBe(400);
+    expect(fetchStub.calls).toHaveLength(0);
+
+    // "<code>#<state>" paste succeeds.
+    const callback = await oauthCallback(runtime.baseUrl, 'anthropic', { method: 0, code: `code_abc#${state}` });
+    expect(callback.status).toBe(200);
+    expect(await callback.json()).toBe(true);
+    const [call] = fetchStub.formCalls();
+    expect(call.params).toMatchObject({
+      grant_type: 'authorization_code',
+      client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+      code: 'code_abc',
+      state,
+      redirect_uri: 'https://console.anthropic.com/oauth/code/callback',
+    });
+    expect(call.params.code_verifier).toBeTruthy();
+
+    const stored = await readOAuth(runtime, 'anthropic');
+    expect(stored.access).toBe('at_1');
+    expect(stored.refresh).toBe('rt_1');
+    expect(stored.expires).toBeGreaterThan(Date.now());
+    // Secrets never reach API responses.
+    const settings = await fetch(`${runtime.baseUrl}/provider/anthropic/settings`).then((response) => response.json());
+    expect(JSON.stringify(settings)).not.toContain('at_1');
+    expect(JSON.stringify(settings)).not.toContain('rt_1');
+
+    // A bare code (no "#state") uses the pending flow's state.
+    const secondAuthorize = await oauthAuthorize(runtime.baseUrl, 'anthropic');
+    expect(secondAuthorize.status).toBe(200);
+    const bare = await oauthCallback(runtime.baseUrl, 'anthropic', { method: 0, code: 'code_bare' });
+    expect(bare.status).toBe(200);
+    expect(fetchStub.formCalls()[1].params.code).toBe('code_bare');
+  });
+
+  test('rejects Anthropic callbacks without a pending flow or code', async () => {
+    const fetchStub = createFetchStub(async () => jsonResponse({ access_token: 'at', refresh_token: 'rt' }));
+    const runtime = await createRuntime({ fetchImpl: fetchStub });
+    const noFlow = await oauthCallback(runtime.baseUrl, 'anthropic', { method: 0, code: 'code_abc#state' });
+    expect(noFlow.status).toBe(400);
+    expect(await oauthAuthorize(runtime.baseUrl, 'anthropic')).toBeTruthy();
+    const noCode = await oauthCallback(runtime.baseUrl, 'anthropic', { method: 0 });
+    expect(noCode.status).toBe(400);
+    expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  test('completes the OpenAI browser flow through the localhost callback listener', async () => {
+    const fetchStub = createFetchStub(async (url) => {
+      expect(url).toBe('https://auth.openai.com/oauth/token');
+      return jsonResponse({
+        access_token: 'oat_1',
+        refresh_token: 'ort_1',
+        expires_in: 3600,
+        id_token: fakeJwt({ chatgpt_account_id: 'acct_123' }),
+      });
+    });
+    // Port 0 binds an ephemeral listener port for the test.
+    const runtime = await createRuntime({ fetchImpl: fetchStub, oauthCallbackPorts: [0] });
+
+    const authorize = await oauthAuthorize(runtime.baseUrl, 'openai');
+    expect(authorize.status).toBe(200);
+    const authorization = await authorize.json();
+    expect(authorization.method).toBe('auto');
+    expect(authorization.instructions).toBeTruthy();
+    const url = new URL(authorization.url);
+    expect(`${url.origin}${url.pathname}`).toBe('https://auth.openai.com/oauth/authorize');
+    expect(url.searchParams.get('client_id')).toBe('app_EMoamEEZ73f0CkXaXp7hrann');
+    expect(url.searchParams.get('scope')).toBe('openid profile email offline_access');
+    expect(url.searchParams.get('originator')).toBe('opencode');
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    const state = url.searchParams.get('state');
+    expect(state).toBeTruthy();
+    const redirectUri = url.searchParams.get('redirect_uri');
+    expect(redirectUri).toMatch(/^http:\/\/localhost:\d+\/auth\/callback$/);
+
+    // Simulate the browser being redirected back with the authorization code.
+    const redirect = new URL(redirectUri);
+    redirect.searchParams.set('code', 'ocode_1');
+    redirect.searchParams.set('state', state);
+    const landing = await fetch(redirect);
+    expect(landing.status).toBe(200);
+
+    const callback = await oauthCallback(runtime.baseUrl, 'openai');
+    expect(callback.status).toBe(200);
+    expect(await callback.json()).toBe(true);
+    const [call] = fetchStub.formCalls();
+    expect(call.params).toMatchObject({
+      grant_type: 'authorization_code',
+      code: 'ocode_1',
+      redirect_uri: redirectUri,
+      client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+    });
+    expect(call.params.code_verifier).toBeTruthy();
+
+    const stored = await readOAuth(runtime, 'openai');
+    expect(stored).toMatchObject({ access: 'oat_1', refresh: 'ort_1', accountId: 'acct_123' });
+    expect(stored.expires).toBeGreaterThan(Date.now());
+  });
+
+  test('rejects the OpenAI callback on state mismatch and on timeout', async () => {
+    const fetchStub = createFetchStub(async () => jsonResponse({ access_token: 'oat', refresh_token: 'ort' }));
+    const runtime = await createRuntime({ fetchImpl: fetchStub, oauthCallbackPorts: [0] });
+
+    const authorization = await (await oauthAuthorize(runtime.baseUrl, 'openai')).json();
+    const redirect = new URL(new URL(authorization.url).searchParams.get('redirect_uri'));
+    redirect.searchParams.set('code', 'ocode_1');
+    redirect.searchParams.set('state', 'forged-state');
+    await fetch(redirect);
+    const mismatch = await oauthCallback(runtime.baseUrl, 'openai');
+    expect(mismatch.status).toBe(400);
+    expect(fetchStub.calls).toHaveLength(0);
+
+    await runtime.runtime.stop();
+    runtimes.splice(runtimes.indexOf(runtime.runtime), 1);
+
+    const timedRuntime = await createRuntime({
+      fetchImpl: fetchStub,
+      oauthCallbackPorts: [0],
+      oauthCallbackTimeoutMs: 100,
+    });
+    expect((await oauthAuthorize(timedRuntime.baseUrl, 'openai')).status).toBe(200);
+    const timedOut = await oauthCallback(timedRuntime.baseUrl, 'openai');
+    expect(timedOut.status).toBe(400);
+    expect((await timedOut.json()).error).toMatch(/timed out/i);
+    expect(fetchStub.calls).toHaveLength(0);
+  });
+
+  test('refreshes a near-expiry oauth token before sending it to the worker as a bearer credential', async () => {
+    const fetchStub = createFetchStub(async (url) => {
+      expect(url).toBe('https://console.anthropic.com/v1/oauth/token');
+      return jsonResponse({ access_token: 'at_fresh', refresh_token: 'rt_fresh', expires_in: 7200 });
+    });
+    const runtime = await createRuntime({ fetchImpl: fetchStub });
+    // Expires in 60s: inside the 5-minute refresh skew.
+    await storeOAuth(runtime, 'anthropic', { access: 'at_old', refresh: 'rt_old', expires: Date.now() + 60_000 });
+
+    const probe = await runProviderProbe(runtime, 'anthropic', 'claude-sonnet-4-20250514');
+    expect(probe).toEqual({ apiKey: 'at_fresh', oauthBearer: true });
+
+    const refreshCalls = fetchStub.formCalls().filter((call) => call.params.grant_type === 'refresh_token');
+    expect(refreshCalls).toHaveLength(1);
+    expect(refreshCalls[0].params).toMatchObject({
+      refresh_token: 'rt_old',
+      client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+    });
+    // The refresh is written back to persisted state.
+    const stored = await readOAuth(runtime, 'anthropic');
+    expect(stored).toMatchObject({ access: 'at_fresh', refresh: 'rt_fresh' });
+  });
+
+  test('falls back to the saved api key when the oauth refresh fails', async () => {
+    const fetchStub = createFetchStub(async () => jsonResponse({ error: 'invalid_grant' }, 400));
+    const runtime = await createRuntime({ fetchImpl: fetchStub });
+    await storeOAuth(runtime, 'anthropic', { access: 'at_old', refresh: 'rt_old', expires: Date.now() + 60_000 });
+    const saved = await fetch(`${runtime.baseUrl}/auth/anthropic`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'api', key: 'sk-saved' }),
+    });
+    expect(await saved.json()).toBe(true);
+
+    const probe = await runProviderProbe(runtime, 'anthropic', 'claude-sonnet-4-20250514');
+    expect(probe).toEqual({ apiKey: 'sk-saved', oauthBearer: null });
+    expect(fetchStub.calls.length).toBeGreaterThan(0);
+  });
+
+  test('uses a fresh oauth access token without refreshing and keeps it off the api-key path', async () => {
+    const fetchStub = createFetchStub(async () => {
+      throw new Error('token endpoint must not be called for a fresh token');
+    });
+    const runtime = await createRuntime({ fetchImpl: fetchStub });
+    await storeOAuth(runtime, 'openai', { access: 'oat_live', refresh: 'ort_live', expires: Date.now() + 3_600_000 });
+
+    const probe = await runProviderProbe(runtime, 'openai', 'gpt-5');
+    expect(probe).toEqual({ apiKey: 'oat_live', oauthBearer: null });
+    expect(fetchStub.calls).toHaveLength(0);
+
+    const listed = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
+    expect(listed.connected).toContain('openai');
+    const source = await fetch(`${runtime.baseUrl}/provider/openai/source`).then((response) => response.json());
+    expect(source.sources.auth.exists).toBe(true);
+  });
+
+  test('clears stored oauth tokens when auth is deleted', async () => {
+    const runtime = await createRuntime();
+    await storeOAuth(runtime, 'anthropic', { access: 'at_1', refresh: 'rt_1', expires: Date.now() + 3_600_000 });
+    await fetch(`${runtime.baseUrl}/auth/anthropic`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'api', key: 'sk-saved' }),
+    });
+    const removed = await fetch(`${runtime.baseUrl}/auth/anthropic`, { method: 'DELETE' });
+    expect(await removed.json()).toBe(true);
+    const entry = await runtime.runtime.store.read((state) => state.providers.anthropic ?? {});
+    expect(entry.apiKey).toBeUndefined();
+    expect(entry.oauth).toBeUndefined();
   });
 });

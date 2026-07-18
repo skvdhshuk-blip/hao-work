@@ -13,6 +13,7 @@ const EMPTY_STATE = Object.freeze({
   interrupts: {},
   autoDecisions: {},
   providers: {},
+  customProviders: {},
   config: {},
 });
 

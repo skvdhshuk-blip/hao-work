@@ -65,6 +65,11 @@ if ($contextWindow !== null) {
     $_SERVER['HAOCODE_CONTEXT_WINDOW'] = $contextWindowValue;
 }
 $sessionId = normalizeString($request['haocodeSessionId'] ?? null);
+// OAuth bearer marker: the compat server sets provider.oauthBearer when the
+// apiKey it sends is an OAuth access token (Anthropic subscription login)
+// rather than a raw x-api-key. HaoCodeConfig forwards it to the SDK, which
+// then sends Authorization: Bearer with the oauth beta header.
+$oauthBearer = (bool) ($provider['oauthBearer'] ?? false);
 $maxTurns = normalizePositiveInt($request['maxTurns'] ?? null)
     ?? normalizePositiveInt(getenv('HAOWORK_HAOCODE_MAX_TURNS'))
     ?? DEFAULT_MAX_TURNS;
@@ -98,6 +103,7 @@ $config = new HaoCodeConfig(
     hitlMode: $hitlMode,
     hitlReviewModel: $hitlReviewModel,
     hitlAllowlistPath: $hitlAllowlistPath,
+    oauthBearer: $oauthBearer ? true : null,
 );
 
 try {

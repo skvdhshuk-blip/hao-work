@@ -2,6 +2,8 @@ import React from 'react';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { toast } from '@/components/ui';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { cn } from '@/lib/utils';
@@ -10,20 +12,10 @@ import { Icon } from "@/components/icon/Icon";
 import { opencodeClient } from '@/lib/opencode/client';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { reloadOpenCodeConfiguration } from '@/stores/useAgentsStore';
+import { isCustomProvider, type ProviderSources } from './providerSettings';
 
 const ADD_PROVIDER_ID = '__add_provider__';
-
-interface ProviderSourceInfo {
-  exists: boolean;
-  path?: string | null;
-}
-
-interface ProviderSources {
-  auth: ProviderSourceInfo;
-  user: ProviderSourceInfo;
-  project: ProviderSourceInfo;
-  custom?: ProviderSourceInfo;
-}
 
 const getCurrentDirectory = (): string | null => {
   const dir = opencodeClient.getDirectory();
@@ -44,6 +36,8 @@ export const ProvidersSidebar: React.FC<ProvidersSidebarProps> = ({ onItemSelect
   const setSelectedProvider = useConfigStore((state) => state.setSelectedProvider);
   const activeProjectId = useProjectsStore((s) => s.activeProjectId);
   const [sourcesByProvider, setSourcesByProvider] = React.useState<Record<string, ProviderSources>>({});
+  const [pendingDelete, setPendingDelete] = React.useState<{ id: string; name: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = React.useState(false);
   const directory = React.useMemo(() => {
     // tie refresh to active project changes (directory is stored in the client)
     void activeProjectId;
@@ -100,6 +94,41 @@ export const ProvidersSidebar: React.FC<ProvidersSidebarProps> = ({ onItemSelect
 
   const bgClass = 'bg-background';
 
+  const handleDeleteCustomProvider = async () => {
+    if (!pendingDelete) {
+      return;
+    }
+    const target = pendingDelete;
+    setDeleteBusy(true);
+    try {
+      const response = await runtimeFetch(`/api/provider/custom/${encodeURIComponent(target.id)}`, {
+        method: 'DELETE',
+        headers: { Accept: 'application/json' },
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(payload?.error || t('settings.providers.page.toast.customProviderDeleteFailed'));
+      }
+
+      toast.success(t('settings.providers.page.toast.customProviderDeleted'));
+      setSourcesByProvider((prev) => {
+        const next = { ...prev };
+        delete next[target.id];
+        return next;
+      });
+      if (selectedProviderId === target.id) {
+        setSelectedProvider('');
+      }
+      setPendingDelete(null);
+      await reloadOpenCodeConfiguration({ scopes: ['providers'], mode: 'active' });
+    } catch (error) {
+      console.error('Failed to delete custom provider:', error);
+      toast.error(error instanceof Error ? error.message : t('settings.providers.page.toast.customProviderDeleteFailed'));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
   const projectProviders = React.useMemo(() => {
     return providers.filter((p) => Boolean(sourcesByProvider[p.id]?.project?.exists));
   }, [providers, sourcesByProvider]);
@@ -149,6 +178,8 @@ export const ProvidersSidebar: React.FC<ProvidersSidebarProps> = ({ onItemSelect
                     key={provider.id}
                     provider={provider}
                     selectedProviderId={selectedProviderId}
+                    isCustom={isCustomProvider(sourcesByProvider[provider.id])}
+                    onDelete={() => setPendingDelete({ id: provider.id, name: provider.name || provider.id })}
                     onSelect={() => {
                       setSelectedProvider(provider.id);
                       onItemSelect?.();
@@ -168,6 +199,8 @@ export const ProvidersSidebar: React.FC<ProvidersSidebarProps> = ({ onItemSelect
                     key={provider.id}
                     provider={provider}
                     selectedProviderId={selectedProviderId}
+                    isCustom={isCustomProvider(sourcesByProvider[provider.id])}
+                    onDelete={() => setPendingDelete({ id: provider.id, name: provider.name || provider.id })}
                     onSelect={() => {
                       setSelectedProvider(provider.id);
                       onItemSelect?.();
@@ -179,6 +212,35 @@ export const ProvidersSidebar: React.FC<ProvidersSidebarProps> = ({ onItemSelect
           </>
         )}
       </ScrollableOverlay>
+
+      <Dialog open={Boolean(pendingDelete)} onOpenChange={(open) => { if (!open && !deleteBusy) setPendingDelete(null); }}>
+        <DialogContent showCloseButton={false} className="max-w-sm gap-5">
+          <DialogHeader>
+            <DialogTitle>{t('settings.providers.sidebar.dialogs.deleteProvider.title')}</DialogTitle>
+            <DialogDescription>
+              {t('settings.providers.sidebar.dialogs.deleteProvider.description', { name: pendingDelete?.name ?? '' })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setPendingDelete(null)}
+              disabled={deleteBusy}
+              className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 typography-ui-label text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            >
+              {t('settings.providers.sidebar.dialogs.deleteProvider.cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDeleteCustomProvider()}
+              disabled={deleteBusy}
+              className="inline-flex h-8 items-center justify-center rounded-md bg-destructive px-3 typography-ui-label text-destructive-foreground hover:bg-destructive/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/50"
+            >
+              {deleteBusy ? t('settings.providers.page.actions.deleting') : t('settings.providers.sidebar.dialogs.deleteProvider.confirm')}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
@@ -186,8 +248,11 @@ export const ProvidersSidebar: React.FC<ProvidersSidebarProps> = ({ onItemSelect
 const ProviderListItem: React.FC<{
   provider: { id: string; name?: string; models?: unknown[] };
   selectedProviderId: string;
+  isCustom: boolean;
   onSelect: () => void;
-}> = ({ provider, selectedProviderId, onSelect }) => {
+  onDelete: () => void;
+}> = ({ provider, selectedProviderId, isCustom, onSelect, onDelete }) => {
+  const { t } = useI18n();
   const modelCount = Array.isArray(provider.models) ? provider.models.length : 0;
   const isSelected = provider.id === selectedProviderId;
 
@@ -209,10 +274,26 @@ const ProviderListItem: React.FC<{
         <span className="typography-ui-label font-normal truncate flex-1 min-w-0 text-foreground">
           {provider.name || provider.id}
         </span>
+        {isCustom && (
+          <span className="typography-micro flex-shrink-0 rounded bg-[var(--surface-muted)] px-1.5 py-0.5 text-muted-foreground">
+            {t('settings.providers.sidebar.customBadge')}
+          </span>
+        )}
         <span className="typography-micro text-muted-foreground/60 flex-shrink-0">
           {modelCount}
         </span>
       </button>
+      {isCustom && (
+        <button
+          type="button"
+          onClick={onDelete}
+          className="ml-1 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-[var(--interactive-hover)]/50 hover:text-[var(--status-error)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 group-hover:opacity-100"
+          aria-label={t('settings.providers.sidebar.actions.deleteProviderAria')}
+          title={t('settings.providers.sidebar.actions.deleteProviderTitle')}
+        >
+          <Icon name="delete-bin" className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
   );
 };
