@@ -1289,11 +1289,11 @@
         },
         {
             "name": "sk-wang/hao-code",
-            "version": "v1.13.0",
+            "version": "v1.13.1",
             "source": {
                 "type": "git",
                 "url": "https://github.com/skvdhshuk-blip/hao-code.git",
-                "reference": "21fa450fee57de7d211cd17d169a326d6355c485"
+                "reference": "cd0d725d8b673f226c77281c992437a71f08815d"
             },
             "require": {
                 "nyholm/psr7": "^1.8",
@@ -1360,7 +1360,7 @@
                 "issues": "https://github.com/skvdhshuk-blip/hao-code/issues",
                 "source": "https://github.com/skvdhshuk-blip/hao-code"
             },
-            "time": "2026-07-18T07:05:58+00:00"
+            "time": "2026-07-18T12:19:36+00:00"
         },
         {
             "name": "symfony/clock",

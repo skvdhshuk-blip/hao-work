@@ -11,6 +11,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useDeviceInfo } from '@/lib/device';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
+import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 import type { AnimationHandlers, ContentChangeReason } from '@/hooks/useChatAutoFollow';
@@ -153,6 +154,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const { isMobile, isTablet, hasTouchInput } = useDeviceInfo();
     const alwaysShowMessageActions = isMobile || isTablet;
     const { currentTheme } = useThemeSystem();
+    const { t } = useI18n();
     const messageContainerRef = React.useRef<HTMLDivElement | null>(null);
 
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
@@ -667,7 +669,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
         if (errorName === 'SessionRetry') {
             return {
-                text: `Opencode failed to send a message. Retry attempt info: \n\`${detail}\``,
+                text: t('chat.assistantError.sendFailedRetry', { detail }),
                 variant: 'info' as const,
             };
         }
@@ -679,15 +681,15 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
         if (detail.trim().toLowerCase() === 'aborted') {
             return {
-                text: 'The running turn was stopped before OpenCode could send the next message.',
+                text: t('chat.assistantError.stoppedBeforeSend'),
                 variant: 'info' as const,
             };
         }
         return {
-            text: `Opencode failed to send message with error:\n\`${detail}\``,
+            text: t('chat.assistantError.sendFailed', { detail }),
             variant: 'error' as const,
         };
-    }, [isUser, message.info]);
+    }, [isUser, message.info, t]);
 
     const assistantErrorText = assistantError?.text;
     const assistantErrorVariant = assistantError?.variant;
