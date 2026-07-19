@@ -1125,6 +1125,24 @@ describe('HaoCode compatibility server', () => {
     expect(sandbox.network).toBe('allow-all');
   });
 
+  test('reports sandbox status and rejects prepare when the installer is unavailable', async () => {
+    const runtime = await createRuntime();
+    // createRuntime does not pass autoloadPath, so resolveSandboxInstaller
+    // returns null and /sandbox/prepare fails closed with a 503 instead of
+    // spawning a real PHP install (which has no place in unit tests).
+    const status = await fetch(`${runtime.baseUrl}/sandbox/status`).then((r) => r.json());
+    expect(status.installerAvailable).toBe(false);
+    expect(status.preparing).toBe(false);
+    expect(status.supported).toBe(true); // tests run on a real platform
+    expect(status.installedRootfs).toBeNull();
+
+    const prepare = await fetch(`${runtime.baseUrl}/sandbox/prepare`, { method: 'POST' });
+    expect(prepare.status).toBe(503);
+    const body = await prepare.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/installer not available/i);
+  });
+
   test('serves GET /provider with all, connected, and default', async () => {
     const runtime = await createRuntime();
     const before = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());

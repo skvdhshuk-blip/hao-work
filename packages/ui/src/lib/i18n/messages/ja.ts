@@ -2793,6 +2793,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoDecisionCard.source.rule': 'ルール',
   'chat.autoDecisionCard.source.review': 'モデルレビュー',
   'chat.autoDecisionCard.source.sandbox': 'サンドボックス',
+  'chat.sandboxBadge.label': 'Sandbox',
+  'chat.sandboxBadge.tooltip': 'エージェントのツールはサンドボックス化された仮想マシン内で実行されています。',
   'chat.assistantError.sendFailed': 'HaoCode がメッセージの送信に失敗しました。エラー:\n`{detail}`',
   'chat.assistantError.sendFailedRetry': 'HaoCode がメッセージの送信に失敗しました。再試行情報:\n`{detail}`',
   'chat.assistantError.stoppedBeforeSend': 'HaoCode が次のメッセージを送信する前に、実行中のターンが停止されました。',

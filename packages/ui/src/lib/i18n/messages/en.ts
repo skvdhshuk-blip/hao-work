@@ -2793,6 +2793,8 @@ export const dict = {
   'chat.autoDecisionCard.source.rule': 'Rule',
   'chat.autoDecisionCard.source.review': 'Model review',
   'chat.autoDecisionCard.source.sandbox': 'Sandbox',
+  'chat.sandboxBadge.label': 'Sandbox',
+  'chat.sandboxBadge.tooltip': 'Agent tools are running inside a sandboxed virtual machine.',
   'chat.assistantError.sendFailed': 'HaoCode failed to send message with error:\n`{detail}`',
   'chat.assistantError.sendFailedRetry': 'HaoCode failed to send a message. Retry attempt info: \n`{detail}`',
   'chat.assistantError.stoppedBeforeSend': 'The running turn was stopped before HaoCode could send the next message.',

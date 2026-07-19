@@ -2794,6 +2794,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoDecisionCard.source.rule': 'Regra',
   'chat.autoDecisionCard.source.review': 'Revisão do modelo',
   'chat.autoDecisionCard.source.sandbox': 'Ambiente isolado',
+  'chat.sandboxBadge.label': 'Sandbox',
+  'chat.sandboxBadge.tooltip': 'As ferramentas do agente estão sendo executadas dentro de uma máquina virtual isolada.',
   'chat.assistantError.sendFailed': 'O HaoCode falhou ao enviar a mensagem. Erro:\n`{detail}`',
   'chat.assistantError.sendFailedRetry': 'O HaoCode falhou ao enviar a mensagem. Informações da nova tentativa:\n`{detail}`',
   'chat.assistantError.stoppedBeforeSend': 'O turno em execução foi interrompido antes que o HaoCode pudesse enviar a próxima mensagem.',

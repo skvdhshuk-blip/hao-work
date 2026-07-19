@@ -2794,6 +2794,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoDecisionCard.source.rule': '规则',
   'chat.autoDecisionCard.source.review': '模型复核',
   'chat.autoDecisionCard.source.sandbox': '沙箱',
+  'chat.sandboxBadge.label': 'Sandbox',
+  'chat.sandboxBadge.tooltip': '智能体工具正在沙箱虚拟机中运行。',
   'chat.assistantError.sendFailed': 'HaoCode 发送消息失败，错误：\n`{detail}`',
   'chat.assistantError.sendFailedRetry': 'HaoCode 发送消息失败。重试信息：\n`{detail}`',
   'chat.assistantError.stoppedBeforeSend': '当前运行在 HaoCode 发送下一条消息前被停止。',

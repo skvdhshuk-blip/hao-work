@@ -21,6 +21,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { formatSessionWorktreeBadge } from '@/sync/session-worktree-contract';
+import { SandboxStatusBadge } from './SandboxStatusBadge';
 import { useAllLiveSessions, useSession, useSessionMessagesResolved } from '@/sync/sync-context';
 import { getAllSyncSessions } from '@/sync/sync-refs';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -2172,6 +2173,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <span className="truncate">{worktreeBadge}</span>
                   </span>
                 ) : null}
+                <SandboxStatusBadge />
               </span>
             ) : null}
           </button>

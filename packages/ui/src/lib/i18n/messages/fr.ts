@@ -2791,6 +2791,8 @@ export const dict = {
   'chat.autoDecisionCard.source.rule': 'Règle',
   'chat.autoDecisionCard.source.review': 'Revue du modèle',
   'chat.autoDecisionCard.source.sandbox': 'Bac à sable',
+  'chat.sandboxBadge.label': 'Sandbox',
+  'chat.sandboxBadge.tooltip': 'Les outils de l\'agent s\'exécutent à l\'intérieur d\'une machine virtuelle isolée.',
   'chat.assistantError.sendFailed': "Échec de l'envoi du message par HaoCode. Erreur :\n`{detail}`",
   'chat.assistantError.sendFailedRetry': "Échec de l'envoi du message par HaoCode. Infos sur la nouvelle tentative :\n`{detail}`",
   'chat.assistantError.stoppedBeforeSend': "Le tour en cours a été arrêté avant que HaoCode ne puisse envoyer le message suivant.",

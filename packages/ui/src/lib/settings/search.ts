@@ -529,6 +529,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['hitl', 'approval mode', 'permission mode', 'auto approve', 'human in the loop', 'review model'],
   },
   {
+    id: 'behavior.sandbox',
+    page: 'behavior',
+    titleKey: 'settings.behavior.page.section.sandbox',
+    descriptionKey: 'settings.behavior.page.sandbox.tooltip',
+    keywords: ['sandbox', 'tokimo', 'vm', 'isolation', 'container', 'hyper-v', 'hypervisor'],
+  },
+  {
     id: 'agents.create',
     page: 'agents',
     titleKey: 'settings.agents.page.title.new',

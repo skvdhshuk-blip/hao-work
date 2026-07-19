@@ -254,6 +254,61 @@ const buildSandboxRequest = (config) => {
   };
 };
 
+// Resolve the SDK's bundled sandbox installer (`vendor/bin/hao-code-sandbox`)
+// from the worker autoload path. The autoload lives at `<vendor>/autoload.php`,
+// so the installer is at `<vendor>/bin/hao-code-sandbox`. Returns null when the
+// autoload path is unknown (dev without HAOWORK_HAOCODE_AUTOLOAD and no default
+// vendor tree); callers report "not available" rather than failing.
+const resolveSandboxInstaller = (autoloadPath) => {
+  const resolved = autoloadPath || process.env.HAOWORK_HAOCODE_AUTOLOAD;
+  if (typeof resolved !== 'string' || !resolved) return null;
+  const vendorDir = path.dirname(resolved); // .../vendor
+  const candidate = path.join(vendorDir, 'bin', 'hao-code-sandbox');
+  return candidate;
+};
+
+// The SDK writes guest artifacts under `<cacheRoot>/vm-kernel-<tag>+vm-rootfs-<tag>/
+// <platform>-<arch>/base` (see hao-code/scripts/sandbox-setup.php). We cannot
+// cheaply reproduce that layout in JS, so after `install --with-runtime` we ask
+// the installer itself by spawning it with no args is not useful; instead we
+// scan the known cache root for the most recent `base` directory matching the
+// current platform. Returns null when nothing is provisioned yet.
+const SANDBOX_KERNEL_TAG = 'vm-kernel-0.2.1';
+const SANDBOX_ROOTFS_TAG = 'vm-rootfs-0.2.1';
+const SANDBOX_GUEST_DIR = `${SANDBOX_KERNEL_TAG}+${SANDBOX_ROOTFS_TAG}`;
+
+const sandboxPlatformKey = () => {
+  const arch = process.arch; // arm64 / x64
+  if (process.platform === 'darwin') return `darwin-${arch}`;
+  if (process.platform === 'win32') return `windows-amd64`;
+  if (process.platform === 'linux') return `linux-${arch}`;
+  return null;
+};
+
+const resolveSandboxCacheRoot = () => {
+  if (process.env.HAOCODE_SANDBOX_CACHE) return process.env.HAOCODE_SANDBOX_CACHE;
+  if (process.platform === 'win32') {
+    return process.env.LOCALAPPDATA || process.env.TEMP || os.tmpdir();
+  }
+  return process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
+};
+
+// Walk the SDK guest-artifact cache for an existing base rootfs directory.
+// Returns the absolute path to `.../<SANDBOX_GUEST_DIR>/<platform>/base` when
+// it exists and is a directory, otherwise null. Used both for status checks
+// and to populate _fe_sandboxBaseRootfs after a prepare succeeds.
+const findInstalledSandboxRootfs = async () => {
+  const platformKey = sandboxPlatformKey();
+  if (!platformKey) return null;
+  const guestRoot = path.join(resolveSandboxCacheRoot(), SANDBOX_GUEST_DIR, platformKey, 'base');
+  try {
+    const stat = await fs.stat(guestRoot);
+    return stat.isDirectory() ? guestRoot : null;
+  } catch {
+    return null;
+  }
+};
+
 const AUTO_DECISION_SOURCES = new Set(['rule', 'review', 'sandbox']);
 const AUTO_DECISION_RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
 const ESCALATION_SOURCES = new Set(['rule', 'review', 'batch', 'sandbox']);
@@ -1585,6 +1640,70 @@ export const createHaoCodeCompatibilityServer = ({
     const config = request.body && typeof request.body === 'object' ? request.body : {};
     await store.mutate((state) => { state.config = { ...state.config, ...config }; });
     response.json({ ...config, _fe_agentEngine: 'haocode' });
+  });
+
+  // Sandbox provisioning. The tokimo backend needs a guest kernel + rootfs
+  // that the SDK ships as separate release assets (too large for the Composer
+  // archive). `POST /sandbox/prepare` invokes the SDK's own installer
+  // (`vendor/bin/hao-code-sandbox install --with-runtime`), which downloads,
+  // SHA-verifies, and caches artifacts under HAOCODE_SANDBOX_CACHE. On success
+  // the server records the resolved `base` directory as `_fe_sandboxBaseRootfs`
+  // so subsequent worker requests enable the sandbox. Single-flight per server
+  // to avoid duplicate downloads; status endpoint exposes progress.
+  const sandboxPrepareInflight = { promise: null };
+  const runSandboxPrepare = async () => {
+    if (sandboxPrepareInflight.promise) return sandboxPrepareInflight.promise;
+    const installer = resolveSandboxInstaller(workerOptions.autoloadPath);
+    if (!installer) {
+      throw new Error('Sandbox installer not available (HAOWORK_HAOCODE_AUTOLOAD unset).');
+    }
+    const phpBinary = workerOptions.phpBinary || process.env.HAOWORK_PHP_BINARY || 'php';
+    sandboxPrepareInflight.promise = (async () => {
+      try {
+        // Use the SDK installer; --with-runtime also fetches the guest kernel
+        // and rootfs. Idempotent: re-runs are no-ops when artifacts are ready.
+        const { stdout, stderr } = await execFileAsync(phpBinary, [installer, 'install', '--with-runtime'], {
+          timeout: 10 * 60 * 1000, // 10 min ceiling for first-run download
+          maxBuffer: 1 * 1024 * 1024,
+        });
+        const baseRootfs = await findInstalledSandboxRootfs();
+        if (!baseRootfs) {
+          throw new Error(`Sandbox install completed but base rootfs was not found. stdout=${stdout.slice(-500)} stderr=${stderr.slice(-500)}`);
+        }
+        await store.mutate((state) => { state.config._fe_sandboxBaseRootfs = baseRootfs; });
+        return { ok: true, baseRootfs };
+      } finally {
+        sandboxPrepareInflight.promise = null;
+      }
+    })();
+    return sandboxPrepareInflight.promise;
+  };
+
+  app.post('/sandbox/prepare', async (_request, response) => {
+    try {
+      const result = await runSandboxPrepare();
+      response.json(result);
+    } catch (error) {
+      logger.error?.('Sandbox prepare failed:', error);
+      response.status(503).json({ ok: false, error: error instanceof Error ? error.message : 'Sandbox prepare failed.' });
+    }
+  });
+
+  app.get('/sandbox/status', async (_request, response) => {
+    const config = await store.getConfig();
+    const configuredRootfs = typeof config._fe_sandboxBaseRootfs === 'string' ? config._fe_sandboxBaseRootfs : null;
+    const installedRootfs = await findInstalledSandboxRootfs();
+    // If the configured path no longer exists on disk, surface that so the UI
+    // can prompt to re-prepare instead of silently running unsandboxed.
+    const configuredMissing = configuredRootfs ? !(await fs.stat(configuredRootfs).then((s) => s.isDirectory()).catch(() => false)) : false;
+    response.json({
+      supported: sandboxPlatformKey() !== null,
+      installerAvailable: resolveSandboxInstaller(workerOptions.autoloadPath) !== null,
+      preparing: sandboxPrepareInflight.promise !== null,
+      installedRootfs,
+      configuredRootfs,
+      configuredMissing,
+    });
   });
 
   app.get('/config/providers', async (_request, response) => {

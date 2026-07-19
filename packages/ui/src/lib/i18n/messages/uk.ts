@@ -2794,6 +2794,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoDecisionCard.source.rule': 'Правило',
   'chat.autoDecisionCard.source.review': 'Перевірка моделі',
   'chat.autoDecisionCard.source.sandbox': 'Пісочниця',
+  'chat.sandboxBadge.label': 'Пісочниця',
+  'chat.sandboxBadge.tooltip': 'Інструменти агента виконуються всередині ізольованої віртуальної машини.',
   'chat.assistantError.sendFailed': 'HaoCode не вдалося надіслати повідомлення. Помилка:\n`{detail}`',
   'chat.assistantError.sendFailedRetry': 'HaoCode не вдалося надіслати повідомлення. Інформація про повторну спробу:\n`{detail}`',
   'chat.assistantError.stoppedBeforeSend': 'Поточний хід було зупинено, перш ніж HaoCode зміг надіслати наступне повідомлення.',

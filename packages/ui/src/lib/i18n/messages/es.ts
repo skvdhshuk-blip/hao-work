@@ -2794,6 +2794,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoDecisionCard.source.rule': 'Regla',
   'chat.autoDecisionCard.source.review': 'Revisión del modelo',
   'chat.autoDecisionCard.source.sandbox': 'Entorno aislado',
+  'chat.sandboxBadge.label': 'Sandbox',
+  'chat.sandboxBadge.tooltip': 'Las herramientas del agente se ejecutan dentro de una máquina virtual aislada.',
   'chat.assistantError.sendFailed': 'HaoCode no pudo enviar el mensaje. Error:\n`{detail}`',
   'chat.assistantError.sendFailedRetry': 'HaoCode no pudo enviar el mensaje. Información del reintento:\n`{detail}`',
   'chat.assistantError.stoppedBeforeSend': 'El turno en curso se detuvo antes de que HaoCode pudiera enviar el siguiente mensaje.',
