@@ -17,6 +17,7 @@ import { sanitizeRuntimeRequestHeaders } from './runtime-request-headers.mjs';
 import { assertUpdaterCapability } from './updater-capability.mjs';
 import { checkForDesktopUpdate } from './updater-check.mjs';
 import { resolveUpdaterFeed } from './updater-feed.mjs';
+import { installWindowsSandboxService, isWindowsSandboxInstallSupported } from './install-sandbox-service.mjs';
 import { mintOutsideFileGrant } from '@openchamber/web/server/lib/fs/routes.js';
 
 const execFileAsync = promisify(execFile);
@@ -1049,6 +1050,17 @@ const configurePackagedHaoCodeRuntime = () => {
     const absolutePath = path.join(runtimeRoot, relativePath);
     if (!fs.existsSync(absolutePath)) throw new Error(`Bundled HaoCode runtime file is missing: ${absolutePath}`);
     process.env[environmentName] = absolutePath;
+  }
+  // Optional sandbox runner: the tokimo backend spawns this native binary to
+  // drive the guest VM. Present only when prepare-haocode-runtime.mjs staged a
+  // runner for the current platform. Soft-fail when absent (older packages or
+  // platforms the SDK does not target) so non-sandbox runs keep working.
+  const sandboxBinary = manifest.sandboxBinary;
+  if (typeof sandboxBinary === 'string' && sandboxBinary.trim()) {
+    const sandboxPath = path.join(runtimeRoot, sandboxBinary);
+    if (fs.existsSync(sandboxPath)) {
+      process.env.HAOCODE_SANDBOX_BINARY = sandboxPath;
+    }
   }
 };
 const shouldUsePackagedUi = () => {
@@ -4252,6 +4264,18 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     case 'desktop_ssh_logs_clear':
       sshManager.clearLogsForInstance(String(args.id || '').trim());
       return null;
+
+    case 'desktop_install_sandbox_service': {
+      // Windows-only: install the tokimo Hyper-V SYSTEM service via UAC.
+      // The svc binary path is resolved from the staged runtime location so
+      // the renderer never passes arbitrary paths through this privileged IPC.
+      if (!isWindowsSandboxInstallSupported()) {
+        throw new Error('Sandbox service install is only available on Windows.');
+      }
+      const svcBinary = String(args.svcBinaryPath || '').trim();
+      if (!svcBinary) throw new Error('svcBinaryPath is required.');
+      return await installWindowsSandboxService({ svcBinaryPath: svcBinary });
+    }
 
     default:
       throw new Error(`Unknown desktop command: ${command}`);

@@ -118,6 +118,9 @@ jobs:
           bun run prepare:opencode-cli
           bun run verify:opencode-cli
           bun run bundle:main
+          # Stages PHP + Composer vendor + tokimo sandbox runner so the
+          # packaged app can actually run the HaoCode engine and sandbox.
+          bun run prepare:haocode-runtime
           # npmRebuild=false in package.json, so electron-builder won't
           # recompile native deps on its own. Rebuild against the target
           # Electron ABI before packaging, matching the release workflow.
@@ -159,7 +162,8 @@ jobs:
           for key in \
             com.apple.security.cs.allow-jit \
             com.apple.security.cs.allow-unsigned-executable-memory \
-            com.apple.security.cs.disable-library-validation
+            com.apple.security.cs.disable-library-validation \
+            com.apple.security.hypervisor
           do
             if ! echo "$ENTITLEMENTS" | grep -q "<key>$key</key>"; then
               echo "Error: required entitlement missing: $key"
@@ -240,6 +244,13 @@ jobs:
       - name: Bundle main process
         working-directory: packages/electron
         run: bun run bundle:main
+
+      - name: Prepare HaoCode runtime
+        working-directory: packages/electron
+        shell: bash
+        # Stages PHP + Composer vendor + tokimo sandbox runner (svc included
+        # on Windows) so the packaged installer can run the HaoCode engine.
+        run: bun run prepare:haocode-runtime
 
       - name: Rebuild native modules
         working-directory: packages/electron
