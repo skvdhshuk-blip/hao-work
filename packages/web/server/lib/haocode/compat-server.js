@@ -2419,11 +2419,16 @@ export const createHaoCodeCompatibilityServer = ({
     const savedSettings = await store.getProviderSettings(providerId);
     let imagePolicyUpdate = null;
     if ('imagePolicy' in body) {
-      const rawPolicy = typeof body.imagePolicy === 'string' ? body.imagePolicy.trim() : '';
-      if (!IMAGE_POLICIES.has(rawPolicy)) {
-        return response.status(400).json({ error: 'imagePolicy must be one of native, ocr, caption, vlm, drop.' });
+      if (body.imagePolicy === null) {
+        // Explicit reset: null deletes the stored override (back to native).
+        imagePolicyUpdate = 'reset';
+      } else {
+        const rawPolicy = typeof body.imagePolicy === 'string' ? body.imagePolicy.trim() : '';
+        if (!IMAGE_POLICIES.has(rawPolicy)) {
+          return response.status(400).json({ error: 'imagePolicy must be one of native, ocr, caption, vlm, drop.' });
+        }
+        imagePolicyUpdate = rawPolicy;
       }
-      imagePolicyUpdate = rawPolicy;
     }
     let imageVlmModelUpdate = undefined;
     if ('imageVlmModel' in body) {
@@ -2450,7 +2455,8 @@ export const createHaoCodeCompatibilityServer = ({
         if (value === null) delete saved[key];
         else saved[key] = value;
       }
-      if (imagePolicyUpdate !== null) saved.imagePolicy = imagePolicyUpdate;
+      if (imagePolicyUpdate === 'reset') delete saved.imagePolicy;
+      else if (imagePolicyUpdate !== null) saved.imagePolicy = imagePolicyUpdate;
       if (imageVlmModelUpdate !== undefined) {
         if (imageVlmModelUpdate === null) delete saved.imageVlmModel;
         else saved.imageVlmModel = imageVlmModelUpdate;

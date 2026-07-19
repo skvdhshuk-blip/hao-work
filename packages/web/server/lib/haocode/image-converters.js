@@ -52,7 +52,10 @@ export const createImageConverters = ({
     tesseractWorkerPromise ??= (async () => {
       await fs.mkdir(tessdataDir, { recursive: true });
       const { createWorker } = await import('tesseract.js');
-      return createWorker(['eng', 'chi_sim'], 1, { cachePath: tessdataDir });
+      // workerBlobURL:false loads the worker script from node_modules instead of
+      // a blob URL — the blob path hangs under Bun (verified on Bun 1.3.x;
+      // Electron's Node runtime works either way).
+      return createWorker(['eng', 'chi_sim'], 1, { cachePath: tessdataDir, workerBlobURL: false });
     })().catch((error) => {
       tesseractWorkerPromise = null;
       throw error;
