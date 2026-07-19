@@ -2,15 +2,15 @@
 // inputs. The compat server (prompt_async) converts image attachments into
 // plain text before sending when the provider's imagePolicy is non-native.
 //
-// - `ocr` runs tesseract.js locally (eng + chi_sim language packs lazily
-//   downloaded into `<dataDir>/haocode/tessdata/`).
+// - `ocr` runs RapidOCR (PP-OCRv4, bundled Chinese+English models from
+//   @gutenye/ocr-node) fully offline — no downloads, strong Chinese quality.
 // - `caption` runs a small image-captioning model through
 //   @xenova/transformers (weights lazily downloaded into
 //   `<dataDir>/haocode/models/`).
 // - `vlm` asks a vision-capable model through the provider's own chat
 //   completions / messages endpoint.
 //
-// Tesseract workers and caption pipelines are singletons per converter
+// The RapidOCR instance and caption pipeline are singletons per converter
 // instance so repeated runs reuse the loaded runtime and model weights.
 // Nothing here throws on model download by itself: loading happens on first
 // use, and callers degrade failed conversions to a placeholder line instead
@@ -40,27 +40,23 @@ export const createImageConverters = ({
   logger = console,
   fetchImpl = globalThis.fetch?.bind(globalThis),
 }) => {
-  const tessdataDir = path.join(dataDir, 'haocode', 'tessdata');
   const modelsDir = path.join(dataDir, 'haocode', 'models');
-  let tesseractWorkerPromise = null;
+  let rapidOcrPromise = null;
   let captionPipelinePromise = null;
 
-  // The tesseract worker downloads eng + chi_sim language packs on creation
-  // and caches them under tessdataDir. A failed creation resets the singleton
-  // so the next run retries the download instead of caching the rejection.
-  const getTesseractWorker = () => {
-    tesseractWorkerPromise ??= (async () => {
-      await fs.mkdir(tessdataDir, { recursive: true });
-      const { createWorker } = await import('tesseract.js');
-      // workerBlobURL:false loads the worker script from node_modules instead of
-      // a blob URL — the blob path hangs under Bun (verified on Bun 1.3.x;
-      // Electron's Node runtime works either way).
-      return createWorker(['eng', 'chi_sim'], 1, { cachePath: tessdataDir, workerBlobURL: false });
+  // RapidOCR ships PP-OCRv4 det/rec/cls ONNX models inside
+  // @gutenye/ocr-models (~15MB) and runs them on onnxruntime-node — fully
+  // offline, so there is nothing to download on first use. A failed creation
+  // resets the singleton so the next run retries.
+  const getRapidOcr = () => {
+    rapidOcrPromise ??= (async () => {
+      const { default: Ocr } = await import('@gutenye/ocr-node');
+      return Ocr.create();
     })().catch((error) => {
-      tesseractWorkerPromise = null;
+      rapidOcrPromise = null;
       throw error;
     });
-    return tesseractWorkerPromise;
+    return rapidOcrPromise;
   };
 
   // Import transformers.js with the Node/sharp image-decoding branch even
@@ -102,7 +98,7 @@ export const createImageConverters = ({
     return captionPipelinePromise;
   };
 
-  // Local converters read pixel data from a temp file: tesseract accepts a
+  // Local converters read pixel data from a temp file: RapidOCR accepts a
   // file path directly and the transformers RawImage loader handles paths
   // without pulling Blob polyfills into the pipeline.
   const withTempImage = async (dataUri, run) => {
@@ -121,10 +117,13 @@ export const createImageConverters = ({
   };
 
   const ocr = (dataUri) => withTempImage(dataUri, async (file) => {
-    const worker = await getTesseractWorker();
-    const result = await worker.recognize(file);
-    const text = result?.data?.text;
-    return typeof text === 'string' ? text.trim() : '';
+    const engine = await getRapidOcr();
+    const lines = await engine.detect(file);
+    if (!Array.isArray(lines)) return '';
+    return lines
+      .map((line) => (typeof line?.text === 'string' ? line.text.trim() : ''))
+      .filter(Boolean)
+      .join('\n');
   });
 
   const caption = (dataUri) => withTempImage(dataUri, async (file) => {
