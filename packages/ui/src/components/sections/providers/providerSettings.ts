@@ -8,6 +8,9 @@
  * - DELETE /provider/custom/:id -> { removed: true }
  * - PATCH /provider/:id/settings accepts contextWindow/maxTokens; a positive
  *   integer stores an override, null/0/empty resets to the catalog value.
+ * - PATCH /provider/:id/settings also accepts imagePolicy
+ *   ('native'|'ocr'|'caption'|'vlm'|'drop', default 'native') and
+ *   imageVlmModel (string|null, required when imagePolicy is 'vlm').
  */
 
 export interface ProviderOption {
@@ -100,27 +103,52 @@ export const settingsNumberToInput = (value: unknown): string => {
   return '';
 };
 
+/** Image handling strategies accepted by PATCH /provider/:id/settings. */
+export const IMAGE_POLICIES = ['native', 'ocr', 'caption', 'vlm', 'drop'] as const;
+
+export type ImagePolicy = (typeof IMAGE_POLICIES)[number];
+
+export const DEFAULT_IMAGE_POLICY: ImagePolicy = 'native';
+
+/** Normalizes a settings payload image policy; unknown values fall back to the default. */
+export const normalizeImagePolicy = (value: unknown): ImagePolicy =>
+  (IMAGE_POLICIES as readonly unknown[]).includes(value) ? (value as ImagePolicy) : DEFAULT_IMAGE_POLICY;
+
+/** Converts a settings payload VLM model id into input text ('' when unset). */
+export const settingsVlmModelToInput = (value: unknown): string =>
+  typeof value === 'string' ? value : '';
+
+/** The 'vlm' policy cannot be saved without a model id; other policies can. */
+export const isImageVlmModelMissing = (policy: ImagePolicy, model: string): boolean =>
+  policy === 'vlm' && model.trim().length === 0;
+
 export interface HaoCodeSettingsDraft {
   baseUrl: string;
   providerType: string;
   model: string;
   contextWindow: string;
   maxTokens: string;
+  imagePolicy: ImagePolicy;
+  imageVlmModel: string;
 }
 
 /**
  * Builds the PATCH /provider/:id/settings body. Empty numeric overrides are
- * sent as null so the server resets them to the catalog defaults.
+ * sent as null so the server resets them to the catalog defaults. An empty
+ * VLM model id is sent as null so the server clears it.
  */
 export const buildHaoCodeSettingsPatch = (draft: HaoCodeSettingsDraft): Record<string, unknown> => {
   const contextWindow = parsePositiveIntOverride(draft.contextWindow);
   const maxTokens = parsePositiveIntOverride(draft.maxTokens);
+  const imageVlmModel = draft.imageVlmModel.trim();
   return {
     baseUrl: draft.baseUrl,
     providerType: draft.providerType,
     model: draft.model,
     contextWindow: contextWindow.kind === 'valid' ? contextWindow.value : null,
     maxTokens: maxTokens.kind === 'valid' ? maxTokens.value : null,
+    imagePolicy: normalizeImagePolicy(draft.imagePolicy),
+    imageVlmModel: imageVlmModel.length > 0 ? imageVlmModel : null,
   };
 };
 

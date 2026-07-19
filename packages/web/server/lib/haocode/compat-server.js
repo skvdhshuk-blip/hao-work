@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { createHaoCodeStore, createId, projectIdForDirectory } from './store.js';
+import { createImageConverters } from './image-converters.js';
 import { createWorkerSupervisor } from './worker-supervisor.js';
 import { getModelsMetadata } from '../opencode/models-metadata.js';
 import { getAgentConfig, listAgentConfigs } from '../opencode/agents.js';
@@ -517,8 +518,9 @@ const extractPrompt = (parts) => {
   for (const part of Array.isArray(parts) ? parts : []) {
     if (part?.type === 'text' && typeof part.text === 'string') output.push(part.text);
     if (part?.type === 'file' && typeof part.url === 'string') {
-      // Image parts are forwarded natively (extractImages); keep only a
-      // filename note in text so the base64 data URI never floods the prompt.
+      // Image parts are forwarded natively or converted by policy
+      // (extractImageAttachments); keep only a filename note in text so the
+      // base64 data URI never floods the prompt.
       if (typeof part.mime === 'string' && part.mime.startsWith('image/')) {
         output.push(`[Attached image${part.filename ? ` ${part.filename}` : ''}]`);
       } else {
@@ -530,19 +532,45 @@ const extractPrompt = (parts) => {
   return output.join('\n\n').trim();
 };
 
-// Collect image attachments (data URIs, file paths, or URLs) for the SDK's
-// native multimodal input instead of inlining them into the prompt text.
-const extractImages = (parts) => {
-  const images = [];
+// Collect image attachments (data URIs, file paths, or URLs) with their
+// filenames: the URL feeds either the SDK's native multimodal input or the
+// image-to-text converters, and the filename labels each converted image in
+// the rewritten prompt.
+const extractImageAttachments = (parts) => {
+  const attachments = [];
   for (const part of Array.isArray(parts) ? parts : []) {
     if (part?.type === 'file'
       && typeof part.mime === 'string' && part.mime.startsWith('image/')
       && typeof part.url === 'string' && part.url.trim() !== '') {
-      images.push(part.url);
+      attachments.push({ url: part.url, filename: typeof part.filename === 'string' ? part.filename.trim() : '' });
     }
   }
-  return images;
+  return attachments;
 };
+
+// Image input policy per provider. Models that cannot consume image inputs
+// get their attachments converted to text before the run request is sent:
+// `ocr` and `caption` run local converters, `vlm` asks a vision-capable
+// model on the provider's own endpoint, `drop` discards the images, and
+// `native` forwards them unchanged (the default).
+const IMAGE_POLICIES = new Set(['native', 'ocr', 'caption', 'vlm', 'drop']);
+const IMAGE_CONVERT_TIMEOUT_MS = 60_000;
+const IMAGE_CONVERT_FALLBACK_TEXT = '图片转述失败';
+
+const normalizeImagePolicy = (value) => (IMAGE_POLICIES.has(value) ? value : 'native');
+
+const normalizeImageVlmModel = (value) => (
+  typeof value === 'string' && value.trim() ? value.trim() : null
+);
+
+const withTimeout = (promise, timeoutMs, label) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms.`)), timeoutMs);
+  timer.unref?.();
+  promise.then(
+    (value) => { clearTimeout(timer); resolve(value); },
+    (error) => { clearTimeout(timer); reject(error); },
+  );
+});
 
 // An agent config may pin a model either as an object ({ providerID, modelID })
 // or as an OpenCode-style "provider/model" string. Returns null when absent or
@@ -836,11 +864,33 @@ export const createHaoCodeCompatibilityServer = ({
   // Device-flow polling clock; tests inject an instant, recording sleep.
   sleepImpl = defaultSleep,
   oauthDeviceFlowTimeoutMs = OAUTH_DEVICE_FLOW_TIMEOUT_MS,
+  // Injectable for tests; the default wires the local OCR/caption converters
+  // and the provider-credential VLM call in image-converters.js.
+  imageConverters = null,
 }) => {
   const app = express();
   const server = http.createServer(app);
   const store = createHaoCodeStore({ rootDir: path.join(dataDir, 'haocode') });
   const supervisor = createWorkerSupervisor(workerOptions);
+  const converters = imageConverters ?? createImageConverters({ dataDir, logger, fetchImpl });
+
+  // Convert one image to text per the provider's image policy. A failed or
+  // timed-out conversion degrades to a placeholder line instead of blocking
+  // the conversation; the image itself is never forwarded after conversion.
+  const convertImageToText = async (policy, dataUri, vlm) => {
+    try {
+      const task = policy === 'ocr'
+        ? converters.ocr(dataUri)
+        : policy === 'caption'
+          ? converters.caption(dataUri)
+          : converters.vlm(dataUri, vlm);
+      const text = await withTimeout(task, IMAGE_CONVERT_TIMEOUT_MS, `image ${policy} conversion`);
+      return typeof text === 'string' && text.trim() ? text.trim() : IMAGE_CONVERT_FALLBACK_TEXT;
+    } catch (error) {
+      logger.warn?.(`[HaoCode compat] image ${policy} conversion failed: ${error.message}`);
+      return IMAGE_CONVERT_FALLBACK_TEXT;
+    }
+  };
   const globalEventClients = new Set();
   const directoryEventClients = new Map();
   const activeRuns = new Set();
@@ -1089,6 +1139,8 @@ export const createHaoCodeCompatibilityServer = ({
       models: Array.isArray(saved.models) ? saved.models : [],
       contextWindow: positiveInteger(saved.contextWindow) ?? (definition.custom ? positiveInteger(definition.contextWindow) : null),
       maxTokens: positiveInteger(saved.maxTokens) ?? (definition.custom ? positiveInteger(definition.maxTokens) : null),
+      imagePolicy: normalizeImagePolicy(saved.imagePolicy),
+      imageVlmModel: normalizeImageVlmModel(saved.imageVlmModel),
       _fe_agentEngine: 'haocode',
     };
   };
@@ -2360,6 +2412,33 @@ export const createHaoCodeCompatibilityServer = ({
       if (parsed === null) return response.status(400).json({ error: `${key} must be a positive integer.` });
       limitUpdates[key] = parsed;
     }
+    // Image policy: how image attachments are handled for models that cannot
+    // consume them. `vlm` additionally requires imageVlmModel (the vision
+    // model id used to describe images); the effective pair is validated
+    // against the merged state so a model saved earlier stays valid.
+    const savedSettings = await store.getProviderSettings(providerId);
+    let imagePolicyUpdate = null;
+    if ('imagePolicy' in body) {
+      const rawPolicy = typeof body.imagePolicy === 'string' ? body.imagePolicy.trim() : '';
+      if (!IMAGE_POLICIES.has(rawPolicy)) {
+        return response.status(400).json({ error: 'imagePolicy must be one of native, ocr, caption, vlm, drop.' });
+      }
+      imagePolicyUpdate = rawPolicy;
+    }
+    let imageVlmModelUpdate = undefined;
+    if ('imageVlmModel' in body) {
+      if (body.imageVlmModel !== null && typeof body.imageVlmModel !== 'string') {
+        return response.status(400).json({ error: 'imageVlmModel must be a string or null.' });
+      }
+      imageVlmModelUpdate = normalizeImageVlmModel(body.imageVlmModel);
+    }
+    const effectiveImagePolicy = imagePolicyUpdate ?? normalizeImagePolicy(savedSettings.imagePolicy);
+    const effectiveImageVlmModel = imageVlmModelUpdate !== undefined
+      ? imageVlmModelUpdate
+      : normalizeImageVlmModel(savedSettings.imageVlmModel);
+    if (effectiveImagePolicy === 'vlm' && !effectiveImageVlmModel) {
+      return response.status(400).json({ error: 'imageVlmModel is required when imagePolicy is vlm.' });
+    }
     await store.mutate((state) => {
       const saved = state.providers[providerId] ?? {};
       if (baseUrl) saved.baseUrl = baseUrl;
@@ -2370,6 +2449,11 @@ export const createHaoCodeCompatibilityServer = ({
       for (const [key, value] of Object.entries(limitUpdates)) {
         if (value === null) delete saved[key];
         else saved[key] = value;
+      }
+      if (imagePolicyUpdate !== null) saved.imagePolicy = imagePolicyUpdate;
+      if (imageVlmModelUpdate !== undefined) {
+        if (imageVlmModelUpdate === null) delete saved.imageVlmModel;
+        else saved.imageVlmModel = imageVlmModelUpdate;
       }
       state.providers[providerId] = saved;
     });
@@ -2581,7 +2665,7 @@ export const createHaoCodeCompatibilityServer = ({
     if (!session) return response.status(404).json({ error: 'Session not found.' });
     if (supervisor.isRunning(session.id)) return response.status(409).json({ error: 'Session is already running.' });
     const prompt = extractPrompt(request.body?.parts);
-    const images = extractImages(request.body?.parts);
+    const attachments = extractImageAttachments(request.body?.parts);
     if (!prompt) return response.status(400).json({ error: 'Message must include text or a file.' });
     const providerId = request.body?.model?.providerID || 'deepseek';
     const modelId = request.body?.model?.modelID
@@ -2592,6 +2676,33 @@ export const createHaoCodeCompatibilityServer = ({
       return response.status(401).json({
         error: { name: 'ProviderAuthError', data: { providerID: providerId, message: `Configure a ${providerId} API key first.` } },
       });
+    }
+    // Image policy: non-native policies rewrite the prompt in place of
+    // forwarding the attachments. ocr/caption/vlm convert each image to text
+    // (Promise.all, per-image timeout + fallback inside convertImageToText);
+    // drop keeps only the "[Attached image …]" note already in the prompt.
+    const savedImageSettings = await store.getProviderSettings(providerId);
+    const imagePolicy = normalizeImagePolicy(savedImageSettings.imagePolicy);
+    let runPrompt = prompt;
+    let forwardImages = attachments.map((attachment) => attachment.url);
+    if (attachments.length > 0 && imagePolicy === 'drop') {
+      forwardImages = [];
+    } else if (attachments.length > 0 && imagePolicy !== 'native') {
+      const vlm = imagePolicy === 'vlm'
+        ? {
+          apiKey: configuredProvider.apiKey,
+          baseUrl: configuredProvider.baseUrl,
+          providerType: configuredProvider.providerType,
+          model: normalizeImageVlmModel(savedImageSettings.imageVlmModel),
+        }
+        : null;
+      const descriptions = await Promise.all(attachments.map((attachment, index) => (
+        convertImageToText(imagePolicy, attachment.url, vlm).then((text) => (
+          `[图片 ${attachment.filename || index + 1}: ${text}]`
+        ))
+      )));
+      runPrompt = [prompt, ...descriptions].join('\n\n');
+      forwardImages = [];
     }
     const messageId = request.body?.messageID || createId('msg');
     const now = Date.now();
@@ -2628,8 +2739,8 @@ export const createHaoCodeCompatibilityServer = ({
       modelId,
       request: {
         action: 'run',
-        prompt,
-        ...(images.length > 0 ? { images } : {}),
+        prompt: runPrompt,
+        ...(forwardImages.length > 0 ? { images: forwardImages } : {}),
         agent: buildAgentPayload(request.body?.agent || 'build', session.directory),
       },
     });

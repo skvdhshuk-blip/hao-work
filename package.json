@@ -1,6 +1,6 @@
 {
   "name": "hao-work-monorepo",
-  "version": "1.16.21",
+  "version": "1.16.22",
   "description": "Hao Work desktop coding workspace powered by the HaoCode agent SDK",
   "private": true,
   "type": "module",

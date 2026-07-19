@@ -37,10 +37,16 @@ import {
   buildCustomProviderBody,
   buildHaoCodeSettingsPatch,
   DEFAULT_CUSTOM_PROVIDER_TYPE,
+  DEFAULT_IMAGE_POLICY,
   extractCreatedProviderId,
+  IMAGE_POLICIES,
+  isImageVlmModelMissing,
+  normalizeImagePolicy,
   parsePositiveIntOverride,
   parseProvidersPayload,
   settingsNumberToInput,
+  settingsVlmModelToInput,
+  type ImagePolicy,
   type ProviderOption,
   type ProviderSources,
 } from './providerSettings';
@@ -98,6 +104,8 @@ export const ProvidersPage: React.FC = () => {
   const [haoCodeModel, setHaoCodeModel] = React.useState('');
   const [haoCodeContextWindow, setHaoCodeContextWindow] = React.useState('');
   const [haoCodeMaxTokens, setHaoCodeMaxTokens] = React.useState('');
+  const [haoCodeImagePolicy, setHaoCodeImagePolicy] = React.useState<ImagePolicy>(DEFAULT_IMAGE_POLICY);
+  const [haoCodeImageVlmModel, setHaoCodeImageVlmModel] = React.useState('');
   const [haoCodeSettingsBusy, setHaoCodeSettingsBusy] = React.useState(false);
   const [customName, setCustomName] = React.useState('');
   const [customBaseUrl, setCustomBaseUrl] = React.useState('');
@@ -230,6 +238,8 @@ export const ProvidersPage: React.FC = () => {
       setHaoCodeModel('');
       setHaoCodeContextWindow(settingsNumberToInput(payload?.contextWindow));
       setHaoCodeMaxTokens(settingsNumberToInput(payload?.maxTokens));
+      setHaoCodeImagePolicy(normalizeImagePolicy(payload?.imagePolicy));
+      setHaoCodeImageVlmModel(settingsVlmModelToInput(payload?.imageVlmModel));
     }).catch((error) => {
       if (!cancelled) console.error('Failed to load HaoCode provider settings:', error);
     });
@@ -312,6 +322,10 @@ export const ProvidersPage: React.FC = () => {
       toast.error(t('settings.providers.page.haocode.invalidNumber'));
       return;
     }
+    if (isImageVlmModelMissing(haoCodeImagePolicy, haoCodeImageVlmModel)) {
+      toast.error(t('settings.providers.page.haocode.imageVlmModelRequired'));
+      return;
+    }
 
     setHaoCodeSettingsBusy(true);
     try {
@@ -324,6 +338,8 @@ export const ProvidersPage: React.FC = () => {
           model: haoCodeModel,
           contextWindow: haoCodeContextWindow,
           maxTokens: haoCodeMaxTokens,
+          imagePolicy: haoCodeImagePolicy,
+          imageVlmModel: haoCodeImageVlmModel,
         })),
       });
       const payload = await response.json().catch(() => null);
@@ -333,6 +349,8 @@ export const ProvidersPage: React.FC = () => {
       setHaoCodeModel('');
       setHaoCodeContextWindow(settingsNumberToInput(payload?.contextWindow));
       setHaoCodeMaxTokens(settingsNumberToInput(payload?.maxTokens));
+      setHaoCodeImagePolicy(normalizeImagePolicy(payload?.imagePolicy));
+      setHaoCodeImageVlmModel(settingsVlmModelToInput(payload?.imageVlmModel));
       await reloadOpenCodeConfiguration({ scopes: ['providers'], mode: 'active' });
       toast.success(t('settings.providers.page.haocode.toast.saved'));
     } catch (error) {
@@ -949,6 +967,7 @@ export const ProvidersPage: React.FC = () => {
   const haoCodeContextWindowInvalid = parsePositiveIntOverride(haoCodeContextWindow).kind === 'invalid';
   const haoCodeMaxTokensInvalid = parsePositiveIntOverride(haoCodeMaxTokens).kind === 'invalid';
   const haoCodeOverridesInvalid = haoCodeContextWindowInvalid || haoCodeMaxTokensInvalid;
+  const haoCodeImageVlmModelMissing = isImageVlmModelMissing(haoCodeImagePolicy, haoCodeImageVlmModel);
 
   return (
     <ScrollableOverlay outerClassName="h-full" className="w-full">
@@ -1185,6 +1204,62 @@ export const ProvidersPage: React.FC = () => {
                 className="mt-1 font-mono text-xs"
               />
             </label>
+            <div data-settings-item="providers.haocode.image-policy" className="sm:col-span-2">
+              <span className="typography-meta text-muted-foreground">
+                {t('settings.providers.page.haocode.imagePolicyLabel')}
+              </span>
+              <div className="mt-1">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex items-center justify-between gap-2 rounded-lg border border-input bg-transparent px-2 py-2 typography-ui-label whitespace-nowrap shadow-none outline-none hover:bg-interactive-hover h-6 w-fit",
+                      )}
+                    >
+                      <span className="truncate typography-ui-label font-normal text-foreground">
+                        {t(`settings.providers.page.haocode.imagePolicy.${haoCodeImagePolicy}`)}
+                      </span>
+                      <Icon name="arrow-down-s" className="h-4 w-4 flex-shrink-0 text-muted-foreground/50" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-[260px] p-1">
+                    {IMAGE_POLICIES.map((policy) => (
+                      <DropdownMenuItem
+                        key={policy}
+                        onSelect={() => setHaoCodeImagePolicy(policy)}
+                        className="flex items-center justify-between"
+                      >
+                        <span className="truncate">{t(`settings.providers.page.haocode.imagePolicy.${policy}`)}</span>
+                        {haoCodeImagePolicy === policy && (
+                          <Icon name="check" className="h-4 w-4 text-[var(--primary-base)]" />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              <p className="typography-meta text-muted-foreground mt-1">
+                {t('settings.providers.page.haocode.imagePolicyDescription')}
+              </p>
+            </div>
+            {haoCodeImagePolicy === 'vlm' && (
+              <label className="typography-meta text-muted-foreground sm:col-span-2">
+                {t('settings.providers.page.haocode.imageVlmModelLabel')}
+                <Input
+                  value={haoCodeImageVlmModel}
+                  onChange={(event) => setHaoCodeImageVlmModel(event.target.value)}
+                  placeholder="model-name"
+                  aria-invalid={haoCodeImageVlmModelMissing}
+                  className="mt-1 font-mono text-xs"
+                />
+              </label>
+            )}
+            {haoCodeImageVlmModelMissing && (
+              <p className="typography-meta text-[var(--status-error)] sm:col-span-2">
+                {t('settings.providers.page.haocode.imageVlmModelRequired')}
+              </p>
+            )}
             {haoCodeOverridesInvalid && (
               <p className="typography-meta text-[var(--status-error)] sm:col-span-2">
                 {t('settings.providers.page.haocode.invalidNumber')}
@@ -1195,7 +1270,7 @@ export const ProvidersPage: React.FC = () => {
                 size="xs"
                 className="!font-normal"
                 onClick={() => handleSaveHaoCodeSettings(selectedProvider.id)}
-                disabled={haoCodeSettingsBusy || haoCodeOverridesInvalid || !haoCodeBaseUrl.trim() || !haoCodeProviderType.trim()}
+                disabled={haoCodeSettingsBusy || haoCodeOverridesInvalid || haoCodeImageVlmModelMissing || !haoCodeBaseUrl.trim() || !haoCodeProviderType.trim()}
               >
                 {haoCodeSettingsBusy ? t('settings.providers.page.actions.saving') : t('settings.providers.page.haocode.save')}
               </Button>

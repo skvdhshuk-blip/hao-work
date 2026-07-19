@@ -4,12 +4,17 @@ import {
   buildCustomProviderBody,
   buildHaoCodeSettingsPatch,
   DEFAULT_CUSTOM_PROVIDER_TYPE,
+  DEFAULT_IMAGE_POLICY,
   extractCreatedProviderId,
+  IMAGE_POLICIES,
   isCustomProvider,
+  isImageVlmModelMissing,
+  normalizeImagePolicy,
   parseModelIdList,
   parsePositiveIntOverride,
   parseProvidersPayload,
   settingsNumberToInput,
+  settingsVlmModelToInput,
 } from './providerSettings';
 
 describe('parseProvidersPayload', () => {
@@ -99,12 +104,16 @@ describe('buildHaoCodeSettingsPatch', () => {
       model: '',
       contextWindow: '',
       maxTokens: ' ',
+      imagePolicy: 'native',
+      imageVlmModel: '',
     })).toEqual({
       baseUrl: 'https://api.example.com',
       providerType: 'openai_chat',
       model: '',
       contextWindow: null,
       maxTokens: null,
+      imagePolicy: 'native',
+      imageVlmModel: null,
     });
   });
 
@@ -115,13 +124,82 @@ describe('buildHaoCodeSettingsPatch', () => {
       model: 'my-model',
       contextWindow: '200000',
       maxTokens: '8192',
+      imagePolicy: 'native',
+      imageVlmModel: '',
     })).toEqual({
       baseUrl: 'https://api.example.com',
       providerType: 'openai_chat',
       model: 'my-model',
       contextWindow: 200000,
       maxTokens: 8192,
+      imagePolicy: 'native',
+      imageVlmModel: null,
     });
+  });
+
+  test('sends the selected image policy and a trimmed VLM model id', () => {
+    expect(buildHaoCodeSettingsPatch({
+      baseUrl: 'https://api.example.com',
+      providerType: 'openai_chat',
+      model: '',
+      contextWindow: '',
+      maxTokens: '',
+      imagePolicy: 'vlm',
+      imageVlmModel: '  qwen-vl-max  ',
+    })).toEqual({
+      baseUrl: 'https://api.example.com',
+      providerType: 'openai_chat',
+      model: '',
+      contextWindow: null,
+      maxTokens: null,
+      imagePolicy: 'vlm',
+      imageVlmModel: 'qwen-vl-max',
+    });
+  });
+});
+
+describe('IMAGE_POLICIES', () => {
+  test('exposes the five frozen strategies in order', () => {
+    expect(IMAGE_POLICIES).toEqual(['native', 'ocr', 'caption', 'vlm', 'drop']);
+  });
+});
+
+describe('normalizeImagePolicy', () => {
+  test('passes through valid policies', () => {
+    for (const policy of IMAGE_POLICIES) {
+      expect(normalizeImagePolicy(policy)).toBe(policy);
+    }
+  });
+
+  test('falls back to the default for unknown or missing values', () => {
+    expect(normalizeImagePolicy('bogus')).toBe(DEFAULT_IMAGE_POLICY);
+    expect(normalizeImagePolicy(null)).toBe(DEFAULT_IMAGE_POLICY);
+    expect(normalizeImagePolicy(undefined)).toBe(DEFAULT_IMAGE_POLICY);
+    expect(normalizeImagePolicy(42)).toBe(DEFAULT_IMAGE_POLICY);
+    expect(DEFAULT_IMAGE_POLICY).toBe('native');
+  });
+});
+
+describe('settingsVlmModelToInput', () => {
+  test('renders stored model ids and hides unset values', () => {
+    expect(settingsVlmModelToInput('qwen-vl-max')).toBe('qwen-vl-max');
+    expect(settingsVlmModelToInput(null)).toBe('');
+    expect(settingsVlmModelToInput(undefined)).toBe('');
+    expect(settingsVlmModelToInput(7)).toBe('');
+  });
+});
+
+describe('isImageVlmModelMissing', () => {
+  test('blocks saving the vlm policy without a model id', () => {
+    expect(isImageVlmModelMissing('vlm', '')).toBe(true);
+    expect(isImageVlmModelMissing('vlm', '   ')).toBe(true);
+    expect(isImageVlmModelMissing('vlm', 'qwen-vl-max')).toBe(false);
+  });
+
+  test('does not require a model id for other policies', () => {
+    for (const policy of ['native', 'ocr', 'caption', 'drop'] as const) {
+      expect(isImageVlmModelMissing(policy, '')).toBe(false);
+    }
   });
 });
 

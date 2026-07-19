@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { createHaoCodeCompatibilityServer } from './compat-server.js';
+import { createImageConverters } from './image-converters.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -2085,5 +2086,242 @@ describe('HaoCode compatibility server', () => {
     expect(payload.prompt).toContain('[Attached image shot.png]');
     expect(payload.prompt).not.toContain('base64');
     expect(payload.prompt).toContain('[Attached file doc.pdf: https://files.example.test/doc.pdf]');
+  });
+
+  test('validates and persists imagePolicy and imageVlmModel through provider settings PATCH', async () => {
+    const runtime = await createRuntime();
+    const patch = (body) => fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const get = () => fetch(`${runtime.baseUrl}/provider/deepseek/settings`).then((response) => response.json());
+
+    expect(await get()).toMatchObject({ imagePolicy: 'native', imageVlmModel: null });
+
+    expect((await patch({ imagePolicy: 'bogus' })).status).toBe(400);
+    expect((await patch({ imageVlmModel: 42 })).status).toBe(400);
+    // vlm requires a vision model id.
+    expect((await patch({ imagePolicy: 'vlm' })).status).toBe(400);
+
+    const vlm = await patch({ imagePolicy: 'vlm', imageVlmModel: 'gpt-4o' });
+    expect(vlm.status).toBe(200);
+    expect(await vlm.json()).toMatchObject({ imagePolicy: 'vlm', imageVlmModel: 'gpt-4o' });
+    expect(await get()).toMatchObject({ imagePolicy: 'vlm', imageVlmModel: 'gpt-4o' });
+
+    // Clearing the model while the policy stays vlm is rejected.
+    expect((await patch({ imageVlmModel: null })).status).toBe(400);
+
+    const reset = await patch({ imagePolicy: 'native', imageVlmModel: null });
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toMatchObject({ imagePolicy: 'native', imageVlmModel: null });
+    expect(await get()).toMatchObject({ imagePolicy: 'native', imageVlmModel: null });
+
+    // Non-vlm policies persist without a model.
+    expect((await patch({ imagePolicy: 'ocr' })).status).toBe(200);
+    expect(await get()).toMatchObject({ imagePolicy: 'ocr', imageVlmModel: null });
+  });
+
+  const readImagesProbePayload = async (runtime, sessionId) => {
+    const records = await waitForAssistantStop(runtime.baseUrl, sessionId);
+    return JSON.parse(records
+      .find((record) => record.info.role === 'assistant')
+      .parts.find((part) => part.type === 'text').text);
+  };
+
+  test('converts images to prompt text and withholds them under the ocr image policy', async () => {
+    const calls = [];
+    const runtime = await createRuntime({
+      imageConverters: {
+        ocr: async (dataUri) => { calls.push(dataUri); return '扫描到的文字'; },
+        caption: async () => { throw new Error('caption should not run'); },
+        vlm: async () => { throw new Error('vlm should not run'); },
+      },
+    });
+    await configureDeepSeek(runtime.baseUrl);
+    await fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imagePolicy: 'ocr' }),
+    });
+    const session = await createSession(runtime);
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'images-probe describe', {
+      parts: [
+        { type: 'text', text: 'images-probe describe' },
+        { type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=', filename: 'shot.png' },
+        { type: 'file', mime: 'image/png', url: 'data:image/png;base64,AAAAIGZ0eXAAAAA=' },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const payload = await readImagesProbePayload(runtime, session.id);
+    expect(calls).toEqual(['data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=', 'data:image/png;base64,AAAAIGZ0eXAAAAA=']);
+    expect(payload.images).toBeNull();
+    expect(payload.prompt).toContain('[图片 shot.png: 扫描到的文字]');
+    expect(payload.prompt).toContain('[图片 2: 扫描到的文字]');
+    expect(payload.prompt).not.toContain('base64,');
+  });
+
+  test('describes images through the vlm policy with the configured vision model', async () => {
+    const vlmCalls = [];
+    const runtime = await createRuntime({
+      imageConverters: {
+        ocr: async () => { throw new Error('ocr should not run'); },
+        caption: async () => { throw new Error('caption should not run'); },
+        vlm: async (dataUri, options) => { vlmCalls.push({ dataUri, options }); return '一只趴在键盘上的猫'; },
+      },
+    });
+    await configureDeepSeek(runtime.baseUrl);
+    await fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imagePolicy: 'vlm', imageVlmModel: 'gpt-4o' }),
+    });
+    const session = await createSession(runtime);
+    const dataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=';
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'images-probe describe', {
+      parts: [
+        { type: 'text', text: 'images-probe describe' },
+        { type: 'file', mime: 'image/png', url: dataUri, filename: 'shot.png' },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const payload = await readImagesProbePayload(runtime, session.id);
+    expect(vlmCalls).toHaveLength(1);
+    expect(vlmCalls[0].dataUri).toBe(dataUri);
+    expect(vlmCalls[0].options).toMatchObject({
+      apiKey: 'test-key',
+      providerType: 'openai_chat',
+      model: 'gpt-4o',
+    });
+    expect(payload.images).toBeNull();
+    expect(payload.prompt).toContain('[图片 shot.png: 一只趴在键盘上的猫]');
+  });
+
+  test('drops image attachments under the drop image policy without converting them', async () => {
+    const runtime = await createRuntime({
+      imageConverters: {
+        ocr: async () => { throw new Error('ocr should not run'); },
+        caption: async () => { throw new Error('caption should not run'); },
+        vlm: async () => { throw new Error('vlm should not run'); },
+      },
+    });
+    await configureDeepSeek(runtime.baseUrl);
+    await fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imagePolicy: 'drop' }),
+    });
+    const session = await createSession(runtime);
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'images-probe describe', {
+      parts: [
+        { type: 'text', text: 'images-probe describe' },
+        { type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=', filename: 'shot.png' },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const payload = await readImagesProbePayload(runtime, session.id);
+    expect(payload.images).toBeNull();
+    expect(payload.prompt).toContain('[Attached image shot.png]');
+    expect(payload.prompt).not.toContain('base64,');
+  });
+
+  test('degrades a failed image conversion to a placeholder line without blocking the run', async () => {
+    const runtime = await createRuntime({
+      imageConverters: {
+        ocr: async () => { throw new Error('tesseract exploded'); },
+        caption: async () => { throw new Error('caption should not run'); },
+        vlm: async () => { throw new Error('vlm should not run'); },
+      },
+    });
+    await configureDeepSeek(runtime.baseUrl);
+    await fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imagePolicy: 'ocr' }),
+    });
+    const session = await createSession(runtime);
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'images-probe describe', {
+      parts: [
+        { type: 'text', text: 'images-probe describe' },
+        { type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=', filename: 'shot.png' },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const payload = await readImagesProbePayload(runtime, session.id);
+    expect(payload.images).toBeNull();
+    expect(payload.prompt).toContain('[图片 shot.png: 图片转述失败]');
+  });
+
+  test('vlm converter posts the configured model and image to chat completions', async () => {
+    const requests = [];
+    const converters = createImageConverters({
+      dataDir: await fs.mkdtemp(path.join(os.tmpdir(), 'hao-converters-')),
+      logger: { log() {}, error() {}, warn() {} },
+      fetchImpl: async (url, init) => {
+        requests.push({ url, init });
+        return {
+          ok: true,
+          json: async () => ({ choices: [{ message: { content: '一只猫坐在窗台上' } }] }),
+        };
+      },
+    });
+    const text = await converters.vlm('data:image/png;base64,AAAABBBB', {
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.example.test/v1/',
+      providerType: 'openai_chat',
+      model: 'gpt-4o',
+    });
+    expect(text).toBe('一只猫坐在窗台上');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe('https://api.example.test/v1/chat/completions');
+    expect(requests[0].init.headers.authorization).toBe('Bearer sk-test');
+    const body = JSON.parse(requests[0].init.body);
+    expect(body.model).toBe('gpt-4o');
+    expect(body.messages[0].content).toContainEqual({ type: 'image_url', image_url: { url: 'data:image/png;base64,AAAABBBB' } });
+  });
+
+  test('vlm converter speaks the anthropic messages format for anthropic providers', async () => {
+    const requests = [];
+    const converters = createImageConverters({
+      dataDir: await fs.mkdtemp(path.join(os.tmpdir(), 'hao-converters-')),
+      logger: { log() {}, error() {}, warn() {} },
+      fetchImpl: async (url, init) => {
+        requests.push({ url, init });
+        return {
+          ok: true,
+          json: async () => ({ content: [{ type: 'text', text: '一张截图' }] }),
+        };
+      },
+    });
+    const text = await converters.vlm('data:image/png;base64,AAAABBBB', {
+      apiKey: 'sk-ant',
+      baseUrl: 'https://api.anthropic.test',
+      providerType: 'anthropic',
+      model: 'claude-sonnet-4-20250514',
+    });
+    expect(text).toBe('一张截图');
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe('https://api.anthropic.test/v1/messages');
+    expect(requests[0].init.headers['x-api-key']).toBe('sk-ant');
+    const body = JSON.parse(requests[0].init.body);
+    expect(body.model).toBe('claude-sonnet-4-20250514');
+    expect(body.messages[0].content).toContainEqual({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'AAAABBBB' },
+    });
+  });
+
+  test('vlm converter rejects non-ok responses so callers can degrade', async () => {
+    const converters = createImageConverters({
+      dataDir: await fs.mkdtemp(path.join(os.tmpdir(), 'hao-converters-')),
+      logger: { log() {}, error() {}, warn() {} },
+      fetchImpl: async () => ({ ok: false, status: 429, json: async () => ({}) }),
+    });
+    await expect(converters.vlm('data:image/png;base64,AAAA', {
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.example.test/v1',
+      providerType: 'openai_chat',
+      model: 'gpt-4o',
+    })).rejects.toThrow('429');
   });
 });

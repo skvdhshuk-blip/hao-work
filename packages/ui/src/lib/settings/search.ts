@@ -721,6 +721,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['models', 'hide', 'show'],
   },
   {
+    id: 'providers.haocode.image-policy',
+    page: 'providers',
+    titleKey: 'settings.providers.page.haocode.imagePolicyLabel',
+    descriptionKey: 'settings.providers.page.haocode.imagePolicyDescription',
+    keywords: ['image', 'picture', 'ocr', 'caption', 'vlm', 'vision'],
+  },
+  {
     id: 'skills.create',
     page: 'skills.installed',
     titleKey: 'settings.skills.page.title.newSkill',
