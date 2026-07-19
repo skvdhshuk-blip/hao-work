@@ -2,9 +2,12 @@
 
 declare(strict_types=1);
 
+use HaoCode\Sdk\Agent;
 use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\Message;
+use HaoCode\Sdk\Runner;
+use HaoCode\Sdk\RunOptions;
 
 const DEFAULT_MAX_TURNS = PHP_INT_MAX;
 
@@ -94,6 +97,19 @@ $hitlReviewModel = normalizeString($request['hitlReviewModel'] ?? null);
 // User "Always Allow" rules persisted by the compatibility server; the SDK
 // exact-matches trimmed Bash commands from this file before rule grading.
 $hitlAllowlistPath = normalizeString($request['hitlAllowlistPath'] ?? null);
+// Structured agent definition forwarded by the compatibility server:
+// { name, prompt?, model?: { providerID, modelID } }. The agent prompt keeps
+// flowing through appendSystemPrompt (appended to HaoCode's default coding
+// system prompt); it is deliberately NOT mapped to Agent::systemPrompt, which
+// would replace the default system prompt wholesale and drop the built-in
+// tool/HITL guidance. agent.model only overrides the model id; provider
+// credentials still come from the request's provider section.
+$agentDefinition = is_array($request['agent'] ?? null) ? $request['agent'] : null;
+$agentName = normalizeString($agentDefinition['name'] ?? null);
+$agentPrompt = normalizeString($agentDefinition['prompt'] ?? null);
+$agentModel = is_array($agentDefinition['model'] ?? null)
+    ? normalizeString($agentDefinition['model']['modelID'] ?? null)
+    : null;
 $configArguments = [
     'apiKey' => normalizeString($provider['apiKey'] ?? null),
     'model' => normalizeString($provider['model'] ?? null),
@@ -105,7 +121,7 @@ $configArguments = [
     'maxBudgetUsd' => isset($request['maxBudgetUsd']) ? (float) $request['maxBudgetUsd'] : null,
     'permissionMode' => 'bypass_permissions',
     'allowedTools' => normalizeTools($request['allowedTools'] ?? null),
-    'appendSystemPrompt' => normalizeString($request['appendSystemPrompt'] ?? null),
+    'appendSystemPrompt' => $agentPrompt ?? normalizeString($request['appendSystemPrompt'] ?? null),
     'thinkingEnabled' => (bool) ($request['thinkingEnabled'] ?? false),
     'onThinking' => static fn (string $delta): mixed => emit(['type' => 'thinking', 'text' => $delta]),
     'ephemeral' => false,
@@ -131,6 +147,46 @@ if ($images !== []) {
     $configArguments['images'] = $images;
 }
 $config = new HaoCodeConfig(...$configArguments);
+// First-class SDK Agent/Runner view of the same request (dogfooded by fresh
+// runs below). Field mapping: run-invariant settings live on the Agent;
+// per-run inputs (callbacks, images, cwd, budget, persistence) live on
+// RunOptions. Only `sessionId` (session continuity) has no Agent/RunOptions
+// counterpart — runs needing it fall back to the HaoCode facade.
+// Agent.headers only exists in hao-code >= 1.16.0; gate it so the worker
+// keeps running against older vendored SDKs (fresh runs then take the
+// facade path for header-carrying providers, preserving header delivery).
+$agentSupportsHeaders = property_exists(Agent::class, 'headers');
+$agentArguments = [
+    'name' => $agentName ?? 'haowork',
+    'model' => $agentModel ?? $configArguments['model'],
+    'apiKey' => $configArguments['apiKey'],
+    'baseUrl' => $configArguments['baseUrl'],
+    'providerType' => $configArguments['providerType'],
+    'maxTokens' => $configArguments['maxTokens'],
+    'maxTurns' => $configArguments['maxTurns'],
+    'appendSystemPrompt' => $configArguments['appendSystemPrompt'],
+    'thinkingEnabled' => $configArguments['thinkingEnabled'],
+    'permissionMode' => $configArguments['permissionMode'],
+    'allowedTools' => $configArguments['allowedTools'],
+    'interruptOn' => $configArguments['interruptOn'],
+    'enableAskUser' => $configArguments['enableAskUser'],
+    'hitlMode' => $configArguments['hitlMode'],
+    'hitlReviewModel' => $configArguments['hitlReviewModel'],
+    'hitlAllowlistPath' => $configArguments['hitlAllowlistPath'],
+    'oauthBearer' => $configArguments['oauthBearer'],
+    'ephemeral' => false,
+];
+if ($agentSupportsHeaders) {
+    $agentArguments['headers'] = $providerHeaders;
+}
+$agent = new Agent(...$agentArguments);
+$runOptions = new RunOptions(
+    onThinking: $configArguments['onThinking'],
+    images: $images,
+    ephemeral: false,
+    cwd: $cwd,
+    maxBudgetUsd: $configArguments['maxBudgetUsd'],
+);
 
 try {
     $action = normalizeString($request['action'] ?? null) ?? 'run';
@@ -141,13 +197,25 @@ try {
             throw new InvalidArgumentException('resume_interrupt requires haocodeSessionId and interruptId.');
         }
         $decisions = is_array($request['decisions'] ?? null) ? $request['decisions'] : [];
+        // Runner has no interrupt-resume API; the HaoCode facade path stays.
         $messages = HaoCode::streamResumeInterrupt($sessionId, $interruptId, $decisions, $config);
     } else {
         $prompt = normalizeString($request['prompt'] ?? null);
         if ($prompt === null) {
             throw new InvalidArgumentException('run requires a non-empty prompt.');
         }
-        $messages = HaoCode::stream($prompt, $config);
+        if ($sessionId === null && ($agentSupportsHeaders || $providerHeaders === [])) {
+            // Fresh run: dogfood Runner::stream. It drives the same AgentLoop
+            // as HaoCode::stream (which internally delegates to Runner), so
+            // the emitted Message stream is identical. When the vendored SDK
+            // predates Agent.headers, header-carrying runs keep the facade so
+            // headers still reach the provider.
+            $messages = Runner::stream($agent, $prompt, $runOptions);
+        } else {
+            // Session continuation ($sessionId redirects to a resumed
+            // Conversation) is a HaoCodeConfig-only behavior — keep the facade.
+            $messages = HaoCode::stream($prompt, $config);
+        }
     }
 
     // Pure forwarding loop: the SDK settles smart/auto decisions internally

@@ -36,6 +36,42 @@ final class HaoCodeConfig
     }
 }
 
+final class Agent
+{
+    public string $name;
+    public ?string $model;
+    public ?string $appendSystemPrompt;
+    public int $maxTurns;
+    public array $interruptOn;
+    public ?string $hitlMode;
+    public ?string $hitlReviewModel;
+    public ?string $hitlAllowlistPath;
+    public array $headers;
+
+    public function __construct(mixed ...$options)
+    {
+        $this->name = $options['name'] ?? 'default';
+        $this->model = $options['model'] ?? null;
+        $this->appendSystemPrompt = $options['appendSystemPrompt'] ?? null;
+        $this->maxTurns = $options['maxTurns'];
+        $this->interruptOn = $options['interruptOn'] ?? [];
+        $this->hitlMode = $options['hitlMode'] ?? 'ask';
+        $this->hitlReviewModel = $options['hitlReviewModel'] ?? null;
+        $this->hitlAllowlistPath = $options['hitlAllowlistPath'] ?? null;
+        $this->headers = $options['headers'] ?? [];
+    }
+}
+
+final class RunOptions
+{
+    public array $images;
+
+    public function __construct(mixed ...$options)
+    {
+        $this->images = $options['images'] ?? [];
+    }
+}
+
 final class Message
 {
     public ?string $toolName = null;
@@ -117,6 +153,10 @@ final class HaoCode
 
     public static function stream(string $prompt, HaoCodeConfig $config): \\Generator
     {
+        if ($prompt === 'report path') {
+            yield new Message(type: 'result', text: 'hao-facade');
+            return;
+        }
         if ($prompt === 'report interrupt on') {
             yield new Message(type: 'result', text: json_encode(array_keys($config->interruptOn)));
             return;
@@ -242,6 +282,37 @@ final class HaoCode
         ]));
     }
 }
+
+final class Runner
+{
+    public static function stream(Agent $agent, string $prompt, RunOptions $options): \\Generator
+    {
+        if ($prompt === 'report path') {
+            yield new Message(type: 'result', text: 'runner');
+            return;
+        }
+        if ($prompt === 'report agent') {
+            yield new Message(type: 'result', text: json_encode([
+                'name' => $agent->name,
+                'model' => $agent->model,
+                'appendSystemPrompt' => $agent->appendSystemPrompt,
+            ]));
+            return;
+        }
+        // Delegate to the facade stream so every behavioral probe below is
+        // shared by both dispatch paths, exactly like the real SDK where
+        // HaoCode::stream hands off to Runner for fresh runs.
+        $config = new HaoCodeConfig(
+            maxTurns: $agent->maxTurns,
+            interruptOn: $agent->interruptOn,
+            hitlMode: $agent->hitlMode,
+            hitlReviewModel: $agent->hitlReviewModel,
+            hitlAllowlistPath: $agent->hitlAllowlistPath,
+            images: $options->images,
+        );
+        yield from HaoCode::stream($prompt, $config);
+    }
+}
 `;
 
 const executeWorker = (request, env) => new Promise((resolve, reject) => {
@@ -260,7 +331,7 @@ const executeWorker = (request, env) => new Promise((resolve, reject) => {
   child.stdin.end(`${JSON.stringify(request)}\n`);
 });
 
-const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMode, hitlReviewModel, hitlAllowlistPath, images, prompt } = {}) => {
+const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMode, hitlReviewModel, hitlAllowlistPath, images, prompt, agent, sessionId, providerHeaders, providerModel, appendSystemPrompt } = {}) => {
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'hao-work-worker-'));
   const autoloadPath = path.join(temporaryDirectory, 'autoload.php');
   await fs.writeFile(autoloadPath, fakeAutoload);
@@ -276,12 +347,19 @@ const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMod
     action: 'run',
     prompt: prompt ?? (contextWindow === undefined ? 'report max turns' : 'report context window'),
     cwd: temporaryDirectory,
-    provider: contextWindow === undefined ? {} : { contextWindow },
+    provider: {
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(providerModel === undefined ? {} : { model: providerModel }),
+      ...(providerHeaders === undefined ? {} : { headers: providerHeaders }),
+    },
     ...(maxTurns === undefined ? {} : { maxTurns }),
     ...(hitlMode === undefined ? {} : { hitlMode }),
     ...(hitlReviewModel === undefined ? {} : { hitlReviewModel }),
     ...(hitlAllowlistPath === undefined ? {} : { hitlAllowlistPath }),
     ...(images === undefined ? {} : { images }),
+    ...(agent === undefined ? {} : { agent }),
+    ...(sessionId === undefined ? {} : { haocodeSessionId: sessionId }),
+    ...(appendSystemPrompt === undefined ? {} : { appendSystemPrompt }),
   };
 
   try {
@@ -470,6 +548,62 @@ test('normalizes unknown auto_decision enum values conservatively', async () => 
   assert.equal(decision.actionId, 'action-9');
 
   assert.equal(result.type, 'result');
+});
+
+test('routes fresh runs through Runner and legacy-only runs through the HaoCode facade', async () => {
+  const fresh = await runWorker({ prompt: 'report path' });
+  assert.equal(fresh.at(-1)?.text, 'runner');
+
+  // Session continuation is a HaoCodeConfig-only behavior (RunOptions has no
+  // sessionId), so the worker must keep the facade for it.
+  const resumed = await runWorker({ prompt: 'report path', sessionId: 'hao_1' });
+  assert.equal(resumed.at(-1)?.text, 'hao-facade');
+
+  // Provider headers ride the SDK Agent (Agent.headers), so header runs take
+  // the Runner path too.
+  const withHeaders = await runWorker({ prompt: 'report path', providerHeaders: { 'X-Test': '1' } });
+  assert.equal(withHeaders.at(-1)?.text, 'runner');
+});
+
+test('maps a structured agent definition onto the SDK Agent', async () => {
+  const pinned = await runWorker({
+    prompt: 'report agent',
+    providerModel: 'deepseek-chat',
+    agent: { name: 'reviewer', prompt: 'Be exact.', model: { providerID: 'deepseek', modelID: 'deepseek-reasoner' } },
+  });
+  assert.deepEqual(JSON.parse(pinned.at(-1)?.text), {
+    name: 'reviewer',
+    model: 'deepseek-reasoner',
+    appendSystemPrompt: 'Be exact.',
+  });
+
+  // Without agent.model the provider section model wins.
+  const unpinned = await runWorker({
+    prompt: 'report agent',
+    providerModel: 'deepseek-chat',
+    agent: { name: 'build', prompt: 'Persona.' },
+  });
+  assert.deepEqual(JSON.parse(unpinned.at(-1)?.text), {
+    name: 'build',
+    model: 'deepseek-chat',
+    appendSystemPrompt: 'Persona.',
+  });
+
+  // Without an agent definition the Agent gets the bridge default name and no prompt.
+  const missing = await runWorker({ prompt: 'report agent', providerModel: 'deepseek-chat' });
+  assert.deepEqual(JSON.parse(missing.at(-1)?.text), {
+    name: 'haowork',
+    model: 'deepseek-chat',
+    appendSystemPrompt: null,
+  });
+
+  // A structured agent prompt takes precedence over the legacy top-level field.
+  const precedence = await runWorker({
+    prompt: 'report agent',
+    agent: { name: 'reviewer', prompt: 'Structured.' },
+    appendSystemPrompt: 'Legacy.',
+  });
+  assert.equal(JSON.parse(precedence.at(-1)?.text).appendSystemPrompt, 'Structured.');
 });
 
 test('ask mode still emits interrupts without auto decisions', async () => {

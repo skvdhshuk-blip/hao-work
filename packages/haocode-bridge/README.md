@@ -4,6 +4,10 @@ This package is the PHP execution boundary used by Hao Work. `worker.php` reads 
 
 Development can use `HAOWORK_HAOCODE_AUTOLOAD=/path/to/hao-code/vendor/autoload.php`. Packaged builds install the locked Composer dependencies into this directory and point the worker at the bundled PHP runtime.
 
+Fresh runs dogfood the SDK's first-class Agent/Runner API: run-invariant settings (provider, model, tools, permissions, HITL) are mapped onto an `Agent`, per-run inputs (`onThinking`, `images`, `cwd`, `maxBudgetUsd`, `ephemeral: false`) onto `RunOptions`, and the run executes via `Runner::stream($agent, $prompt, $runOptions)`. Two request behaviors have no Agent/RunOptions counterpart and keep the legacy `HaoCode` facade: session continuation (`haocodeSessionId`, which the facade redirects to a resumed `Conversation`) and extra provider `headers` (e.g. GitHub Copilot); `resume_interrupt` also stays on `HaoCode::streamResumeInterrupt` because Runner has no interrupt-resume API. All paths emit the identical `Message` stream, so the JSON-lines contract is unchanged.
+
+An optional structured `agent` request field (`{ name, prompt?, model?: { providerID, modelID } }`) binds an OpenCode agent definition to the SDK `Agent`: `name` becomes the Agent name (default `haowork`), `prompt` fills the `appendSystemPrompt` slot (appended to the default coding system prompt — deliberately not `systemPrompt`, which would replace the default), and `model.modelID` overrides the provider section's model id. A structured `agent.prompt` takes precedence over the legacy top-level `appendSystemPrompt` field.
+
 Long-running tasks have no practical turn limit by default (`PHP_INT_MAX`). A positive `maxTurns` value in a worker request takes precedence; otherwise `HAOWORK_HAOCODE_MAX_TURNS` can impose a process-wide finite limit. Invalid and non-positive values fall back to the next valid level. Users can still stop an active run through Hao Work's abort control.
 
 ## HITL modes

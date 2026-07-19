@@ -6,7 +6,7 @@
   "license": "MIT",
   "require": {
     "php": "^8.3",
-    "sk-wang/hao-code": "^1.15.0"
+    "sk-wang/hao-code": "^1.16.0"
   },
   "repositories": {
     "haocode": {

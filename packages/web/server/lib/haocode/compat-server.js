@@ -386,6 +386,38 @@ const extractImages = (parts) => {
   return images;
 };
 
+// An agent config may pin a model either as an object ({ providerID, modelID })
+// or as an OpenCode-style "provider/model" string. Returns null when absent or
+// malformed so the request's own model stays in effect.
+const parseAgentModel = (value) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const providerID = typeof value.providerID === 'string' ? value.providerID.trim() : '';
+    const modelID = typeof value.modelID === 'string' ? value.modelID.trim() : '';
+    return providerID && modelID ? { providerID, modelID } : null;
+  }
+  if (typeof value === 'string' && value.includes('/')) {
+    const [providerID, ...rest] = value.split('/');
+    const modelID = rest.join('/').trim();
+    return providerID.trim() && modelID ? { providerID: providerID.trim(), modelID } : null;
+  }
+  return null;
+};
+
+// Structured agent definition forwarded to the PHP worker. The worker maps it
+// onto an SDK Agent: `name` -> Agent name, `prompt` -> the appendSystemPrompt
+// slot (appended to HaoCode's default coding system prompt, same as before),
+// `model.modelID` -> the run's model override. Only configured fields are
+// included so a bare built-in agent (e.g. default `build`) behaves exactly as
+// the previous appendSystemPrompt-only contract.
+const buildAgentPayload = (agentName, directory) => {
+  const config = getAgentConfig(agentName, directory).config ?? {};
+  const payload = { name: agentName };
+  if (typeof config.prompt === 'string' && config.prompt.trim()) payload.prompt = config.prompt;
+  const model = parseAgentModel(config.model);
+  if (model) payload.model = model;
+  return payload;
+};
+
 const writeSse = (response, payload) => {
   response.write(`id: ${payload.id || createId('evt')}\n`);
   response.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -2375,7 +2407,7 @@ export const createHaoCodeCompatibilityServer = ({
         action: 'run',
         prompt,
         ...(images.length > 0 ? { images } : {}),
-        appendSystemPrompt: getAgentConfig(request.body?.agent || 'build', session.directory).config?.prompt,
+        agent: buildAgentPayload(request.body?.agent || 'build', session.directory),
       },
     });
   });

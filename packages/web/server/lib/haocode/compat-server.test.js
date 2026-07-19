@@ -83,7 +83,7 @@ if (request.action === 'resume_interrupt') {
   emit({ type: 'text', text });
   emit({ type: 'result', text, sessionId: 'hao_limits', usage: {}, cost: 0 });
 } else if (request.prompt === 'request-config') {
-  const text = JSON.stringify({ appendSystemPrompt: request.appendSystemPrompt, mcpSettingsPath: request.mcpSettingsPath, allowedTools: request.allowedTools, hitlAllowlistPath: request.hitlAllowlistPath ?? null });
+  const text = JSON.stringify({ appendSystemPrompt: request.appendSystemPrompt ?? null, agent: request.agent ?? null, mcpSettingsPath: request.mcpSettingsPath, allowedTools: request.allowedTools, hitlAllowlistPath: request.hitlAllowlistPath ?? null });
   emit({ type: 'text', text });
   emit({ type: 'result', text, sessionId: 'hao_config', usage: {}, cost: 0 });
 } else if (request.prompt === 'hitl-config') {
@@ -272,10 +272,59 @@ describe('HaoCode compatibility server', () => {
       return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
     });
     const config = JSON.parse(records.find((record) => record.info.role === 'assistant').parts.find((part) => part.type === 'text').text);
-    expect(config.appendSystemPrompt).toBe('Be exact.');
+    expect(config.agent).toEqual({ name: 'reviewer', prompt: 'Be exact.' });
+    expect(config.appendSystemPrompt).toBeNull();
     expect(config.allowedTools).toEqual(['*']);
     expect(config.hitlAllowlistPath).toBe(path.join(runtime.dataDir, 'haocode', 'hitl-allowlist.json'));
     expect(JSON.parse(await fs.readFile(config.mcpSettingsPath, 'utf8')).mcp_servers.context7).toMatchObject({ transport: 'http', url: 'https://mcp.example.test' });
+  });
+
+  test('forwards structured agent definitions and pinned models to the worker', async () => {
+    const runtime = await createRuntime();
+    await fs.mkdir(path.join(runtime.project, '.opencode'), { recursive: true });
+    await fs.writeFile(path.join(runtime.project, '.opencode', 'opencode.json'), JSON.stringify({
+      agent: {
+        pilot: { prompt: 'Fly carefully.', model: 'deepseek/deepseek-reasoner' },
+        navigator: { prompt: 'Chart the course.', model: { providerID: 'deepseek', modelID: 'deepseek-chat' } },
+      },
+    }));
+
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    const stoppedRecords = async () => (await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json()))
+      .filter((record) => record.info.role === 'assistant' && record.info.finish === 'stop');
+    const requestConfig = async (agent) => {
+      const stoppedBefore = (await stoppedRecords()).length;
+      expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'request-config', agent ? { agent } : {})).status).toBe(200);
+      const stopped = await waitFor(async () => {
+        const records = await stoppedRecords();
+        return records.length > stoppedBefore ? records : null;
+      });
+      return JSON.parse(stopped.at(-1).parts.find((part) => part.type === 'text').text);
+    };
+
+    // String "provider/model" pins are parsed into a structured model override.
+    const pinned = await requestConfig('pilot');
+    expect(pinned.agent).toEqual({
+      name: 'pilot',
+      prompt: 'Fly carefully.',
+      model: { providerID: 'deepseek', modelID: 'deepseek-reasoner' },
+    });
+
+    // Object-shaped pins pass through with trimmed providerID/modelID.
+    const objectPinned = await requestConfig('navigator');
+    expect(objectPinned.agent).toEqual({
+      name: 'navigator',
+      prompt: 'Chart the course.',
+      model: { providerID: 'deepseek', modelID: 'deepseek-chat' },
+    });
+
+    // The default build agent carries only its name — no prompt, no model —
+    // matching the previous behavior where no appendSystemPrompt was sent.
+    const build = await requestConfig();
+    expect(build.agent).toEqual({ name: 'build' });
+    expect(build.appendSystemPrompt).toBeNull();
   });
 
   test('exposes TodoWrite state and Git-backed status and diffs', async () => {
