@@ -216,6 +216,44 @@ const normalizeHitlReviewModel = (value) => (
   typeof value === 'string' && value.trim() ? value : null
 );
 
+// Sandbox configuration: when a project enables the tokimo VM, the worker
+// reroutes file/search/bash tools into the VM and the smart-HITL decider can
+// auto-approve contained actions (emitting auto_decision source:'sandbox').
+// The binary path is intentionally NOT injected here: Electron sets
+// HAOCODE_SANDBOX_BINARY at spawn time and the SDK's SandboxBinaryResolver
+// reads it directly, so dev and packaged runs share the same resolver chain.
+const SANDBOX_NETWORKS = new Set(['blocked', 'allow-all']);
+const DEFAULT_SANDBOX_MEMORY_MB = 4096;
+const DEFAULT_SANDBOX_CPU_COUNT = 4;
+
+const normalizeSandboxNetwork = (value) => (SANDBOX_NETWORKS.has(value) ? value : 'blocked');
+
+const buildSandboxRequest = (config) => {
+  if (!config || config._fe_sandboxEnabled !== true) {
+    return { enabled: false };
+  }
+  const baseRootfs = config._fe_sandboxBaseRootfs;
+  if (typeof baseRootfs !== 'string' || !baseRootfs.trim()) {
+    // Enabled but not provisioned: fail closed so the run continues unsandboxed
+    // instead of throwing inside the worker. UI surfaces the missing runtime.
+    return { enabled: false };
+  }
+  const memoryMb = Number.isFinite(config._fe_sandboxMemoryMb)
+    ? config._fe_sandboxMemoryMb
+    : DEFAULT_SANDBOX_MEMORY_MB;
+  const cpuCount = Number.isFinite(config._fe_sandboxCpuCount)
+    ? config._fe_sandboxCpuCount
+    : DEFAULT_SANDBOX_CPU_COUNT;
+  return {
+    enabled: true,
+    provider: 'tokimo',
+    baseRootfs,
+    network: normalizeSandboxNetwork(config._fe_sandboxNetwork),
+    memoryMb,
+    cpuCount,
+  };
+};
+
 const AUTO_DECISION_SOURCES = new Set(['rule', 'review', 'sandbox']);
 const AUTO_DECISION_RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
 const ESCALATION_SOURCES = new Set(['rule', 'review', 'batch', 'sandbox']);
@@ -1387,6 +1425,7 @@ export const createHaoCodeCompatibilityServer = ({
           hitlMode: normalizeHitlMode(hitlConfig._fe_hitlMode),
           hitlReviewModel: normalizeHitlReviewModel(hitlConfig._fe_hitlReviewModel),
           hitlAllowlistPath,
+          sandbox: buildSandboxRequest(hitlConfig),
           ...(mcpSettingsPath ? { mcpSettingsPath, allowedTools: ['*'] } : {}),
         },
         onEvent: (message) => {

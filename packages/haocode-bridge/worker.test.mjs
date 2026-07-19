@@ -22,6 +22,7 @@ final class HaoCodeConfig
     public string $hitlMode;
     public ?string $hitlReviewModel;
     public ?string $hitlAllowlistPath;
+    public mixed $sandbox;
 
     public function __construct(mixed ...$options)
     {
@@ -31,6 +32,7 @@ final class HaoCodeConfig
         $this->hitlMode = $options['hitlMode'] ?? 'ask';
         $this->hitlReviewModel = $options['hitlReviewModel'] ?? null;
         $this->hitlAllowlistPath = $options['hitlAllowlistPath'] ?? null;
+        $this->sandbox = $options['sandbox'] ?? null;
     }
 }
 
@@ -102,6 +104,65 @@ final class FakeInterrupt
     }
 }
 
+namespace HaoCode\\Sdk\\Sandbox;
+
+/**
+ * Minimal SandboxConfig stub. The real SDK stores tokimo() arguments inside
+ * an options array; the test echoes them back by reading the same keys, so
+ * only the construction contract matters here. Mirrors the real public
+ * readonly shape used by HaoCodeConfig::toolFilter / effectiveWorkingDirectory.
+ */
+final class SandboxConfig
+{
+    public function __construct(
+        public string $provider = 'local',
+        public string $mode = 'filesystem',
+        public string $remoteCwd = '/workspace',
+        public string $sync = 'none',
+        public string $cleanup = 'never',
+        public ?string $root = null,
+        public array $exclude = [],
+        public array $options = [],
+    ) {}
+
+    public static function tokimo(
+        string $baseRootfs,
+        string $mode = 'full',
+        string $sync = 'upload-cwd',
+        string $remoteCwd = '/workspace',
+        string $cleanup = 'always',
+        ?string $root = null,
+        array $exclude = [],
+        ?string $binary = null,
+        ?string $vmDir = null,
+        int $memoryMb = 4096,
+        int $cpuCount = 4,
+        string $network = 'blocked',
+        int $startupTimeoutSeconds = 30,
+    ): self {
+        return new self(
+            provider: 'tokimo',
+            mode: $mode,
+            remoteCwd: $remoteCwd,
+            sync: $sync,
+            cleanup: $cleanup,
+            root: $root,
+            exclude: $exclude,
+            options: [
+                'baseRootfs' => $baseRootfs,
+                'binary' => $binary,
+                'vmDir' => $vmDir,
+                'memoryMb' => $memoryMb,
+                'cpuCount' => $cpuCount,
+                'network' => $network,
+                'startupTimeoutSeconds' => $startupTimeoutSeconds,
+            ],
+        );
+    }
+}
+
+namespace HaoCode\\Sdk;
+
 final class HaoCode
 {
     private static function autoDecision(array $fields): Message
@@ -130,6 +191,27 @@ final class HaoCode
             yield new Message(type: 'result', text: json_encode([
                 'hitlAllowlistPath' => $config->hitlAllowlistPath,
             ]));
+            return;
+        }
+        if ($prompt === 'report sandbox') {
+            $sandbox = $config->sandbox;
+            $payload = $sandbox === null
+                ? null
+                : [
+                    'provider' => $sandbox->provider,
+                    'baseRootfs' => $sandbox->options['baseRootfs'] ?? null,
+                    'binary' => $sandbox->options['binary'] ?? null,
+                    'vmDir' => $sandbox->options['vmDir'] ?? null,
+                    'memoryMb' => $sandbox->options['memoryMb'] ?? null,
+                    'cpuCount' => $sandbox->options['cpuCount'] ?? null,
+                    'network' => $sandbox->options['network'] ?? null,
+                    'startupTimeoutSeconds' => $sandbox->options['startupTimeoutSeconds'] ?? null,
+                    'mode' => $sandbox->mode,
+                    'sync' => $sandbox->sync,
+                    'remoteCwd' => $sandbox->remoteCwd,
+                    'cleanup' => $sandbox->cleanup,
+                ];
+            yield new Message(type: 'result', text: json_encode($payload));
             return;
         }
         if ($prompt === 'emit auto sandbox') {
@@ -252,7 +334,7 @@ const executeWorker = (request, env) => new Promise((resolve, reject) => {
   child.stdin.end(`${JSON.stringify(request)}\n`);
 });
 
-const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMode, hitlReviewModel, hitlAllowlistPath, prompt } = {}) => {
+const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMode, hitlReviewModel, hitlAllowlistPath, sandbox, prompt } = {}) => {
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'hao-work-worker-'));
   const autoloadPath = path.join(temporaryDirectory, 'autoload.php');
   await fs.writeFile(autoloadPath, fakeAutoload);
@@ -273,6 +355,7 @@ const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMod
     ...(hitlMode === undefined ? {} : { hitlMode }),
     ...(hitlReviewModel === undefined ? {} : { hitlReviewModel }),
     ...(hitlAllowlistPath === undefined ? {} : { hitlAllowlistPath }),
+    ...(sandbox === undefined ? {} : { sandbox }),
   };
 
   try {
@@ -347,6 +430,127 @@ test('passes hitlAllowlistPath through to the SDK config', async () => {
 
   const missing = await runWorker({ prompt: 'report hitl allowlist' });
   assert.deepEqual(JSON.parse(missing.at(-1)?.text), { hitlAllowlistPath: null });
+});
+
+test('passes no sandbox when the request omits or disables it', async () => {
+  const omitted = await runWorker({ prompt: 'report sandbox' });
+  assert.equal(JSON.parse(omitted.at(-1)?.text), null);
+
+  const disabled = await runWorker({ prompt: 'report sandbox', sandbox: { enabled: false } });
+  assert.equal(JSON.parse(disabled.at(-1)?.text), null);
+
+  const wrongProvider = await runWorker({
+    prompt: 'report sandbox',
+    sandbox: { enabled: true, provider: 'unknown', baseRootfs: '/x' },
+  });
+  assert.equal(JSON.parse(wrongProvider.at(-1)?.text), null);
+});
+
+test('builds a tokimo sandbox from request fields and forwards it to the SDK config', async () => {
+  const messages = await runWorker({
+    prompt: 'report sandbox',
+    sandbox: {
+      enabled: true,
+      provider: 'tokimo',
+      baseRootfs: '/srv/haocode-sandbox/base',
+      binary: '/srv/bin/runner',
+      vmDir: '/tmp/vm',
+      memoryMb: 8192,
+      cpuCount: 8,
+      network: 'allow-all',
+      startupTimeoutSeconds: 60,
+      mode: 'full',
+      sync: 'upload-cwd',
+      remoteCwd: '/workspace',
+      cleanup: 'always',
+    },
+  });
+  assert.deepEqual(JSON.parse(messages.at(-1)?.text), {
+    provider: 'tokimo',
+    baseRootfs: '/srv/haocode-sandbox/base',
+    binary: '/srv/bin/runner',
+    vmDir: '/tmp/vm',
+    memoryMb: 8192,
+    cpuCount: 8,
+    network: 'allow-all',
+    startupTimeoutSeconds: 60,
+    mode: 'full',
+    sync: 'upload-cwd',
+    remoteCwd: '/workspace',
+    cleanup: 'always',
+  });
+});
+
+test('applies safe defaults to missing optional sandbox fields', async () => {
+  const messages = await runWorker({
+    prompt: 'report sandbox',
+    sandbox: { enabled: true, baseRootfs: '/srv/base' },
+  });
+  assert.deepEqual(JSON.parse(messages.at(-1)?.text), {
+    provider: 'tokimo',
+    baseRootfs: '/srv/base',
+    binary: null,
+    vmDir: null,
+    memoryMb: 4096,
+    cpuCount: 4,
+    network: 'blocked',
+    startupTimeoutSeconds: 30,
+    mode: 'full',
+    sync: 'upload-cwd',
+    remoteCwd: '/workspace',
+    cleanup: 'always',
+  });
+});
+
+test('coerces invalid sandbox network and provider to fail-safe values', async () => {
+  const invalidNetwork = await runWorker({
+    prompt: 'report sandbox',
+    sandbox: { enabled: true, baseRootfs: '/srv/base', network: 'wide-open' },
+  });
+  assert.equal(JSON.parse(invalidNetwork.at(-1)?.text).network, 'blocked');
+
+  // Unknown provider should fall back to disabled (null sandbox), not throw.
+  const unknownProvider = await runWorker({
+    prompt: 'report sandbox',
+    sandbox: { enabled: true, provider: 'magic', baseRootfs: '/srv/base' },
+  });
+  assert.equal(JSON.parse(unknownProvider.at(-1)?.text), null);
+});
+
+test('emits an error when an enabled tokimo sandbox is missing baseRootfs', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'hao-work-worker-'));
+  const autoloadPath = path.join(directory, 'autoload.php');
+  await fs.writeFile(autoloadPath, fakeAutoload);
+
+  try {
+    // The worker emits a structured error on stdout and exits non-zero; we
+    // drain stdout directly so we can inspect the JSON event, since
+    // executeWorker would reject on the non-zero exit before parsing.
+    const stdout = await new Promise((resolve, reject) => {
+      const child = spawn('php', [workerPath], {
+        env: { ...process.env, HAOWORK_HAOCODE_AUTOLOAD: autoloadPath },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let out = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { out += chunk; });
+      child.on('error', reject);
+      child.on('exit', () => resolve(out));
+      child.stdin.end(`${JSON.stringify({
+        action: 'run',
+        prompt: 'report sandbox',
+        cwd: directory,
+        sandbox: { enabled: true, provider: 'tokimo' },
+      })}\n`);
+    });
+    const events = stdout.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const errorEvent = events.find((event) => event.type === 'error');
+    assert.ok(errorEvent, 'expected the worker to emit an error event');
+    assert.match(errorEvent.error, /baseRootfs/);
+    assert.equal(errorEvent._fe_exception, 'InvalidArgumentException');
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('forwards an SDK auto_decision sandbox event unchanged', async () => {

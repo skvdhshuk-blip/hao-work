@@ -82,31 +82,42 @@ $hitlReviewModel = normalizeString($request['hitlReviewModel'] ?? null);
 // User "Always Allow" rules persisted by the compatibility server; the SDK
 // exact-matches trimmed Bash commands from this file before rule grading.
 $hitlAllowlistPath = normalizeString($request['hitlAllowlistPath'] ?? null);
-$config = new HaoCodeConfig(
-    apiKey: normalizeString($provider['apiKey'] ?? null),
-    model: normalizeString($provider['model'] ?? null),
-    baseUrl: normalizeString($provider['baseUrl'] ?? null),
-    providerType: normalizeProviderType($provider['providerType'] ?? null),
-    maxTokens: normalizePositiveInt($provider['maxTokens'] ?? null) ?? 8192,
-    cwd: $cwd,
-    maxTurns: $maxTurns,
-    maxBudgetUsd: isset($request['maxBudgetUsd']) ? (float) $request['maxBudgetUsd'] : null,
-    permissionMode: 'bypass_permissions',
-    allowedTools: normalizeTools($request['allowedTools'] ?? null),
-    appendSystemPrompt: normalizeString($request['appendSystemPrompt'] ?? null),
-    thinkingEnabled: (bool) ($request['thinkingEnabled'] ?? false),
-    onThinking: static fn (string $delta): mixed => emit(['type' => 'thinking', 'text' => $delta]),
-    ephemeral: false,
-    sessionId: $sessionId,
-    interruptOn: $hitlMode === 'auto' ? [] : normalizeInterrupts($request['interruptOn'] ?? null),
-    enableAskUser: true,
-    hitlMode: $hitlMode,
-    hitlReviewModel: $hitlReviewModel,
-    hitlAllowlistPath: $hitlAllowlistPath,
-    oauthBearer: $oauthBearer ? true : null,
-);
 
 try {
+    // Sandbox runtime: when enabled with a provisioned baseRootfs, the SDK runs
+    // file/search/bash tools inside a tokimo VM and the smart-HITL decider can
+    // auto-approve contained actions (emitting auto_decision source:'sandbox').
+    // permissionMode stays on bypass_permissions: sandbox reroutes tool I/O,
+    // the permission check is orthogonal and still answered by hitlMode.
+    // normalizeSandbox + HaoCodeConfig construction live inside the try so a
+    // bad sandbox request (missing baseRootfs, invalid memory/CPU) surfaces as
+    // a structured _fe_exception event instead of a PHP fatal error.
+    $sandboxConfig = normalizeSandbox($request['sandbox'] ?? null);
+    $config = new HaoCodeConfig(
+        apiKey: normalizeString($provider['apiKey'] ?? null),
+        model: normalizeString($provider['model'] ?? null),
+        baseUrl: normalizeString($provider['baseUrl'] ?? null),
+        providerType: normalizeProviderType($provider['providerType'] ?? null),
+        maxTokens: normalizePositiveInt($provider['maxTokens'] ?? null) ?? 8192,
+        cwd: $cwd,
+        maxTurns: $maxTurns,
+        maxBudgetUsd: isset($request['maxBudgetUsd']) ? (float) $request['maxBudgetUsd'] : null,
+        permissionMode: 'bypass_permissions',
+        allowedTools: normalizeTools($request['allowedTools'] ?? null),
+        appendSystemPrompt: normalizeString($request['appendSystemPrompt'] ?? null),
+        thinkingEnabled: (bool) ($request['thinkingEnabled'] ?? false),
+        onThinking: static fn (string $delta): mixed => emit(['type' => 'thinking', 'text' => $delta]),
+        ephemeral: false,
+        sessionId: $sessionId,
+        interruptOn: $hitlMode === 'auto' ? [] : normalizeInterrupts($request['interruptOn'] ?? null),
+        enableAskUser: true,
+        hitlMode: $hitlMode,
+        hitlReviewModel: $hitlReviewModel,
+        hitlAllowlistPath: $hitlAllowlistPath,
+        oauthBearer: $oauthBearer ? true : null,
+        sandbox: $sandboxConfig,
+    );
+
     $action = normalizeString($request['action'] ?? null) ?? 'run';
 
     if ($action === 'resume_interrupt') {
@@ -278,4 +289,60 @@ function normalizeInterrupts(mixed $value): array
             'description' => 'Review this patch before it runs.',
         ],
     ];
+}
+
+/**
+ * Build a SandboxConfig from the worker request, or null when sandbox is
+ * disabled. Mirrors normalizeHitlMode's "whitelist + fail-closed" style:
+ * unknown enum values fall back to safe defaults (network -> blocked,
+ * provider -> tokimo-or-disable). Only a missing baseRootfs on an enabled
+ * tokimo request throws, and that error surfaces through the outer try/catch
+ * as `_fe_exception: InvalidArgumentException` so the UI can show it.
+ *
+ * The binary path is intentionally NOT resolved here. It flows through the
+ * SandboxConfig::tokimo() `binary` option when the caller provides one, but
+ * production runs leave it null so the SDK's SandboxBinaryResolver picks up
+ * the HAOCODE_SANDBOX_BINARY env that Electron injects at spawn time. This
+ * keeps dev (resolver walks dev path / user cache) and packaged (env path)
+ * on the same code path.
+ *
+ * @return \HaoCode\Sdk\Sandbox\SandboxConfig|null
+ */
+function normalizeSandbox(mixed $value): ?object
+{
+    if (! is_array($value) || ($value['enabled'] ?? false) === false) {
+        return null;
+    }
+    $provider = normalizeString($value['provider'] ?? null) ?? 'tokimo';
+    if ($provider !== 'tokimo') {
+        // MVP only supports tokimo; unknown providers are disabled.
+        return null;
+    }
+    $baseRootfs = normalizeString($value['baseRootfs'] ?? null);
+    if ($baseRootfs === null) {
+        throw new InvalidArgumentException('tokimo sandbox requires baseRootfs.');
+    }
+    $network = normalizeString($value['network'] ?? null);
+    if (! in_array($network, ['blocked', 'allow-all'], true)) {
+        $network = 'blocked';
+    }
+    $exclude = is_array($value['exclude'] ?? null)
+        ? array_values(array_filter($value['exclude'], 'is_string'))
+        : [];
+
+    return \HaoCode\Sdk\Sandbox\SandboxConfig::tokimo(
+        baseRootfs: $baseRootfs,
+        mode: normalizeString($value['mode'] ?? null) ?? 'full',
+        sync: normalizeString($value['sync'] ?? null) ?? 'upload-cwd',
+        remoteCwd: normalizeString($value['remoteCwd'] ?? null) ?? '/workspace',
+        cleanup: normalizeString($value['cleanup'] ?? null) ?? 'always',
+        root: normalizeString($value['root'] ?? null),
+        exclude: $exclude,
+        binary: normalizeString($value['binary'] ?? null),
+        vmDir: normalizeString($value['vmDir'] ?? null),
+        memoryMb: normalizePositiveInt($value['memoryMb'] ?? null) ?? 4096,
+        cpuCount: normalizePositiveInt($value['cpuCount'] ?? null) ?? 4,
+        network: $network,
+        startupTimeoutSeconds: normalizePositiveInt($value['startupTimeoutSeconds'] ?? null) ?? 30,
+    );
 }

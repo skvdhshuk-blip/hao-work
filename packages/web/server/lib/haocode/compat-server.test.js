@@ -90,6 +90,11 @@ if (request.action === 'resume_interrupt') {
   const text = JSON.stringify({ hitlMode: request.hitlMode ?? null, hitlReviewModel: request.hitlReviewModel ?? null });
   emit({ type: 'text', text });
   emit({ type: 'result', text, sessionId: 'hao_hitl', usage: {}, cost: 0 });
+} else if (request.prompt === 'sandbox-config') {
+  const sandbox = request.sandbox ?? { enabled: false };
+  const text = JSON.stringify(sandbox);
+  emit({ type: 'text', text });
+  emit({ type: 'result', text, sessionId: 'hao_sandbox_cfg', usage: {}, cost: 0 });
 } else if (request.prompt === 'auto-decision') {
   emit({ type: 'auto_decision', sessionId: 'hao_auto', interruptId: 'int_auto', actionId: 'act_auto', toolName: 'Bash', toolInput: { command: 'pwd' }, decision: 'approve', source: 'rule', riskLevel: 'low', reason: 'Read-only command allowlist' });
   emit({ type: 'text', text: 'auto continued' });
@@ -1020,6 +1025,104 @@ describe('HaoCode compatibility server', () => {
       body: JSON.stringify({ _fe_hitlMode: 'bogus' }),
     });
     expect(await echoedHitlConfig()).toEqual({ hitlMode: 'smart', hitlReviewModel: 'deepseek-reasoner' });
+  });
+
+  test('leaves the sandbox disabled by default and fails closed without a baseRootfs', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    const echoSandbox = async () => {
+      expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'sandbox-config')).status).toBe(200);
+      const stopped = await waitForAssistantStop(runtime.baseUrl, session.id);
+      return JSON.parse(stopped.at(-1).parts.find((part) => part.type === 'text').text);
+    };
+
+    // No _fe_sandbox* config at all: worker request.sandbox = { enabled: false }.
+    expect(await echoSandbox()).toEqual({ enabled: false });
+
+    // Enabled without a provisioned baseRootfs: fail closed (still disabled),
+    // so the run continues unsandboxed instead of throwing inside the worker.
+    await fetch(`${runtime.baseUrl}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ _fe_sandboxEnabled: true }),
+    });
+    expect(await echoSandbox()).toEqual({ enabled: false });
+  });
+
+  test('forwards enabled _fe_sandbox config to the worker as a tokimo request', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    await fetch(`${runtime.baseUrl}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _fe_sandboxEnabled: true,
+        _fe_sandboxBaseRootfs: '/srv/haocode-sandbox/base',
+        _fe_sandboxNetwork: 'blocked',
+        _fe_sandboxMemoryMb: 8192,
+        _fe_sandboxCpuCount: 8,
+      }),
+    });
+
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'sandbox-config')).status).toBe(200);
+    const stopped = await waitForAssistantStop(runtime.baseUrl, session.id);
+    const sandbox = JSON.parse(stopped.at(-1).parts.find((part) => part.type === 'text').text);
+    expect(sandbox).toEqual({
+      enabled: true,
+      provider: 'tokimo',
+      baseRootfs: '/srv/haocode-sandbox/base',
+      network: 'blocked',
+      memoryMb: 8192,
+      cpuCount: 8,
+    });
+  });
+
+  test('normalizes invalid sandbox network to blocked and applies default resource sizes', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    await fetch(`${runtime.baseUrl}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _fe_sandboxEnabled: true,
+        _fe_sandboxBaseRootfs: '/srv/base',
+        _fe_sandboxNetwork: 'wide-open',
+      }),
+    });
+
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'sandbox-config')).status).toBe(200);
+    const stopped = await waitForAssistantStop(runtime.baseUrl, session.id);
+    const sandbox = JSON.parse(stopped.at(-1).parts.find((part) => part.type === 'text').text);
+    expect(sandbox.network).toBe('blocked');
+    expect(sandbox.memoryMb).toBe(4096);
+    expect(sandbox.cpuCount).toBe(4);
+  });
+
+  test('passes allow-all sandbox network through unchanged', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    await fetch(`${runtime.baseUrl}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _fe_sandboxEnabled: true,
+        _fe_sandboxBaseRootfs: '/srv/base',
+        _fe_sandboxNetwork: 'allow-all',
+      }),
+    });
+
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'sandbox-config')).status).toBe(200);
+    const stopped = await waitForAssistantStop(runtime.baseUrl, session.id);
+    const sandbox = JSON.parse(stopped.at(-1).parts.find((part) => part.type === 'text').text);
+    expect(sandbox.network).toBe('allow-all');
   });
 
   test('serves GET /provider with all, connected, and default', async () => {
