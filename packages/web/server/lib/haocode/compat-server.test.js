@@ -114,6 +114,14 @@ if (request.action === 'resume_interrupt') {
   const text = JSON.stringify({ apiKey: request.provider?.apiKey ?? null, oauthBearer: request.provider?.oauthBearer ?? null });
   emit({ type: 'text', text });
   emit({ type: 'result', text, sessionId: 'hao_provider_probe', usage: {}, cost: 0 });
+} else if (request.prompt === 'provider-headers-probe') {
+  const text = JSON.stringify({ apiKey: request.provider?.apiKey ?? null, headers: request.provider?.headers ?? null });
+  emit({ type: 'text', text });
+  emit({ type: 'result', text, sessionId: 'hao_provider_headers', usage: {}, cost: 0 });
+} else if (typeof request.prompt === 'string' && request.prompt.startsWith('images-probe')) {
+  const text = JSON.stringify({ prompt: request.prompt ?? null, images: request.images ?? null });
+  emit({ type: 'text', text });
+  emit({ type: 'result', text, sessionId: 'hao_images_probe', usage: {}, cost: 0 });
 } else {
   emit({ type: 'text', text: 'hello ' });
   emit({ type: 'tool_start', toolName: 'Read', toolInput: { file_path: 'README.md' } });
@@ -1025,7 +1033,12 @@ describe('HaoCode compatibility server', () => {
   test('serves GET /provider with all, connected, and default', async () => {
     const runtime = await createRuntime();
     const before = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
-    expect(before.all.map((provider) => provider.id)).toEqual(['anthropic', 'openai', 'deepseek']);
+    expect(before.all.map((provider) => provider.id)).toEqual([
+      'anthropic', 'openai', 'deepseek',
+      'openrouter', 'xai', 'groq', 'mistral', 'moonshot', 'zai',
+      'qwen', 'together', 'fireworks', 'cerebras', 'huggingface',
+      'github-copilot',
+    ]);
     expect(before.connected).not.toContain('deepseek');
     expect(before.default.deepseek).toBe('deepseek-chat');
     expect(before.all.find((provider) => provider.id === 'deepseek').models['deepseek-chat'].limit).toEqual({
@@ -1036,6 +1049,100 @@ describe('HaoCode compatibility server', () => {
     await configureDeepSeek(runtime.baseUrl);
     const after = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
     expect(after.connected).toContain('deepseek');
+  });
+
+  test('lists the built-in OpenAI-compatible provider presets with default limits', async () => {
+    const envNames = [
+      'OPENROUTER_API_KEY', 'XAI_API_KEY', 'GROQ_API_KEY', 'MISTRAL_API_KEY',
+      'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'ZAI_API_KEY', 'Z_AI_API_KEY',
+      'DASHSCOPE_API_KEY', 'TOGETHER_API_KEY', 'FIREWORKS_API_KEY',
+      'CEREBRAS_API_KEY', 'HF_TOKEN',
+    ];
+    const savedEnv = Object.fromEntries(envNames.map((name) => [name, process.env[name]]));
+    for (const name of envNames) delete process.env[name];
+    try {
+      const runtime = await createRuntime();
+    const expected = {
+      openrouter: { name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', env: ['OPENROUTER_API_KEY'], model: 'openrouter/auto' },
+      xai: { name: 'xAI', baseUrl: 'https://api.x.ai/v1', env: ['XAI_API_KEY'], model: 'grok-4' },
+      groq: { name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', env: ['GROQ_API_KEY'], model: 'llama-3.3-70b-versatile' },
+      mistral: { name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', env: ['MISTRAL_API_KEY'], model: 'mistral-large-latest' },
+      moonshot: { name: 'Moonshot AI (Kimi)', baseUrl: 'https://api.moonshot.ai/v1', env: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'], model: 'kimi-k2-0905-preview' },
+      zai: { name: 'Z.AI (GLM)', baseUrl: 'https://api.z.ai/api/paas/v4', env: ['ZAI_API_KEY', 'Z_AI_API_KEY'], model: 'glm-4.6' },
+      qwen: { name: 'Qwen (DashScope)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', env: ['DASHSCOPE_API_KEY'], model: 'qwen3-max' },
+      together: { name: 'Together AI', baseUrl: 'https://api.together.xyz/v1', env: ['TOGETHER_API_KEY'], model: 'deepseek-ai/DeepSeek-V3' },
+      fireworks: { name: 'Fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', env: ['FIREWORKS_API_KEY'], model: 'accounts/fireworks/models/deepseek-v3p1' },
+      cerebras: { name: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', env: ['CEREBRAS_API_KEY'], model: 'llama3.1-70b' },
+      huggingface: { name: 'Hugging Face', baseUrl: 'https://router.huggingface.co/v1', env: ['HF_TOKEN'], model: 'deepseek-ai/DeepSeek-R1' },
+    };
+
+    const configProviders = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
+    const listed = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
+    const auth = await fetch(`${runtime.baseUrl}/provider/auth`).then((response) => response.json());
+    for (const [id, preset] of Object.entries(expected)) {
+      const entry = configProviders.providers.find((provider) => provider.id === id);
+      expect(entry).toMatchObject({
+        id,
+        name: preset.name,
+        source: 'custom',
+        env: preset.env,
+        options: { baseURL: preset.baseUrl, _fe_providerType: 'openai_chat' },
+      });
+      // The models.dev fixture has no entries for these presets, so the
+      // HaoCode defaults apply.
+      expect(entry.models[preset.model].limit).toEqual({ context: 200_000, output: 16_384 });
+
+      const all = listed.all.find((provider) => provider.id === id);
+      expect(all.options.baseURL).toBe(preset.baseUrl);
+      expect(listed.connected).not.toContain(id);
+      expect(listed.default[id]).toBe(preset.model);
+
+      expect(auth[id]).toEqual([{ type: 'api', label: `${preset.name} API key` }]);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  test('resolves credentials through ordered environment variable aliases', async () => {
+    const savedEnv = {
+      MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+      KIMI_API_KEY: process.env.KIMI_API_KEY,
+      ZAI_API_KEY: process.env.ZAI_API_KEY,
+      Z_AI_API_KEY: process.env.Z_AI_API_KEY,
+    };
+    delete process.env.MOONSHOT_API_KEY;
+    delete process.env.KIMI_API_KEY;
+    delete process.env.ZAI_API_KEY;
+    delete process.env.Z_AI_API_KEY;
+    try {
+      const runtime = await createRuntime();
+      // Second alias only: the provider still counts as connected, the source
+      // route sees a credential, and the worker receives the alias value.
+      process.env.KIMI_API_KEY = 'kimi-env-key';
+      const listed = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
+      expect(listed.connected).toContain('moonshot');
+      expect(listed.connected).not.toContain('zai');
+      const source = await fetch(`${runtime.baseUrl}/provider/moonshot/source`).then((response) => response.json());
+      expect(source.sources.auth.exists).toBe(true);
+
+      const probe = await runProviderProbe(runtime, 'moonshot', 'kimi-k2-0905-preview');
+      expect(probe).toEqual({ apiKey: 'kimi-env-key', oauthBearer: null });
+
+      // First alias wins when several are set.
+      process.env.Z_AI_API_KEY = 'zai-second';
+      process.env.ZAI_API_KEY = 'zai-first';
+      const zaiProbe = await runProviderProbe(runtime, 'zai', 'glm-4.6');
+      expect(zaiProbe).toEqual({ apiKey: 'zai-first', oauthBearer: null });
+    } finally {
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   test('creates, authenticates, overrides, and deletes a custom provider', async () => {
@@ -1250,9 +1357,9 @@ describe('HaoCode compatibility server', () => {
     body: JSON.stringify(body),
   });
 
-  const runProviderProbe = async (runtime, providerId, modelId) => {
+  const runProviderProbe = async (runtime, providerId, modelId, promptText = 'provider-probe') => {
     const session = await createSession(runtime);
-    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'provider-probe', {
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, promptText, {
       model: { providerID: providerId, modelID: modelId },
     });
     expect(response.status).toBe(200);
@@ -1265,7 +1372,7 @@ describe('HaoCode compatibility server', () => {
       .parts.find((part) => part.type === 'text').text);
   };
 
-  test('lists oauth auth methods for Anthropic and OpenAI only', async () => {
+  test('lists oauth auth methods for Anthropic, OpenAI, and GitHub Copilot only', async () => {
     const runtime = await createRuntime();
     const methods = await fetch(`${runtime.baseUrl}/provider/auth`).then((response) => response.json());
     expect(methods.anthropic).toEqual([
@@ -1275,6 +1382,10 @@ describe('HaoCode compatibility server', () => {
     expect(methods.openai).toEqual([
       { type: 'api', label: 'OpenAI API key' },
       { type: 'oauth', label: 'ChatGPT Pro/Plus（浏览器授权）' },
+    ]);
+    expect(methods['github-copilot']).toEqual([
+      { type: 'api', label: 'GitHub Copilot API key' },
+      { type: 'oauth', label: 'GitHub 账号（设备码授权）' },
     ]);
     expect(methods.deepseek).toEqual([{ type: 'api', label: 'DeepSeek API key' }]);
 
@@ -1512,5 +1623,270 @@ describe('HaoCode compatibility server', () => {
     const entry = await runtime.runtime.store.read((state) => state.providers.anthropic ?? {});
     expect(entry.apiKey).toBeUndefined();
     expect(entry.oauth).toBeUndefined();
+  });
+
+  // --- GitHub Copilot dual-stage device flow --------------------------------
+
+  const COPILOT_ENV_NAMES = ['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
+  const COPILOT_DEVICE_CODE_URL = 'https://github.com/login/device/code';
+  const COPILOT_POLL_URL = 'https://github.com/login/oauth/access_token';
+  const COPILOT_EXCHANGE_URL = 'https://api.github.com/copilot_internal/v2/token';
+  const COPILOT_EXPECTED_HEADERS = {
+    'Editor-Version': 'vscode/1.96.2',
+    'Editor-Plugin-Version': 'copilot-chat/0.35.0',
+    'User-Agent': 'GitHubCopilotChat/0.26.7',
+    'Copilot-Integration-Id': 'vscode-chat',
+    'Openai-Organization': 'github-copilot',
+  };
+
+  // Run a Copilot test with the GitHub-token env aliases cleared (the real
+  // environment may define GH_TOKEN/GITHUB_TOKEN), optionally setting some.
+  const withCopilotEnv = async (env, run) => {
+    const savedEnv = Object.fromEntries(COPILOT_ENV_NAMES.map((name) => [name, process.env[name]]));
+    for (const name of COPILOT_ENV_NAMES) delete process.env[name];
+    Object.assign(process.env, env);
+    try {
+      return await run();
+    } finally {
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  };
+
+  test('completes the GitHub Copilot device-code flow and stores the exchanged token', async () => {
+    const sleeps = [];
+    const sleepStub = async (ms) => { sleeps.push(ms); };
+    const pollResponses = [
+      { error: 'authorization_pending' },
+      { error: 'slow_down' },
+      { access_token: 'gh_oauth_1' },
+    ];
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+    const fetchStub = createFetchStub(async (url) => {
+      if (url === COPILOT_DEVICE_CODE_URL) {
+        return jsonResponse({
+          device_code: 'dc_1',
+          user_code: 'ABCD-1234',
+          verification_uri: 'https://github.com/login/device',
+          interval: 1,
+          expires_in: 900,
+        });
+      }
+      if (url === COPILOT_POLL_URL) return jsonResponse(pollResponses.shift() ?? { access_token: 'gh_oauth_1' });
+      if (url === COPILOT_EXCHANGE_URL) return jsonResponse({ token: 'ct_live_1', expires_at: expiresAt });
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const runtime = await createRuntime({ fetchImpl: fetchStub, sleepImpl: sleepStub });
+
+    const authorize = await oauthAuthorize(runtime.baseUrl, 'github-copilot');
+    expect(authorize.status).toBe(200);
+    const authorization = await authorize.json();
+    expect(authorization).toEqual({
+      url: 'https://github.com/login/device',
+      method: 'auto',
+      instructions: 'Enter code: ABCD-1234',
+    });
+    const [deviceCall] = fetchStub.formCalls();
+    expect(deviceCall.url).toBe(COPILOT_DEVICE_CODE_URL);
+    expect(deviceCall.params).toEqual({ client_id: 'Iv1.b507a08c87ecfe98', scope: 'read:user' });
+
+    const callback = await oauthCallback(runtime.baseUrl, 'github-copilot');
+    expect(callback.status).toBe(200);
+    expect(await callback.json()).toBe(true);
+
+    // Polling cadence: device interval (1s floor), then +2s after slow_down.
+    expect(sleeps).toEqual([1000, 3000]);
+    const pollCalls = fetchStub.formCalls().filter((call) => call.url === COPILOT_POLL_URL);
+    expect(pollCalls).toHaveLength(3);
+    expect(pollCalls[0].params).toEqual({
+      client_id: 'Iv1.b507a08c87ecfe98',
+      device_code: 'dc_1',
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+    });
+
+    // Stage two: the GitHub token is exchanged for a Copilot API token.
+    const exchangeCall = fetchStub.calls.find((call) => call.url === COPILOT_EXCHANGE_URL);
+    expect(exchangeCall.init.method ?? 'GET').toBe('GET');
+    expect(exchangeCall.init.headers).toMatchObject({
+      Authorization: 'Bearer gh_oauth_1',
+      Accept: 'application/json',
+      'Editor-Version': 'vscode/1.96.2',
+      'X-Github-Api-Version': '2025-04-01',
+    });
+
+    const stored = await readOAuth(runtime, 'github-copilot');
+    expect(stored).toEqual({ access: 'ct_live_1', refresh: 'gh_oauth_1', expires: expiresAt * 1000 });
+
+    // Secrets never reach API responses.
+    const settings = await fetch(`${runtime.baseUrl}/provider/github-copilot/settings`).then((response) => response.json());
+    expect(JSON.stringify(settings)).not.toContain('ct_live_1');
+    expect(JSON.stringify(settings)).not.toContain('gh_oauth_1');
+  });
+
+  test('fails the GitHub device flow on expired_token and access_denied', async () => {
+    let pollPayload = { error: 'expired_token' };
+    const fetchStub = createFetchStub(async (url) => {
+      if (url === COPILOT_DEVICE_CODE_URL) {
+        return jsonResponse({ device_code: 'dc_1', user_code: 'CODE', verification_uri: 'https://github.com/login/device', interval: 1 });
+      }
+      if (url === COPILOT_POLL_URL) return jsonResponse(pollPayload);
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const runtime = await createRuntime({ fetchImpl: fetchStub, sleepImpl: async () => {} });
+
+    expect((await oauthAuthorize(runtime.baseUrl, 'github-copilot')).status).toBe(200);
+    const expired = await oauthCallback(runtime.baseUrl, 'github-copilot');
+    expect(expired.status).toBe(400);
+    expect((await expired.json()).error).toMatch(/expired/i);
+
+    pollPayload = { error: 'access_denied' };
+    expect((await oauthAuthorize(runtime.baseUrl, 'github-copilot')).status).toBe(200);
+    const denied = await oauthCallback(runtime.baseUrl, 'github-copilot');
+    expect(denied.status).toBe(400);
+    expect((await denied.json()).error).toMatch(/denied/i);
+
+    // The stage-two exchange is never attempted.
+    expect(fetchStub.calls.filter((call) => call.url === COPILOT_EXCHANGE_URL)).toHaveLength(0);
+    expect(await readOAuth(runtime, 'github-copilot')).toBeNull();
+  });
+
+  test('reuses the cached Copilot token, re-exchanges near expiry, and injects the API headers', async () => {
+    await withCopilotEnv({}, async () => {
+      const exchangeCalls = [];
+      let exchangePayload = null;
+      const fetchStub = createFetchStub(async (url) => {
+        if (url === COPILOT_EXCHANGE_URL && exchangePayload) return jsonResponse(exchangePayload);
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      const runtime = await createRuntime({ fetchImpl: fetchStub });
+
+      // Fresh cached token: no exchange, headers attached to the worker request.
+      await storeOAuth(runtime, 'github-copilot', { access: 'ct_cached', refresh: 'gh_cached', expires: Date.now() + 3_600_000 });
+      const cached = await runProviderProbe(runtime, 'github-copilot', 'gpt-4o', 'provider-headers-probe');
+      expect(cached).toEqual({ apiKey: 'ct_cached', headers: COPILOT_EXPECTED_HEADERS });
+      expect(fetchStub.calls).toHaveLength(0);
+
+      // Near-expiry token: re-exchange with the stored GitHub token.
+      await storeOAuth(runtime, 'github-copilot', { access: 'ct_cached', refresh: 'gh_cached', expires: Date.now() + 60_000 });
+      exchangePayload = { token: 'ct_fresh', expires_at: Math.floor(Date.now() / 1000) + 3600 };
+      const refreshed = await runProviderProbe(runtime, 'github-copilot', 'gpt-4o', 'provider-headers-probe');
+      expect(refreshed).toEqual({ apiKey: 'ct_fresh', headers: COPILOT_EXPECTED_HEADERS });
+      expect(fetchStub.calls).toHaveLength(1);
+      expect(fetchStub.calls[0].init.headers.Authorization).toBe('Bearer gh_cached');
+      exchangeCalls.push(fetchStub.calls[0]);
+      expect(await readOAuth(runtime, 'github-copilot')).toMatchObject({ access: 'ct_fresh', refresh: 'gh_cached' });
+
+      // The re-exchange is cached: the next run makes no further requests.
+      const after = await runProviderProbe(runtime, 'github-copilot', 'gpt-4o', 'provider-headers-probe');
+      expect(after.apiKey).toBe('ct_fresh');
+      expect(fetchStub.calls).toHaveLength(1);
+    });
+  });
+
+  test('exchanges an environment GitHub token for a Copilot token and caches it', async () => {
+    await withCopilotEnv({ GITHUB_TOKEN: 'gh_secondary', GH_TOKEN: 'gh_env_1' }, async () => {
+      const fetchStub = createFetchStub(async (url) => {
+        if (url === COPILOT_EXCHANGE_URL) {
+          return jsonResponse({ token: 'ct_env', expires_at: Math.floor(Date.now() / 1000) + 3600 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      const runtime = await createRuntime({ fetchImpl: fetchStub });
+
+      const probe = await runProviderProbe(runtime, 'github-copilot', 'gpt-4o', 'provider-headers-probe');
+      expect(probe).toEqual({ apiKey: 'ct_env', headers: COPILOT_EXPECTED_HEADERS });
+      expect(fetchStub.calls).toHaveLength(1);
+      // Ordered env aliases: GH_TOKEN wins over GITHUB_TOKEN.
+      expect(fetchStub.calls[0].init.headers.Authorization).toBe('Bearer gh_env_1');
+
+      // The exchange is cached under state.oauth with the env token as refresh.
+      expect(await readOAuth(runtime, 'github-copilot')).toMatchObject({ access: 'ct_env', refresh: 'gh_env_1' });
+      const listed = await fetch(`${runtime.baseUrl}/provider`).then((response) => response.json());
+      expect(listed.connected).toContain('github-copilot');
+
+      // Cache hit: a second run performs no further exchange.
+      const again = await runProviderProbe(runtime, 'github-copilot', 'gpt-4o', 'provider-headers-probe');
+      expect(again.apiKey).toBe('ct_env');
+      expect(fetchStub.calls).toHaveLength(1);
+    });
+  });
+
+  test('exchanges a saved api key (GitHub token) when no oauth record exists', async () => {
+    await withCopilotEnv({}, async () => {
+      const fetchStub = createFetchStub(async (url) => {
+        if (url === COPILOT_EXCHANGE_URL) {
+          return jsonResponse({ token: 'ct_saved', expires_at: Math.floor(Date.now() / 1000) + 3600 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      const runtime = await createRuntime({ fetchImpl: fetchStub });
+      const saved = await fetch(`${runtime.baseUrl}/auth/github-copilot`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'api', key: 'gh_saved_1' }),
+      });
+      expect(await saved.json()).toBe(true);
+
+      const probe = await runProviderProbe(runtime, 'github-copilot', 'gpt-4o', 'provider-headers-probe');
+      expect(probe.apiKey).toBe('ct_saved');
+      expect(fetchStub.calls).toHaveLength(1);
+      expect(fetchStub.calls[0].init.headers.Authorization).toBe('Bearer gh_saved_1');
+      expect(await readOAuth(runtime, 'github-copilot')).toMatchObject({ access: 'ct_saved', refresh: 'gh_saved_1' });
+    });
+  });
+
+  test('supports the client id override and clears Copilot credentials on DELETE', async () => {
+    const savedClientId = process.env.HAOWORK_OAUTH_GITHUB_COPILOT_CLIENT_ID;
+    process.env.HAOWORK_OAUTH_GITHUB_COPILOT_CLIENT_ID = 'client_override';
+    try {
+      const fetchStub = createFetchStub(async (url) => {
+        if (url === COPILOT_DEVICE_CODE_URL) {
+          return jsonResponse({ device_code: 'dc_1', user_code: 'CODE', verification_uri: 'https://github.com/login/device', interval: 1 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      const runtime = await createRuntime({ fetchImpl: fetchStub, sleepImpl: async () => {} });
+      expect((await oauthAuthorize(runtime.baseUrl, 'github-copilot')).status).toBe(200);
+      expect(fetchStub.formCalls()[0].params.client_id).toBe('client_override');
+
+      // DELETE cancels the pending device flow and removes stored credentials.
+      await storeOAuth(runtime, 'github-copilot', { access: 'ct_1', refresh: 'gh_1', expires: Date.now() + 3_600_000 });
+      const removed = await fetch(`${runtime.baseUrl}/auth/github-copilot`, { method: 'DELETE' });
+      expect(await removed.json()).toBe(true);
+      expect(await readOAuth(runtime, 'github-copilot')).toBeNull();
+      const callback = await oauthCallback(runtime.baseUrl, 'github-copilot');
+      expect(callback.status).toBe(400);
+    } finally {
+      if (savedClientId === undefined) delete process.env.HAOWORK_OAUTH_GITHUB_COPILOT_CLIENT_ID;
+      else process.env.HAOWORK_OAUTH_GITHUB_COPILOT_CLIENT_ID = savedClientId;
+    }
+  });
+
+  test('forwards image attachments natively and keeps data URIs out of the prompt', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    const dataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=';
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'images-probe describe', {
+      parts: [
+        { type: 'text', text: 'images-probe describe' },
+        { type: 'file', mime: 'image/png', url: dataUri, filename: 'shot.png' },
+        { type: 'file', mime: 'application/pdf', url: 'https://files.example.test/doc.pdf', filename: 'doc.pdf' },
+      ],
+    });
+    expect(response.status).toBe(200);
+    const records = await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+      return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
+    });
+    const payload = JSON.parse(records
+      .find((record) => record.info.role === 'assistant')
+      .parts.find((part) => part.type === 'text').text);
+    expect(payload.images).toEqual([dataUri]);
+    expect(payload.prompt).toContain('[Attached image shot.png]');
+    expect(payload.prompt).not.toContain('base64');
+    expect(payload.prompt).toContain('[Attached file doc.pdf: https://files.example.test/doc.pdf]');
   });
 });

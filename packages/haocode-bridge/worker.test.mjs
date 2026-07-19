@@ -22,6 +22,7 @@ final class HaoCodeConfig
     public string $hitlMode;
     public ?string $hitlReviewModel;
     public ?string $hitlAllowlistPath;
+    public array $images;
 
     public function __construct(mixed ...$options)
     {
@@ -31,6 +32,7 @@ final class HaoCodeConfig
         $this->hitlMode = $options['hitlMode'] ?? 'ask';
         $this->hitlReviewModel = $options['hitlReviewModel'] ?? null;
         $this->hitlAllowlistPath = $options['hitlAllowlistPath'] ?? null;
+        $this->images = $options['images'] ?? [];
     }
 }
 
@@ -129,6 +131,12 @@ final class HaoCode
         if ($prompt === 'report hitl allowlist') {
             yield new Message(type: 'result', text: json_encode([
                 'hitlAllowlistPath' => $config->hitlAllowlistPath,
+            ]));
+            return;
+        }
+        if ($prompt === 'report images') {
+            yield new Message(type: 'result', text: json_encode([
+                'images' => $config->images,
             ]));
             return;
         }
@@ -252,7 +260,7 @@ const executeWorker = (request, env) => new Promise((resolve, reject) => {
   child.stdin.end(`${JSON.stringify(request)}\n`);
 });
 
-const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMode, hitlReviewModel, hitlAllowlistPath, prompt } = {}) => {
+const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMode, hitlReviewModel, hitlAllowlistPath, images, prompt } = {}) => {
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'hao-work-worker-'));
   const autoloadPath = path.join(temporaryDirectory, 'autoload.php');
   await fs.writeFile(autoloadPath, fakeAutoload);
@@ -273,6 +281,7 @@ const runWorker = async ({ maxTurns, environmentMaxTurns, contextWindow, hitlMod
     ...(hitlMode === undefined ? {} : { hitlMode }),
     ...(hitlReviewModel === undefined ? {} : { hitlReviewModel }),
     ...(hitlAllowlistPath === undefined ? {} : { hitlAllowlistPath }),
+    ...(images === undefined ? {} : { images }),
   };
 
   try {
@@ -346,7 +355,18 @@ test('passes hitlAllowlistPath through to the SDK config', async () => {
   assert.deepEqual(JSON.parse(blank.at(-1)?.text), { hitlAllowlistPath: null });
 
   const missing = await runWorker({ prompt: 'report hitl allowlist' });
-  assert.deepEqual(JSON.parse(missing.at(-1)?.text), { hitlAllowlistPath: null });
+  assert.deepEqual(JSON.parse(blank.at(-1)?.text), { hitlAllowlistPath: null });
+});
+
+test('passes image attachments through to the SDK config', async () => {
+  const withImages = await runWorker({
+    prompt: 'report images',
+    images: ['data:image/png;base64,AAAA', '/tmp/photo.jpg', '  ', 42],
+  });
+  assert.deepEqual(JSON.parse(withImages.at(-1)?.text), { images: ['data:image/png;base64,AAAA', '/tmp/photo.jpg'] });
+
+  const without = await runWorker({ prompt: 'report images' });
+  assert.deepEqual(JSON.parse(without.at(-1)?.text), { images: [] });
 });
 
 test('forwards an SDK auto_decision sandbox event unchanged', async () => {

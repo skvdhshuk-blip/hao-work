@@ -70,6 +70,18 @@ $sessionId = normalizeString($request['haocodeSessionId'] ?? null);
 // rather than a raw x-api-key. HaoCodeConfig forwards it to the SDK, which
 // then sends Authorization: Bearer with the oauth beta header.
 $oauthBearer = (bool) ($provider['oauthBearer'] ?? false);
+// Extra provider request headers (e.g. the GitHub Copilot API headers set by
+// the compat server). Forwarded verbatim to HaoCodeConfig's `headers` named
+// parameter (added by the SDK alongside this change); omitted when empty so
+// providers without extra headers never touch the parameter.
+$providerHeaders = [];
+if (is_array($provider['headers'] ?? null)) {
+    foreach ($provider['headers'] as $headerName => $headerValue) {
+        if (is_string($headerName) && $headerName !== '' && is_string($headerValue) && $headerValue !== '') {
+            $providerHeaders[$headerName] = $headerValue;
+        }
+    }
+}
 $maxTurns = normalizePositiveInt($request['maxTurns'] ?? null)
     ?? normalizePositiveInt(getenv('HAOWORK_HAOCODE_MAX_TURNS'))
     ?? DEFAULT_MAX_TURNS;
@@ -82,29 +94,43 @@ $hitlReviewModel = normalizeString($request['hitlReviewModel'] ?? null);
 // User "Always Allow" rules persisted by the compatibility server; the SDK
 // exact-matches trimmed Bash commands from this file before rule grading.
 $hitlAllowlistPath = normalizeString($request['hitlAllowlistPath'] ?? null);
-$config = new HaoCodeConfig(
-    apiKey: normalizeString($provider['apiKey'] ?? null),
-    model: normalizeString($provider['model'] ?? null),
-    baseUrl: normalizeString($provider['baseUrl'] ?? null),
-    providerType: normalizeProviderType($provider['providerType'] ?? null),
-    maxTokens: normalizePositiveInt($provider['maxTokens'] ?? null) ?? 8192,
-    cwd: $cwd,
-    maxTurns: $maxTurns,
-    maxBudgetUsd: isset($request['maxBudgetUsd']) ? (float) $request['maxBudgetUsd'] : null,
-    permissionMode: 'bypass_permissions',
-    allowedTools: normalizeTools($request['allowedTools'] ?? null),
-    appendSystemPrompt: normalizeString($request['appendSystemPrompt'] ?? null),
-    thinkingEnabled: (bool) ($request['thinkingEnabled'] ?? false),
-    onThinking: static fn (string $delta): mixed => emit(['type' => 'thinking', 'text' => $delta]),
-    ephemeral: false,
-    sessionId: $sessionId,
-    interruptOn: $hitlMode === 'auto' ? [] : normalizeInterrupts($request['interruptOn'] ?? null),
-    enableAskUser: true,
-    hitlMode: $hitlMode,
-    hitlReviewModel: $hitlReviewModel,
-    hitlAllowlistPath: $hitlAllowlistPath,
-    oauthBearer: $oauthBearer ? true : null,
-);
+$configArguments = [
+    'apiKey' => normalizeString($provider['apiKey'] ?? null),
+    'model' => normalizeString($provider['model'] ?? null),
+    'baseUrl' => normalizeString($provider['baseUrl'] ?? null),
+    'providerType' => normalizeProviderType($provider['providerType'] ?? null),
+    'maxTokens' => normalizePositiveInt($provider['maxTokens'] ?? null) ?? 8192,
+    'cwd' => $cwd,
+    'maxTurns' => $maxTurns,
+    'maxBudgetUsd' => isset($request['maxBudgetUsd']) ? (float) $request['maxBudgetUsd'] : null,
+    'permissionMode' => 'bypass_permissions',
+    'allowedTools' => normalizeTools($request['allowedTools'] ?? null),
+    'appendSystemPrompt' => normalizeString($request['appendSystemPrompt'] ?? null),
+    'thinkingEnabled' => (bool) ($request['thinkingEnabled'] ?? false),
+    'onThinking' => static fn (string $delta): mixed => emit(['type' => 'thinking', 'text' => $delta]),
+    'ephemeral' => false,
+    'sessionId' => $sessionId,
+    'interruptOn' => $hitlMode === 'auto' ? [] : normalizeInterrupts($request['interruptOn'] ?? null),
+    'enableAskUser' => true,
+    'hitlMode' => $hitlMode,
+    'hitlReviewModel' => $hitlReviewModel,
+    'hitlAllowlistPath' => $hitlAllowlistPath,
+    'oauthBearer' => $oauthBearer ? true : null,
+];
+if ($providerHeaders !== []) {
+    $configArguments['headers'] = $providerHeaders;
+}
+// Image attachments (data URIs, file paths, URLs) for native multimodal input.
+$images = [];
+foreach (is_array($request['images'] ?? null) ? $request['images'] : [] as $image) {
+    if (is_string($image) && trim($image) !== '') {
+        $images[] = $image;
+    }
+}
+if ($images !== []) {
+    $configArguments['images'] = $images;
+}
+$config = new HaoCodeConfig(...$configArguments);
 
 try {
     $action = normalizeString($request['action'] ?? null) ?? 'run';

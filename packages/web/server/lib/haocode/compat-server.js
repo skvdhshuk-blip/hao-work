@@ -18,31 +18,136 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_DIRECTORY = process.cwd();
 const DEFAULT_MODEL_LIMIT = Object.freeze({ context: 200_000, output: 16_384 });
 
+// Built-in provider presets. `env` is an ordered list of environment variable
+// aliases: the first variable that is set wins for both the connected check
+// (hasEnvCredential) and worker credential resolution (providerSettings).
 const PROVIDER_DEFINITIONS = {
   anthropic: {
     name: 'Anthropic',
     providerType: 'anthropic',
     baseUrl: 'https://api.anthropic.com',
-    env: 'ANTHROPIC_API_KEY',
+    env: ['ANTHROPIC_API_KEY'],
     models: ['claude-sonnet-4-20250514'],
   },
   openai: {
     name: 'OpenAI',
     providerType: 'openai',
     baseUrl: 'https://api.openai.com',
-    env: 'OPENAI_API_KEY',
+    env: ['OPENAI_API_KEY'],
     models: ['gpt-5', 'gpt-4.1'],
   },
   deepseek: {
     name: 'DeepSeek',
     providerType: 'openai_chat',
     baseUrl: 'https://api.deepseek.com',
-    env: 'DEEPSEEK_API_KEY',
+    env: ['DEEPSEEK_API_KEY'],
     models: ['deepseek-chat', 'deepseek-reasoner'],
+  },
+  openrouter: {
+    name: 'OpenRouter',
+    providerType: 'openai_chat',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    env: ['OPENROUTER_API_KEY'],
+    models: ['openrouter/auto'],
+  },
+  xai: {
+    name: 'xAI',
+    providerType: 'openai_chat',
+    baseUrl: 'https://api.x.ai/v1',
+    env: ['XAI_API_KEY'],
+    models: ['grok-4'],
+  },
+  groq: {
+    name: 'Groq',
+    providerType: 'openai_chat',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    env: ['GROQ_API_KEY'],
+    models: ['llama-3.3-70b-versatile'],
+  },
+  mistral: {
+    name: 'Mistral',
+    providerType: 'openai_chat',
+    baseUrl: 'https://api.mistral.ai/v1',
+    env: ['MISTRAL_API_KEY'],
+    models: ['mistral-large-latest'],
+  },
+  moonshot: {
+    name: 'Moonshot AI (Kimi)',
+    providerType: 'openai_chat',
+    baseUrl: 'https://api.moonshot.ai/v1',
+    env: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
+    models: ['kimi-k2-0905-preview'],
+  },
+  zai: {
+    name: 'Z.AI (GLM)',
+    providerType: 'openai_chat',
+    baseUrl: 'https://api.z.ai/api/paas/v4',
+    env: ['ZAI_API_KEY', 'Z_AI_API_KEY'],
+    models: ['glm-4.6'],
+  },
+  qwen: {
+    name: 'Qwen (DashScope)',
+    providerType: 'openai_chat',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    env: ['DASHSCOPE_API_KEY'],
+    models: ['qwen3-max'],
+  },
+  together: {
+    name: 'Together AI',
+    providerType: 'openai_chat',
+    baseUrl: 'https://api.together.xyz/v1',
+    env: ['TOGETHER_API_KEY'],
+    models: ['deepseek-ai/DeepSeek-V3'],
+  },
+  fireworks: {
+    name: 'Fireworks',
+    providerType: 'openai_chat',
+    baseUrl: 'https://api.fireworks.ai/inference/v1',
+    env: ['FIREWORKS_API_KEY'],
+    models: ['accounts/fireworks/models/deepseek-v3p1'],
+  },
+  cerebras: {
+    name: 'Cerebras',
+    providerType: 'openai_chat',
+    baseUrl: 'https://api.cerebras.ai/v1',
+    env: ['CEREBRAS_API_KEY'],
+    models: ['llama3.1-70b'],
+  },
+  huggingface: {
+    name: 'Hugging Face',
+    providerType: 'openai_chat',
+    baseUrl: 'https://router.huggingface.co/v1',
+    env: ['HF_TOKEN'],
+    models: ['deepseek-ai/DeepSeek-R1'],
   },
 };
 
-const BUILTIN_PROVIDER_IDS = new Set(Object.keys(PROVIDER_DEFINITIONS));
+// --- GitHub Copilot preset ---------------------------------------------------
+// Owned by a separate change partition from PROVIDER_DEFINITIONS above: the
+// definition is appended here and merged into the registry as a built-in by
+// providerDefinitions(). The dual-stage OAuth flow (device code -> GitHub
+// token -> Copilot token exchange) is wired through OAUTH_FLOWS below.
+const GITHUB_COPILOT_PROVIDER_ID = 'github-copilot';
+const GITHUB_COPILOT_DEFINITION = Object.freeze({
+  name: 'GitHub Copilot',
+  providerType: 'openai_chat',
+  baseUrl: 'https://api.individual.githubcopilot.com',
+  // These hold GitHub tokens, not Copilot API keys; they must be exchanged
+  // for a Copilot token before any model request (see providerSettings).
+  env: Object.freeze(['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN']),
+  models: Object.freeze(['gpt-4o', 'gpt-4.1', 'o3-mini', 'claude-sonnet-4.5']),
+});
+// Headers the Copilot API expects on every model request; attached to the
+// worker request's provider segment and forwarded to HaoCodeConfig.headers.
+const GITHUB_COPILOT_API_HEADERS = Object.freeze({
+  'Editor-Version': 'vscode/1.96.2',
+  'Editor-Plugin-Version': 'copilot-chat/0.35.0',
+  'User-Agent': 'GitHubCopilotChat/0.26.7',
+  'Copilot-Integration-Id': 'vscode-chat',
+  'Openai-Organization': 'github-copilot',
+});
+
+const BUILTIN_PROVIDER_IDS = new Set([...Object.keys(PROVIDER_DEFINITIONS), GITHUB_COPILOT_PROVIDER_ID]);
 const PROVIDER_TYPES = new Set(['anthropic', 'openai', 'openai_chat']);
 
 // OAuth login flows (subscription tokens) for the built-in providers that
@@ -74,6 +179,23 @@ const OAUTH_FLOWS = Object.freeze({
     extraAuthorizeParams: { originator: 'opencode' },
     instructions: '在打开的浏览器页面中完成 ChatGPT 授权；授权成功后浏览器会自动跳回本地页面完成登录。',
   },
+  // GitHub device-code flow (kind 'device_code'): authorize requests a device
+  // code, the user enters the shown user_code at the verification URL, and
+  // the callback polls the token endpoint until GitHub grants access. The
+  // granted GitHub token is then exchanged for a short-lived Copilot API
+  // token (second stage) — there is no refresh_token grant; near-expiry
+  // "refresh" re-runs the exchange with the stored GitHub token.
+  [GITHUB_COPILOT_PROVIDER_ID]: {
+    kind: 'device_code',
+    method: 'auto',
+    label: 'GitHub 账号（设备码授权）',
+    clientIdEnv: 'HAOWORK_OAUTH_GITHUB_COPILOT_CLIENT_ID',
+    defaultClientId: 'Iv1.b507a08c87ecfe98',
+    deviceCodeUrl: 'https://github.com/login/device/code',
+    tokenUrl: 'https://github.com/login/oauth/access_token',
+    copilotTokenUrl: 'https://api.github.com/copilot_internal/v2/token',
+    scope: 'read:user',
+  },
 });
 
 const OAUTH_CALLBACK_PORTS = Object.freeze(
@@ -82,6 +204,13 @@ const OAUTH_CALLBACK_PORTS = Object.freeze(
 const OAUTH_PENDING_TTL_MS = 10 * 60 * 1000;
 const OAUTH_REFRESH_SKEW_MS = 5 * 60 * 1000;
 const OAUTH_CALLBACK_TIMEOUT_MS = 120_000;
+// GitHub device-flow polling: total budget 15 minutes, `slow_down` grows the
+// interval by 2 seconds (RFC 8628), floor 1 second between polls.
+const OAUTH_DEVICE_FLOW_TIMEOUT_MS = 15 * 60 * 1000;
+const OAUTH_DEVICE_SLOW_DOWN_INCREMENT_MS = 2_000;
+const OAUTH_DEVICE_MIN_INTERVAL_MS = 1_000;
+
+const defaultSleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 const base64url = (buffer) => buffer
   .toString('base64')
@@ -230,11 +359,31 @@ const extractPrompt = (parts) => {
   for (const part of Array.isArray(parts) ? parts : []) {
     if (part?.type === 'text' && typeof part.text === 'string') output.push(part.text);
     if (part?.type === 'file' && typeof part.url === 'string') {
-      output.push(`[Attached file${part.filename ? ` ${part.filename}` : ''}: ${part.url}]`);
+      // Image parts are forwarded natively (extractImages); keep only a
+      // filename note in text so the base64 data URI never floods the prompt.
+      if (typeof part.mime === 'string' && part.mime.startsWith('image/')) {
+        output.push(`[Attached image${part.filename ? ` ${part.filename}` : ''}]`);
+      } else {
+        output.push(`[Attached file${part.filename ? ` ${part.filename}` : ''}: ${part.url}]`);
+      }
     }
     if (part?.type === 'agent' && typeof part.name === 'string') output.push(`@${part.name}`);
   }
   return output.join('\n\n').trim();
+};
+
+// Collect image attachments (data URIs, file paths, or URLs) for the SDK's
+// native multimodal input instead of inlining them into the prompt text.
+const extractImages = (parts) => {
+  const images = [];
+  for (const part of Array.isArray(parts) ? parts : []) {
+    if (part?.type === 'file'
+      && typeof part.mime === 'string' && part.mime.startsWith('image/')
+      && typeof part.url === 'string' && part.url.trim() !== '') {
+      images.push(part.url);
+    }
+  }
+  return images;
 };
 
 const writeSse = (response, payload) => {
@@ -494,6 +643,9 @@ export const createHaoCodeCompatibilityServer = ({
   fetchImpl = globalThis.fetch?.bind(globalThis),
   oauthCallbackPorts = OAUTH_CALLBACK_PORTS,
   oauthCallbackTimeoutMs = OAUTH_CALLBACK_TIMEOUT_MS,
+  // Device-flow polling clock; tests inject an instant, recording sleep.
+  sleepImpl = defaultSleep,
+  oauthDeviceFlowTimeoutMs = OAUTH_DEVICE_FLOW_TIMEOUT_MS,
 }) => {
   const app = express();
   const server = http.createServer(app);
@@ -662,11 +814,21 @@ export const createHaoCodeCompatibilityServer = ({
         name: definition.name,
         providerType: definition.providerType,
         baseUrl: definition.baseUrl,
-        env: [definition.env],
+        env: [...definition.env],
         models: [...definition.models],
         custom: false,
       };
     }
+    // GitHub Copilot preset: defined outside PROVIDER_DEFINITIONS (separate
+    // change partition) but registered as a built-in.
+    definitions[GITHUB_COPILOT_PROVIDER_ID] = {
+      name: GITHUB_COPILOT_DEFINITION.name,
+      providerType: GITHUB_COPILOT_DEFINITION.providerType,
+      baseUrl: GITHUB_COPILOT_DEFINITION.baseUrl,
+      env: [...GITHUB_COPILOT_DEFINITION.env],
+      models: [...GITHUB_COPILOT_DEFINITION.models],
+      custom: false,
+    };
     for (const [id, definition] of Object.entries(custom)) {
       if (!definition || typeof definition !== 'object') continue;
       definitions[id] = {
@@ -919,6 +1081,154 @@ export const createHaoCodeCompatibilityServer = ({
     return oauthRecordFromTokenPayload(payload, null, typeof accountId === 'string' && accountId ? accountId : null);
   };
 
+  // --- GitHub Copilot dual-stage device flow --------------------------------
+
+  // Stage one, part A: request a device code from GitHub.
+  const beginGitHubCopilotOAuth = async (providerId, flow) => {
+    cancelPendingOAuth(providerId);
+    const response = await fetchImpl(flow.deviceCodeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({ client_id: oauthClientId(flow), scope: flow.scope }).toString(),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload
+      || typeof payload.device_code !== 'string' || !payload.device_code
+      || typeof payload.verification_uri !== 'string' || !payload.verification_uri
+      || typeof payload.user_code !== 'string' || !payload.user_code) {
+      const detail = (payload && (payload.error_description || payload.error)) || `HTTP ${response.status}`;
+      throw new Error(`GitHub device code request failed: ${detail}`);
+    }
+    pendingOAuth.set(providerId, {
+      flow: GITHUB_COPILOT_PROVIDER_ID,
+      deviceCode: payload.device_code,
+      intervalMs: Math.max(OAUTH_DEVICE_MIN_INTERVAL_MS, (Number(payload.interval) || 5) * 1000),
+      expiresAt: Date.now() + OAUTH_PENDING_TTL_MS,
+    });
+    return {
+      url: payload.verification_uri,
+      method: flow.method,
+      instructions: `Enter code: ${payload.user_code}`,
+    };
+  };
+
+  // Stage two (also the only stage for saved/env GitHub tokens): trade a
+  // GitHub token for a short-lived Copilot API token. `expires_at` is a
+  // seconds epoch (millisecond epochs are tolerated).
+  const exchangeGitHubCopilotToken = async (flow, githubToken) => {
+    const response = await fetchImpl(flow.copilotTokenUrl, {
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: 'application/json',
+        'Editor-Version': 'vscode/1.96.2',
+        'X-Github-Api-Version': '2025-04-01',
+      },
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || typeof payload.token !== 'string' || !payload.token) {
+      const detail = (payload && (payload.message || payload.error)) || `HTTP ${response.status}`;
+      throw new Error(`GitHub Copilot token exchange failed: ${detail}`);
+    }
+    const rawExpires = Number(payload.expires_at) || 0;
+    const expires = rawExpires > 10_000_000_000 ? rawExpires : rawExpires * 1000;
+    // Missing/invalid expiry: fall back to a conservative 30-minute lifetime.
+    return { access: payload.token, expires: expires > 0 ? expires : Date.now() + 30 * 60 * 1000 };
+  };
+
+  // Stage one, part B: poll the GitHub token endpoint until the user finishes
+  // the device authorization, then run the stage-two exchange. The persisted
+  // record keeps the Copilot token as `access` and the GitHub token as
+  // `refresh` (near-expiry refresh re-runs the exchange, not a grant).
+  const completeGitHubCopilotOAuth = async (providerId, flow) => {
+    const pending = getPendingOAuth(providerId);
+    if (!pending || pending.flow !== GITHUB_COPILOT_PROVIDER_ID) {
+      throw Object.assign(new Error('No GitHub Copilot OAuth flow is in progress; start authorization first.'), { status: 400 });
+    }
+    const deadline = Date.now() + oauthDeviceFlowTimeoutMs;
+    let intervalMs = pending.intervalMs;
+    let githubToken = null;
+    try {
+      for (;;) {
+        if (Date.now() >= deadline) {
+          throw new Error('GitHub device authorization timed out; start over.');
+        }
+        const response = await fetchImpl(flow.tokenUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+          body: new URLSearchParams({
+            client_id: oauthClientId(flow),
+            device_code: pending.deviceCode,
+            grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+          }).toString(),
+        });
+        const payload = await response.json().catch(() => null);
+        if (response.ok && payload && typeof payload.access_token === 'string' && payload.access_token) {
+          githubToken = payload.access_token;
+          break;
+        }
+        const error = payload?.error;
+        if (error === 'authorization_pending') {
+          await sleepImpl(intervalMs);
+          continue;
+        }
+        if (error === 'slow_down') {
+          intervalMs += OAUTH_DEVICE_SLOW_DOWN_INCREMENT_MS;
+          await sleepImpl(intervalMs);
+          continue;
+        }
+        if (error === 'expired_token') {
+          throw new Error('GitHub device code expired; start authorization again.');
+        }
+        if (error === 'access_denied') {
+          throw new Error('GitHub authorization was denied.');
+        }
+        const detail = (payload && (payload.error_description || payload.error)) || `HTTP ${response.status}`;
+        throw new Error(`GitHub device token polling failed: ${detail}`);
+      }
+      const exchanged = await exchangeGitHubCopilotToken(flow, githubToken);
+      return { access: exchanged.access, refresh: githubToken, expires: exchanged.expires };
+    } finally {
+      pendingOAuth.delete(providerId);
+    }
+  };
+
+  // Copilot near-expiry "refresh": the stored refresh token is the GitHub
+  // token, so refreshing re-runs the stage-two exchange. Single-flight per
+  // provider with the same guarded write-back as refreshOAuthTokens. Returns
+  // the fresh Copilot token, or null when the exchange failed.
+  const refreshGitHubCopilotTokens = (providerId, flow) => {
+    const inflight = oauthRefreshInflight.get(providerId);
+    if (inflight) return inflight;
+    const task = (async () => {
+      const saved = await store.getProviderSettings(providerId);
+      const oauth = saved.oauth;
+      if (!oauth?.refresh) return null;
+      try {
+        const exchanged = await exchangeGitHubCopilotToken(flow, oauth.refresh);
+        const record = { access: exchanged.access, refresh: oauth.refresh, expires: exchanged.expires };
+        await store.mutate((state) => {
+          const entry = state.providers[providerId] ?? {};
+          // Only write back when the stored GitHub token is still the one we
+          // used, so a concurrent fresh login is never clobbered.
+          if (entry.oauth?.refresh === oauth.refresh) entry.oauth = record;
+          state.providers[providerId] = entry;
+        });
+        return record.access;
+      } catch (error) {
+        logger.warn?.(`[HaoCode compat] GitHub Copilot token exchange for ${providerId} failed: ${error.message}`);
+        return null;
+      }
+    })();
+    oauthRefreshInflight.set(providerId, task);
+    try {
+      return task;
+    } finally {
+      task.finally(() => {
+        if (oauthRefreshInflight.get(providerId) === task) oauthRefreshInflight.delete(providerId);
+      });
+    }
+  };
+
   const storeOAuthRecord = async (providerId, record) => {
     await store.mutate((state) => {
       const entry = state.providers[providerId] ?? {};
@@ -981,9 +1291,38 @@ export const createHaoCodeCompatibilityServer = ({
     const expires = Number(oauth.expires) || 0;
     if (expires - Date.now() > OAUTH_REFRESH_SKEW_MS) return oauth.access;
     if (typeof oauth.refresh === 'string' && oauth.refresh) {
-      return refreshOAuthTokens(providerId, flow);
+      // Copilot's refresh token is the GitHub token: re-exchange instead of
+      // the standard refresh_token grant.
+      return flow.kind === 'device_code'
+        ? refreshGitHubCopilotTokens(providerId, flow)
+        : refreshOAuthTokens(providerId, flow);
     }
     return expires > Date.now() ? oauth.access : null;
+  };
+
+  // GitHub Copilot credential resolution. Neither the saved apiKey nor the
+  // env tokens (COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN) are Copilot API
+  // credentials — they are GitHub tokens that must be exchanged for a
+  // short-lived Copilot token first. The exchange result is cached as
+  // state.providers['github-copilot'].oauth (refresh = the GitHub token), so
+  // later runs reuse it until the expiry skew triggers a re-exchange.
+  const resolveGitHubCopilotAccessToken = async (definition, saved) => {
+    const oauthAccess = await resolveOAuthAccessToken(GITHUB_COPILOT_PROVIDER_ID);
+    if (oauthAccess) return oauthAccess;
+    const githubToken = saved.apiKey || definition.env.map((name) => process.env[name]).find(Boolean) || null;
+    if (!githubToken) return null;
+    try {
+      const exchanged = await exchangeGitHubCopilotToken(OAUTH_FLOWS[GITHUB_COPILOT_PROVIDER_ID], githubToken);
+      await storeOAuthRecord(GITHUB_COPILOT_PROVIDER_ID, {
+        access: exchanged.access,
+        refresh: githubToken,
+        expires: exchanged.expires,
+      });
+      return exchanged.access;
+    } catch (error) {
+      logger.warn?.(`[HaoCode compat] GitHub Copilot token exchange failed: ${error.message}`);
+      return null;
+    }
   };
 
   const providerSettings = async (providerId, requestedModel) => {
@@ -997,6 +1336,20 @@ export const createHaoCodeCompatibilityServer = ({
       modelId: model,
       saved: limitSourceFor(definition, saved),
     });
+    // GitHub Copilot is dual-stage: exchange the GitHub-token credential for
+    // a Copilot API token (cached in state.oauth, re-exchanged near expiry)
+    // and attach the headers the Copilot API requires on every request.
+    if (providerId === GITHUB_COPILOT_PROVIDER_ID) {
+      return {
+        apiKey: await resolveGitHubCopilotAccessToken(definition, saved),
+        baseUrl: saved.baseUrl || definition.baseUrl,
+        providerType: saved.providerType || definition.providerType,
+        model,
+        contextWindow: limit.context,
+        maxTokens: limit.output,
+        headers: { ...GITHUB_COPILOT_API_HEADERS },
+      };
+    }
     // Credential resolution order: oauth access token (refreshed when near
     // expiry) -> saved apiKey -> environment variable. Anthropic OAuth access
     // tokens are Bearer credentials rather than x-api-key keys, so the worker
@@ -1637,8 +1990,8 @@ export const createHaoCodeCompatibilityServer = ({
     return response.json({ removed: true });
   });
   // SDK provider.auth() contract: { [providerId]: ProviderAuthMethod[] }.
-  // Built-in Anthropic/OpenAI additionally expose one oauth method; DeepSeek
-  // and custom providers stay api-key only.
+  // Built-in Anthropic/OpenAI/GitHub Copilot additionally expose one oauth
+  // method; the other presets and custom providers stay api-key only.
   app.get('/provider/auth', async (_request, response) => {
     const definitions = await providerDefinitions();
     response.json(Object.fromEntries(Object.entries(definitions).map(([id, definition]) => {
@@ -1651,7 +2004,9 @@ export const createHaoCodeCompatibilityServer = ({
   // SDK provider.oauth.authorize() contract: body { method } ->
   // { url, method: 'auto' | 'code', instructions }. Anthropic starts a manual
   // paste-code flow (PKCE verifier doubles as the OAuth state); OpenAI starts
-  // a browser flow with a localhost redirect listener.
+  // a browser flow with a localhost redirect listener; GitHub Copilot starts
+  // a device-code flow (the returned url is the verification page and the
+  // instructions carry the user_code to enter).
   app.post('/provider/:providerID/oauth/authorize', async (request, response) => {
     const providerId = request.params.providerID;
     const flow = OAUTH_FLOWS[providerId];
@@ -1662,7 +2017,9 @@ export const createHaoCodeCompatibilityServer = ({
     try {
       const authorization = providerId === 'anthropic'
         ? beginAnthropicOAuth(providerId, flow)
-        : await beginOpenAiOAuth(providerId, flow);
+        : providerId === GITHUB_COPILOT_PROVIDER_ID
+          ? await beginGitHubCopilotOAuth(providerId, flow)
+          : await beginOpenAiOAuth(providerId, flow);
       return response.json(authorization);
     } catch (error) {
       return response.status(400).json({ error: error?.message || 'Failed to start OAuth authorization.' });
@@ -1670,7 +2027,10 @@ export const createHaoCodeCompatibilityServer = ({
   });
   // SDK provider.oauth.callback() contract: body { method, code? } -> boolean.
   // Anthropic expects the pasted "<code>#<state>" (or bare code); OpenAI
-  // awaits the localhost browser redirect (no code in the body).
+  // awaits the localhost browser redirect (no code in the body); GitHub
+  // Copilot polls the device-token endpoint (no code in the body) until the
+  // user finishes the device authorization, then exchanges for a Copilot
+  // token.
   app.post('/provider/:providerID/oauth/callback', async (request, response) => {
     const providerId = request.params.providerID;
     const flow = OAUTH_FLOWS[providerId];
@@ -1681,7 +2041,9 @@ export const createHaoCodeCompatibilityServer = ({
     try {
       const record = providerId === 'anthropic'
         ? await completeAnthropicOAuth(providerId, flow, typeof request.body?.code === 'string' ? request.body.code.trim() : '')
-        : await completeOpenAiOAuth(providerId, flow);
+        : providerId === GITHUB_COPILOT_PROVIDER_ID
+          ? await completeGitHubCopilotOAuth(providerId, flow)
+          : await completeOpenAiOAuth(providerId, flow);
       await storeOAuthRecord(providerId, record);
       return response.json(true);
     } catch (error) {
@@ -1964,6 +2326,7 @@ export const createHaoCodeCompatibilityServer = ({
     if (!session) return response.status(404).json({ error: 'Session not found.' });
     if (supervisor.isRunning(session.id)) return response.status(409).json({ error: 'Session is already running.' });
     const prompt = extractPrompt(request.body?.parts);
+    const images = extractImages(request.body?.parts);
     if (!prompt) return response.status(400).json({ error: 'Message must include text or a file.' });
     const providerId = request.body?.model?.providerID || 'deepseek';
     const modelId = request.body?.model?.modelID
@@ -2011,6 +2374,7 @@ export const createHaoCodeCompatibilityServer = ({
       request: {
         action: 'run',
         prompt,
+        ...(images.length > 0 ? { images } : {}),
         appendSystemPrompt: getAgentConfig(request.body?.agent || 'build', session.directory).config?.prompt,
       },
     });

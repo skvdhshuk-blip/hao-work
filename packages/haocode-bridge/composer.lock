@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "f16140d8309fdf9d474d4ca535418b21",
+    "content-hash": "644ce89f901691b4ef9969f228a70f04",
     "packages": [
         {
             "name": "brick/math",
@@ -1289,11 +1289,11 @@
         },
         {
             "name": "sk-wang/hao-code",
-            "version": "v1.14.0",
+            "version": "v1.15.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/skvdhshuk-blip/hao-code.git",
-                "reference": "27b0164dbf64a0172692671fc6ae1af8d1657f9b"
+                "reference": "69d1ea88d6c3589aa8da420f220abd65f97655e9"
             },
             "require": {
                 "nyholm/psr7": "^1.8",
@@ -1360,7 +1360,7 @@
                 "issues": "https://github.com/skvdhshuk-blip/hao-code/issues",
                 "source": "https://github.com/skvdhshuk-blip/hao-code"
             },
-            "time": "2026-07-18T14:56:46+00:00"
+            "time": "2026-07-18T23:25:37+00:00"
         },
         {
             "name": "symfony/clock",
