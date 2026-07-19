@@ -97,13 +97,14 @@ $hitlReviewModel = normalizeString($request['hitlReviewModel'] ?? null);
 // User "Always Allow" rules persisted by the compatibility server; the SDK
 // exact-matches trimmed Bash commands from this file before rule grading.
 $hitlAllowlistPath = normalizeString($request['hitlAllowlistPath'] ?? null);
-// Structured agent definition forwarded by the compatibility server:
-// { name, prompt?, model?: { providerID, modelID } }. The agent prompt keeps
-// flowing through appendSystemPrompt (appended to HaoCode's default coding
-// system prompt); it is deliberately NOT mapped to Agent::systemPrompt, which
-// would replace the default system prompt wholesale and drop the built-in
-// tool/HITL guidance. agent.model only overrides the model id; provider
-// credentials still come from the request's provider section.
+// Sandbox runtime: when enabled with a provisioned baseRootfs, the SDK runs
+// file/search/bash tools inside a tokimo VM and the smart-HITL decider can
+// auto-approve contained actions (emitting auto_decision source:'sandbox').
+// permissionMode stays on bypass_permissions: sandbox reroutes tool I/O,
+// the permission check is orthogonal and still answered by hitlMode.
+// normalizeSandbox lives before the try so its variable is in scope below;
+// a bad sandbox request (missing baseRootfs, invalid memory/CPU) surfaces as
+// a structured _fe_exception event instead of a PHP fatal error.
 $agentDefinition = is_array($request['agent'] ?? null) ? $request['agent'] : null;
 $agentName = normalizeString($agentDefinition['name'] ?? null);
 $agentPrompt = normalizeString($agentDefinition['prompt'] ?? null);
@@ -189,6 +190,22 @@ $runOptions = new RunOptions(
 );
 
 try {
+    // Sandbox runtime: when enabled with a provisioned baseRootfs, the SDK runs
+    // file/search/bash tools inside a tokimo VM and the smart-HITL decider can
+    // auto-approve contained actions (emitting auto_decision source:'sandbox').
+    // permissionMode stays on bypass_permissions: sandbox reroutes tool I/O,
+    // the permission check is orthogonal and still answered by hitlMode.
+    // normalizeSandbox runs inside the try so a bad sandbox request (missing
+    // baseRootfs, invalid memory/CPU) surfaces as a structured _fe_exception
+    // event instead of a PHP fatal error; when enabled, the shared config
+    // (images/headers/agent fields included) is rebuilt with the sandbox set.
+    $sandboxConfig = normalizeSandbox($request['sandbox'] ?? null);
+    if ($sandboxConfig !== null) {
+        $configArguments['sandbox'] = $sandboxConfig;
+        $config = new HaoCodeConfig(...$configArguments);
+        $agent = new Agent(...[...$agentArguments, 'sandbox' => $sandboxConfig]);
+    }
+
     $action = normalizeString($request['action'] ?? null) ?? 'run';
 
     if ($action === 'resume_interrupt') {
@@ -372,4 +389,60 @@ function normalizeInterrupts(mixed $value): array
             'description' => 'Review this patch before it runs.',
         ],
     ];
+}
+
+/**
+ * Build a SandboxConfig from the worker request, or null when sandbox is
+ * disabled. Mirrors normalizeHitlMode's "whitelist + fail-closed" style:
+ * unknown enum values fall back to safe defaults (network -> blocked,
+ * provider -> tokimo-or-disable). Only a missing baseRootfs on an enabled
+ * tokimo request throws, and that error surfaces through the outer try/catch
+ * as `_fe_exception: InvalidArgumentException` so the UI can show it.
+ *
+ * The binary path is intentionally NOT resolved here. It flows through the
+ * SandboxConfig::tokimo() `binary` option when the caller provides one, but
+ * production runs leave it null so the SDK's SandboxBinaryResolver picks up
+ * the HAOCODE_SANDBOX_BINARY env that Electron injects at spawn time. This
+ * keeps dev (resolver walks dev path / user cache) and packaged (env path)
+ * on the same code path.
+ *
+ * @return \HaoCode\Sdk\Sandbox\SandboxConfig|null
+ */
+function normalizeSandbox(mixed $value): ?object
+{
+    if (! is_array($value) || ($value['enabled'] ?? false) === false) {
+        return null;
+    }
+    $provider = normalizeString($value['provider'] ?? null) ?? 'tokimo';
+    if ($provider !== 'tokimo') {
+        // MVP only supports tokimo; unknown providers are disabled.
+        return null;
+    }
+    $baseRootfs = normalizeString($value['baseRootfs'] ?? null);
+    if ($baseRootfs === null) {
+        throw new InvalidArgumentException('tokimo sandbox requires baseRootfs.');
+    }
+    $network = normalizeString($value['network'] ?? null);
+    if (! in_array($network, ['blocked', 'allow-all'], true)) {
+        $network = 'blocked';
+    }
+    $exclude = is_array($value['exclude'] ?? null)
+        ? array_values(array_filter($value['exclude'], 'is_string'))
+        : [];
+
+    return \HaoCode\Sdk\Sandbox\SandboxConfig::tokimo(
+        baseRootfs: $baseRootfs,
+        mode: normalizeString($value['mode'] ?? null) ?? 'full',
+        sync: normalizeString($value['sync'] ?? null) ?? 'upload-cwd',
+        remoteCwd: normalizeString($value['remoteCwd'] ?? null) ?? '/workspace',
+        cleanup: normalizeString($value['cleanup'] ?? null) ?? 'always',
+        root: normalizeString($value['root'] ?? null),
+        exclude: $exclude,
+        binary: normalizeString($value['binary'] ?? null),
+        vmDir: normalizeString($value['vmDir'] ?? null),
+        memoryMb: normalizePositiveInt($value['memoryMb'] ?? null) ?? 4096,
+        cpuCount: normalizePositiveInt($value['cpuCount'] ?? null) ?? 4,
+        network: $network,
+        startupTimeoutSeconds: normalizePositiveInt($value['startupTimeoutSeconds'] ?? null) ?? 30,
+    );
 }

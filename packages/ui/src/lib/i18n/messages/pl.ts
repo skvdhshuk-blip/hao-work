@@ -2810,6 +2810,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoDecisionCard.source.rule': 'Reguła',
   'chat.autoDecisionCard.source.review': 'Przegląd modelu',
   'chat.autoDecisionCard.source.sandbox': 'Piaskownica',
+  'chat.sandboxBadge.label': 'Sandbox',
+  'chat.sandboxBadge.tooltip': 'Narzędzia agenta działają wewnątrz maszyny wirtualnej w trybie piaskownicy.',
   'chat.assistantError.sendFailed': 'HaoCode nie mógł wysłać wiadomości. Błąd:\n`{detail}`',
   'chat.assistantError.sendFailedRetry': 'HaoCode nie mógł wysłać wiadomości. Informacje o ponownej próbie:\n`{detail}`',
   'chat.assistantError.stoppedBeforeSend': 'Bieżąca tura została zatrzymana, zanim HaoCode mógł wysłać kolejną wiadomość.',

@@ -14,6 +14,11 @@ const outputRoot = path.join(electronRoot, 'resources', 'haocode-runtime');
 const cacheRoot = path.join(electronRoot, '.cache', 'php-runtime');
 const phpBinRelease = '1.2.0';
 const phpVersion = process.env.HAOWORK_PHP_VERSION || '8.4';
+// Pinned to the Composer-locked SDK version so the staged sandbox runner
+// matches the bridge's vendored PHP code. Bump together with composer.lock.
+const sandboxReleaseTag = process.env.HAOWORK_SANDBOX_RELEASE_TAG || 'v1.14.0';
+const sandboxReleaseBase = process.env.HAOWORK_SANDBOX_RELEASE_BASE
+  || 'https://github.com/skvdhshuk-blip/hao-code/releases/download';
 
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
@@ -104,18 +109,73 @@ const prepareBridge = () => {
   });
 };
 
+// Native tokimo sandbox runner assets for the current host. Mirrors the SDK's
+// SandboxBinaryInstaller.platformBinaryName / platformAssetNames: macOS ships
+// a single arm64 runner, Linux arm64 + amd64, Windows amd64 plus the Hyper-V
+// SYSTEM service that the unprivileged runner connects to over a named pipe.
+// Returns [] on platforms the SDK does not target so the build still succeeds
+// (the server reports `supported: false` and the UI disables the toggle).
+const sandboxAssets = () => {
+  const arch = resolveTargetArchitecture().node;
+  if (process.platform === 'darwin') return ['haocode-sandbox-darwin-arm64'];
+  if (process.platform === 'linux') return [`haocode-sandbox-linux-${arch}`];
+  if (process.platform === 'win32') {
+    return ['haocode-sandbox-windows-amd64.exe', 'haocode-sandbox-svc-windows-amd64.exe'];
+  }
+  return [];
+};
+
+// The runner the worker spawns at session time (everything except the Windows
+// service, which is installed by main.mjs on first enable). Goes into runtime.json
+// so configurePackagedHaoCodeRuntime can wire HAOCODE_SANDBOX_BINARY.
+const sandboxRunnerAsset = () => {
+  const assets = sandboxAssets();
+  if (process.platform === 'win32') return 'haocode-sandbox-windows-amd64.exe';
+  return assets[0] ?? null;
+};
+
+const prepareSandboxRunner = async () => {
+  const assets = sandboxAssets();
+  if (assets.length === 0) return null;
+  const destination = path.join(outputRoot, 'sandbox');
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.mkdirSync(destination, { recursive: true });
+  for (const asset of assets) {
+    const expected = await (await fetch(`${sandboxReleaseBase}/${sandboxReleaseTag}/${asset}.sha256`)).text();
+    const expectedSha = expected.trim().split(/\s+/)[0];
+    if (!/^[a-f0-9]{64}$/.test(expectedSha)) {
+      throw new Error(`Sandbox asset ${asset} has an invalid SHA256 sidecar.`);
+    }
+    const response = await fetch(`${sandboxReleaseBase}/${sandboxReleaseTag}/${asset}`);
+    if (!response.ok) {
+      throw new Error(`Unable to download sandbox asset ${asset} (${response.status}).`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const actualSha = createHash('sha256').update(buffer).digest('hex');
+    if (actualSha !== expectedSha) {
+      throw new Error(`Sandbox asset ${asset} failed SHA256 verification.`);
+    }
+    const dest = path.join(destination, asset);
+    fs.writeFileSync(dest, buffer);
+    if (process.platform !== 'win32') fs.chmodSync(dest, 0o755);
+  }
+  return sandboxRunnerAsset();
+};
+
 const main = async () => {
   if (!/^8\.[3-9]$/.test(phpVersion)) throw new Error(`Invalid HAOWORK_PHP_VERSION: ${phpVersion}`);
   fs.rmSync(outputRoot, { recursive: true, force: true });
   await ensureArchive();
   extractPhp();
   prepareBridge();
+  const stagedSandboxRunner = await prepareSandboxRunner();
   fs.writeFileSync(path.join(outputRoot, 'runtime.json'), `${JSON.stringify({
     php: `php/${binaryName}`,
     worker: 'bridge/worker.php',
     autoload: 'bridge/vendor/autoload.php',
     phpVersion,
     phpBinRelease,
+    ...(stagedSandboxRunner ? { sandboxBinary: `sandbox/${stagedSandboxRunner}` } : {}),
   }, null, 2)}\n`);
   console.log(`[electron] prepared HaoCode runtime: ${outputRoot}`);
 };

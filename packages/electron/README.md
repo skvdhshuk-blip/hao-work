@@ -17,6 +17,14 @@ Packaged builds include all required local runtime files under `resources/haocod
 
 Users do not need to install PHP, Composer, OpenCode, or Tokimo separately.
 
+### Sandbox runtime
+
+When a project opts into sandbox execution (see `packages/web/server/lib/haocode/DOCUMENTATION.md`), the HaoCode engine runs file, search, and shell tools inside a tokimo virtual machine. `prepare-haocode-runtime.mjs` stages the platform-matching tokimo runner under `resources/haocode-runtime/sandbox/` (plus the Hyper-V SYSTEM service on Windows), and `runtime.json` records its path as `sandboxBinary`. At startup `configurePackagedHaoCodeRuntime()` (in `main.mjs`) exports that path through the `HAOCODE_SANDBOX_BINARY` environment variable so the SDK's `SandboxBinaryResolver` finds it without any user setup.
+
+The much larger guest kernel + rootfs is **not** staged here. The first time a project enables the sandbox, the OpenChamber server invokes the SDK's own installer (`vendor/bin/hao-code-sandbox install --with-runtime`) to download and verify those artifacts into the user cache. On Windows the Hyper-V SYSTEM service is installed on first enable through the `desktop_install_sandbox_service` IPC handler (main.mjs), which elevates once via UAC; afterwards the unprivileged runner connects to it over a named pipe.
+
+macOS packaging adds the `com.apple.security.hypervisor` entitlement (see `resources/entitlements.mac.plist`) so the runner can use Apple Hypervisor.framework. The release and smoke workflows assert that entitlement is present.
+
 ## Main files
 
 | File | Purpose |

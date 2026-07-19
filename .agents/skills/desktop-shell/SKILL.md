@@ -45,6 +45,14 @@ Non-user-visible child processes must never flash a console window.
 - Ensure cleanup tolerates partial startup and repeated shutdown signals.
 - Do not infer readiness from stdout when an in-process callback or returned server handle exists.
 
+## Sandbox Runtime Staging
+
+The tokimo sandbox runner is a native binary staged by `prepare-haocode-runtime.mjs` into `resources/haocode-runtime/sandbox/` and exposed to the SDK through the `HAOCODE_SANDBOX_BINARY` env at startup (see `configurePackagedHaoCodeRuntime` in `main.mjs` and the README "Sandbox runtime" section for the full contract).
+
+- The runner binary itself ships with the installer; the much larger guest kernel/rootfs is **not** staged — first-use triggers the SDK's own `vendor/bin/hao-code-sandbox install --with-runtime` via the OpenChamber server's `/sandbox/prepare` route. Do not move rootfs staging into Electron.
+- On Windows the Hyper-V SYSTEM service is installed on first sandbox enable via the `desktop_install_sandbox_service` IPC handler, which elevates exactly once through `Start-Process -Verb RunAs` + hidden `-EncodedCommand` PowerShell. Follow the Windows Background Processes rules above for any new elevation path.
+- macOS packaging requires the `com.apple.security.hypervisor` entitlement. The release and smoke workflows assert it; do not remove the assertion when touching entitlements.
+
 ## Validation
 
 Run the Electron package type-check/lint commands from `package.json` and focused tests. For startup, preload, routing, or packaging changes, test both HMR development and bundled UI mode. For Windows process work, inspect the complete process tree and verify no console flash; a successful command alone is insufficient.

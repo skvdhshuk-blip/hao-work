@@ -1,0 +1,39 @@
+# RustDesk 自建中继 + Web 客户端（部署在 ECS 47.97.41.141）
+# 浏览器访问入口: http://47.97.41.141:21114 （rustdesk-api 内置 Web Client + 管理后台）
+networks:
+  rustdesk-net:
+
+services:
+  rustdesk-server:
+    container_name: rustdesk-server
+    image: rustdesk/rustdesk-server-s6:latest
+    environment:
+      - RELAY=47.97.41.141:21117
+      - ENCRYPTED_ONLY=1        # 强制加密连接
+    ports:
+      - "21115:21115"           # NAT 类型测试
+      - "21116:21116"           # ID 注册/打洞 TCP
+      - "21116:21116/udp"       # ID 注册/心跳 UDP
+      - "21117:21117"           # 中继
+      - "21118:21118"           # Web 客户端 WebSocket
+      - "21119:21119"           # Web 客户端中继 WebSocket
+    volumes:
+      - ./data/server:/data
+    networks:
+      - rustdesk-net
+    restart: unless-stopped
+
+  rustdesk-api:
+    container_name: rustdesk-api
+    image: lejianwen/rustdesk-api:latest
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "21114:21114"           # Web 管理后台 + Web Client 入口
+    volumes:
+      - ./data/api:/app/data
+      - ./config.yaml:/app/conf/config.yaml:ro
+      - ./webclient2:/app/resources/web2:ro
+    networks:
+      - rustdesk-net
+    restart: unless-stopped
