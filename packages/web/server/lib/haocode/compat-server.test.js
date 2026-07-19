@@ -23,7 +23,7 @@ const createRuntime = async ({
       deepseek: {
         id: 'deepseek',
         models: {
-          'deepseek-chat': { limit: { context: 1_000_000, output: 384_000 } },
+          'deepseek-v4-flash': { limit: { context: 1_000_000, output: 384_000 } },
         },
       },
     },
@@ -174,7 +174,7 @@ const prompt = (baseUrl, project, sessionId, text, overrides = {}) => fetch(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       messageID: `msg_user_${text}`,
-      model: { providerID: 'deepseek', modelID: 'deepseek-chat' },
+      model: { providerID: 'deepseek', modelID: 'deepseek-v4-flash' },
       agent: overrides.agent || 'build',
       parts: [{ type: 'text', text }],
       ...overrides,
@@ -290,7 +290,7 @@ describe('HaoCode compatibility server', () => {
     await fs.writeFile(path.join(runtime.project, '.opencode', 'opencode.json'), JSON.stringify({
       agent: {
         pilot: { prompt: 'Fly carefully.', model: 'deepseek/deepseek-reasoner' },
-        navigator: { prompt: 'Chart the course.', model: { providerID: 'deepseek', modelID: 'deepseek-chat' } },
+        navigator: { prompt: 'Chart the course.', model: { providerID: 'deepseek', modelID: 'deepseek-v4-flash' } },
       },
     }));
 
@@ -322,7 +322,7 @@ describe('HaoCode compatibility server', () => {
     expect(objectPinned.agent).toEqual({
       name: 'navigator',
       prompt: 'Chart the course.',
-      model: { providerID: 'deepseek', modelID: 'deepseek-chat' },
+      model: { providerID: 'deepseek', modelID: 'deepseek-v4-flash' },
     });
 
     // The default build agent carries only its name — no prompt, no model —
@@ -368,7 +368,7 @@ describe('HaoCode compatibility server', () => {
 
     const providers = await fetch(`${baseUrl}/config/providers`).then((response) => response.json());
     expect(providers.providers.map((provider) => provider.id)).toContain('deepseek');
-    expect(providers.providers.find((provider) => provider.id === 'deepseek').models['deepseek-chat'].limit).toEqual({
+    expect(providers.providers.find((provider) => provider.id === 'deepseek').models['deepseek-v4-flash'].limit).toEqual({
       context: 1_000_000,
       output: 384_000,
     });
@@ -403,7 +403,7 @@ describe('HaoCode compatibility server', () => {
     const providers = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
     const displayedLimit = providers.providers
       .find((provider) => provider.id === 'deepseek')
-      .models['deepseek-chat'].limit;
+      .models['deepseek-v4-flash'].limit;
     const records = await waitFor(async () => {
       const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
       return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
@@ -426,7 +426,7 @@ describe('HaoCode compatibility server', () => {
     const providers = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
     const displayedLimit = providers.providers
       .find((provider) => provider.id === 'deepseek')
-      .models['deepseek-chat'].limit;
+      .models['deepseek-v4-flash'].limit;
     const records = await waitFor(async () => {
       const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
       return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
@@ -1207,11 +1207,13 @@ describe('HaoCode compatibility server', () => {
       'anthropic', 'openai', 'deepseek',
       'openrouter', 'xai', 'groq', 'mistral', 'moonshot', 'zai',
       'qwen', 'together', 'fireworks', 'cerebras', 'huggingface',
+      'kimi-coding', 'volcengine', 'minimax', 'qianfan', 'siliconflow',
+      'stepfun', 'longcat', 'packycode', 'shengsuanyun',
       'github-copilot',
     ]);
     expect(before.connected).not.toContain('deepseek');
-    expect(before.default.deepseek).toBe('deepseek-chat');
-    expect(before.all.find((provider) => provider.id === 'deepseek').models['deepseek-chat'].limit).toEqual({
+    expect(before.default.deepseek).toBe('deepseek-v4-flash');
+    expect(before.all.find((provider) => provider.id === 'deepseek').models['deepseek-v4-flash'].limit).toEqual({
       context: 1_000_000,
       output: 384_000,
     });
@@ -1226,7 +1228,10 @@ describe('HaoCode compatibility server', () => {
       'OPENROUTER_API_KEY', 'XAI_API_KEY', 'GROQ_API_KEY', 'MISTRAL_API_KEY',
       'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'ZAI_API_KEY', 'Z_AI_API_KEY',
       'DASHSCOPE_API_KEY', 'TOGETHER_API_KEY', 'FIREWORKS_API_KEY',
-      'CEREBRAS_API_KEY', 'HF_TOKEN',
+      'CEREBRAS_API_KEY', 'HF_TOKEN', 'KIMICODE_API_KEY',
+      'VOLCANO_ENGINE_API_KEY', 'MINIMAX_API_KEY', 'QIANFAN_API_KEY',
+      'SILICONFLOW_API_KEY', 'STEPFUN_API_KEY', 'LONGCAT_API_KEY',
+      'PACKYCODE_API_KEY', 'SHENGSUANYUN_API_KEY',
     ];
     const savedEnv = Object.fromEntries(envNames.map((name) => [name, process.env[name]]));
     for (const name of envNames) delete process.env[name];
@@ -1237,13 +1242,21 @@ describe('HaoCode compatibility server', () => {
       xai: { name: 'xAI', baseUrl: 'https://api.x.ai/v1', env: ['XAI_API_KEY'], model: 'grok-4' },
       groq: { name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', env: ['GROQ_API_KEY'], model: 'llama-3.3-70b-versatile' },
       mistral: { name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', env: ['MISTRAL_API_KEY'], model: 'mistral-large-latest' },
-      moonshot: { name: 'Moonshot AI (Kimi)', baseUrl: 'https://api.moonshot.ai/v1', env: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'], model: 'kimi-k2-0905-preview' },
-      zai: { name: 'Z.AI (GLM)', baseUrl: 'https://api.z.ai/api/paas/v4', env: ['ZAI_API_KEY', 'Z_AI_API_KEY'], model: 'glm-4.6' },
-      qwen: { name: 'Qwen (DashScope)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', env: ['DASHSCOPE_API_KEY'], model: 'qwen3-max' },
-      together: { name: 'Together AI', baseUrl: 'https://api.together.xyz/v1', env: ['TOGETHER_API_KEY'], model: 'deepseek-ai/DeepSeek-V3' },
-      fireworks: { name: 'Fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', env: ['FIREWORKS_API_KEY'], model: 'accounts/fireworks/models/deepseek-v3p1' },
-      cerebras: { name: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', env: ['CEREBRAS_API_KEY'], model: 'llama3.1-70b' },
-      huggingface: { name: 'Hugging Face', baseUrl: 'https://router.huggingface.co/v1', env: ['HF_TOKEN'], model: 'deepseek-ai/DeepSeek-R1' },
+      moonshot: { name: 'Moonshot AI (Kimi)', baseUrl: 'https://api.moonshot.cn/v1', env: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'], model: 'kimi-k2.7-code' },
+      zai: { name: 'Z.AI (GLM)', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', env: ['ZAI_API_KEY', 'Z_AI_API_KEY'], model: 'glm-5.1' },
+      qwen: { name: 'Qwen (DashScope)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', env: ['DASHSCOPE_API_KEY'], model: 'qwen3-coder-plus' },
+      together: { name: 'Together AI', baseUrl: 'https://api.together.xyz/v1', env: ['TOGETHER_API_KEY'], model: 'deepseek-ai/DeepSeek-V3.2' },
+      fireworks: { name: 'Fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', env: ['FIREWORKS_API_KEY'], model: 'accounts/fireworks/routers/kimi-k2p5-turbo' },
+      cerebras: { name: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', env: ['CEREBRAS_API_KEY'], model: 'llama-4-scout-17b-16e-instruct' },
+      huggingface: { name: 'Hugging Face', baseUrl: 'https://router.huggingface.co/v1', env: ['HF_TOKEN'], model: 'deepseek-ai/DeepSeek-V3.2' },
+      volcengine: { name: '火山引擎 Ark', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', env: ['VOLCANO_ENGINE_API_KEY'], model: 'ark-code-latest' },
+      minimax: { name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', env: ['MINIMAX_API_KEY'], model: 'MiniMax-M3' },
+      qianfan: { name: '百度千帆', baseUrl: 'https://qianfan.baidubce.com/v2/coding', env: ['QIANFAN_API_KEY'], model: 'qianfan-code-latest' },
+      siliconflow: { name: 'SiliconFlow 硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', env: ['SILICONFLOW_API_KEY'], model: 'Pro/MiniMaxAI/MiniMax-M2.7' },
+      stepfun: { name: '阶跃星辰', baseUrl: 'https://api.stepfun.com/v1', env: ['STEPFUN_API_KEY'], model: 'step-3.5-flash' },
+      longcat: { name: '美团 LongCat', baseUrl: 'https://api.longcat.chat/openai/v1', env: ['LONGCAT_API_KEY'], model: 'LongCat-2.0' },
+      packycode: { name: 'PackyCode', baseUrl: 'https://www.packyapi.com/v1', env: ['PACKYCODE_API_KEY'], model: 'claude-sonnet-5' },
+      shengsuanyun: { name: '胜算云', baseUrl: 'https://router.shengsuanyun.com/api/v1', env: ['SHENGSUANYUN_API_KEY'], model: 'anthropic/claude-sonnet-5' },
     };
 
     const configProviders = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
@@ -1269,6 +1282,20 @@ describe('HaoCode compatibility server', () => {
 
       expect(auth[id]).toEqual([{ type: 'api', label: `${preset.name} API key` }]);
       }
+
+      // Kimi For Coding is the one built-in preset on the Anthropic protocol.
+      const kimiCoding = configProviders.providers.find((provider) => provider.id === 'kimi-coding');
+      expect(kimiCoding).toMatchObject({
+        id: 'kimi-coding',
+        name: 'Kimi For Coding',
+        source: 'custom',
+        env: ['KIMI_API_KEY', 'KIMICODE_API_KEY'],
+        options: { baseURL: 'https://api.kimi.com/coding/', _fe_providerType: 'anthropic' },
+      });
+      expect(kimiCoding.models['kimi-for-coding'].limit).toEqual({ context: 200_000, output: 16_384 });
+      expect(listed.connected).not.toContain('kimi-coding');
+      expect(listed.default['kimi-coding']).toBe('kimi-for-coding');
+      expect(auth['kimi-coding']).toEqual([{ type: 'api', label: 'Kimi For Coding API key' }]);
     } finally {
       for (const [name, value] of Object.entries(savedEnv)) {
         if (value === undefined) delete process.env[name];
@@ -1299,13 +1326,13 @@ describe('HaoCode compatibility server', () => {
       const source = await fetch(`${runtime.baseUrl}/provider/moonshot/source`).then((response) => response.json());
       expect(source.sources.auth.exists).toBe(true);
 
-      const probe = await runProviderProbe(runtime, 'moonshot', 'kimi-k2-0905-preview');
+      const probe = await runProviderProbe(runtime, 'moonshot', 'kimi-k2.7-code');
       expect(probe).toEqual({ apiKey: 'kimi-env-key', oauthBearer: null });
 
       // First alias wins when several are set.
       process.env.Z_AI_API_KEY = 'zai-second';
       process.env.ZAI_API_KEY = 'zai-first';
-      const zaiProbe = await runProviderProbe(runtime, 'zai', 'glm-4.6');
+      const zaiProbe = await runProviderProbe(runtime, 'zai', 'glm-5.1');
       expect(zaiProbe).toEqual({ apiKey: 'zai-first', oauthBearer: null });
     } finally {
       for (const [name, value] of Object.entries(savedEnv)) {
@@ -1434,7 +1461,7 @@ describe('HaoCode compatibility server', () => {
 
     // The saved override beats the models.dev catalog (1_000_000/384_000).
     const providers = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
-    expect(providers.providers.find((provider) => provider.id === 'deepseek').models['deepseek-chat'].limit)
+    expect(providers.providers.find((provider) => provider.id === 'deepseek').models['deepseek-v4-flash'].limit)
       .toEqual({ context: 500_000, output: 4_096 });
 
     expect((await patch({ contextWindow: -10 })).status).toBe(400);
@@ -1445,7 +1472,7 @@ describe('HaoCode compatibility server', () => {
     expect(reset.status).toBe(200);
     expect(await reset.json()).toMatchObject({ contextWindow: null, maxTokens: null });
     const restored = await fetch(`${runtime.baseUrl}/config/providers`).then((response) => response.json());
-    expect(restored.providers.find((provider) => provider.id === 'deepseek').models['deepseek-chat'].limit)
+    expect(restored.providers.find((provider) => provider.id === 'deepseek').models['deepseek-v4-flash'].limit)
       .toEqual({ context: 1_000_000, output: 384_000 });
   });
 
