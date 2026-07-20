@@ -151,7 +151,9 @@ console.log('\nP4 vlm: text-only VLM choice degrades cleanly (no crash)');
   const run = await runPrompt(sid, imageParts('What is in this image?', IMAGES.scene, 'scene.png'), 180_000);
   ok('run finished despite vlm failure', ['stop', 'error'].includes(run.finish), `finish=${run.finish}`);
   const combined = `${run.error?.data?.message ?? ''} ${run.text ?? ''}`;
-  ok('degradation visible (failure placeholder or provider rejection)', /转述失败|image_url|unknown variant/i.test(combined), combined.slice(0, 100));
+  // The model may echo the Chinese placeholder verbatim or paraphrase it in
+  // English; both prove the degradation surfaced instead of a crash/hang.
+  ok('degradation visible (failure placeholder or provider rejection)', /转述失败|image_url|unknown variant|transcri\w*\s+fail|could not be (successfully )?transcribed/i.test(combined), combined.slice(0, 100));
 }
 
 // ── P5: drop policy — image silently ignored ────────────────────────────────
