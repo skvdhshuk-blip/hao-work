@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   buildCustomProviderBody,
   buildHaoCodeSettingsPatch,
+  buildModelImagePolicyPatch,
   DEFAULT_CUSTOM_PROVIDER_TYPE,
   DEFAULT_IMAGE_POLICY,
   extractCreatedProviderId,
@@ -10,9 +11,11 @@ import {
   isCustomProvider,
   isImageVlmModelMissing,
   normalizeImagePolicy,
+  normalizeModelImagePolicies,
   parseModelIdList,
   parsePositiveIntOverride,
   parseProvidersPayload,
+  resolveModelImagePolicy,
   settingsNumberToInput,
   settingsVlmModelToInput,
 } from './providerSettings';
@@ -200,6 +203,47 @@ describe('isImageVlmModelMissing', () => {
     for (const policy of ['native', 'ocr', 'caption', 'drop'] as const) {
       expect(isImageVlmModelMissing(policy, '')).toBe(false);
     }
+  });
+});
+
+describe('normalizeModelImagePolicies', () => {
+  test('keeps valid per-model policies and drops unknown entries', () => {
+    expect(normalizeModelImagePolicies({
+      'deepseek-chat': 'ocr',
+      'deepseek-v4-flash': 'bogus',
+      '': 'drop',
+      'vision-model': 'vlm',
+    })).toEqual({ 'deepseek-chat': 'ocr', 'vision-model': 'vlm' });
+  });
+
+  test('returns an empty map for non-object payloads', () => {
+    expect(normalizeModelImagePolicies(null)).toEqual({});
+    expect(normalizeModelImagePolicies(undefined)).toEqual({});
+    expect(normalizeModelImagePolicies('ocr')).toEqual({});
+    expect(normalizeModelImagePolicies(['ocr'])).toEqual({});
+  });
+});
+
+describe('resolveModelImagePolicy', () => {
+  test('prefers the per-model override over the provider default', () => {
+    expect(resolveModelImagePolicy({ 'deepseek-chat': 'ocr' }, 'native', 'deepseek-chat')).toBe('ocr');
+    expect(resolveModelImagePolicy({ 'deepseek-chat': 'native' }, 'drop', 'deepseek-chat')).toBe('native');
+  });
+
+  test('falls back to the provider default when no override exists', () => {
+    expect(resolveModelImagePolicy({}, 'caption', 'deepseek-chat')).toBe('caption');
+    expect(resolveModelImagePolicy({ other: 'ocr' }, DEFAULT_IMAGE_POLICY, 'deepseek-chat')).toBe(DEFAULT_IMAGE_POLICY);
+  });
+});
+
+describe('buildModelImagePolicyPatch', () => {
+  test('sets one model override and clears it with null', () => {
+    expect(buildModelImagePolicyPatch('deepseek-chat', 'ocr')).toEqual({
+      modelImagePolicy: { model: 'deepseek-chat', policy: 'ocr' },
+    });
+    expect(buildModelImagePolicyPatch('deepseek-chat', null)).toEqual({
+      modelImagePolicy: { model: 'deepseek-chat', policy: null },
+    });
   });
 });
 

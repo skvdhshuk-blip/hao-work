@@ -24,6 +24,14 @@ const createPayload = () => {
   for (const name of ['better_sqlite3.node', 'pty.node', 'sherpa-onnx.node']) {
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules', name), 'x64');
   }
+  for (const asset of [
+    'node_modules/@gutenye/ocr-models/assets/ch_PP-OCRv4_det_infer.onnx',
+    'node_modules/onnxruntime-node/package.json',
+  ]) {
+    const assetPath = path.join(root, 'resources/app.asar.unpacked', asset);
+    fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+    fs.writeFileSync(assetPath, 'fixture');
+  }
   return root;
 };
 
@@ -69,6 +77,21 @@ test('fails on a missing native module', () => {
       expectedOpenCodeVersion: '1.17.18',
       runCliVersion: () => '1.17.18',
     }), /Missing packaged native module: pty\.node/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('fails when the OCR model asset stays inside the asar', () => {
+  const root = createPayload();
+  try {
+    fs.rmSync(path.join(root, 'resources/app.asar.unpacked/node_modules/@gutenye/ocr-models/assets/ch_PP-OCRv4_det_infer.onnx'));
+    assert.throws(() => verifyExtractedPayload({
+      root,
+      targetArchitecture: 'x64',
+      expectedOpenCodeVersion: '1.17.18',
+      runCliVersion: () => '1.17.18',
+    }), /Missing unpacked runtime asset: node_modules\/@gutenye\/ocr-models/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

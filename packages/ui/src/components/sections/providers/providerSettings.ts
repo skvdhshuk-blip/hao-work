@@ -11,6 +11,10 @@
  * - PATCH /provider/:id/settings also accepts imagePolicy
  *   ('native'|'ocr'|'caption'|'vlm'|'drop', default 'native') and
  *   imageVlmModel (string|null, required when imagePolicy is 'vlm').
+ * - Individual models override the provider imagePolicy through
+ *   modelImagePolicies ({ [modelID]: policy }, reported by the settings GET).
+ *   PATCH with modelImagePolicy: { model, policy } sets one model's override;
+ *   policy: null clears it so the model falls back to the provider default.
  */
 
 export interface ProviderOption {
@@ -117,6 +121,38 @@ export const normalizeImagePolicy = (value: unknown): ImagePolicy =>
 /** Converts a settings payload VLM model id into input text ('' when unset). */
 export const settingsVlmModelToInput = (value: unknown): string =>
   typeof value === 'string' ? value : '';
+
+/** Per-model image policy overrides keyed by model id. */
+export type ModelImagePolicies = Record<string, ImagePolicy>;
+
+/** Sanitizes a settings payload per-model policy map; unknown entries are dropped. */
+export const normalizeModelImagePolicies = (value: unknown): ModelImagePolicies => {
+  if (!isRecord(value) || Array.isArray(value)) {
+    return {};
+  }
+  const result: ModelImagePolicies = {};
+  for (const [model, policy] of Object.entries(value)) {
+    if (model.length > 0 && (IMAGE_POLICIES as readonly unknown[]).includes(policy)) {
+      result[model] = policy as ImagePolicy;
+    }
+  }
+  return result;
+};
+
+/** Effective policy for one model: per-model override, else the provider default. */
+export const resolveModelImagePolicy = (
+  overrides: ModelImagePolicies,
+  providerDefault: ImagePolicy,
+  modelId: string,
+): ImagePolicy => overrides[modelId] ?? providerDefault;
+
+/**
+ * Builds the PATCH /provider/:id/settings body that sets one model's image
+ * policy override, or clears it when policy is null (back to the provider default).
+ */
+export const buildModelImagePolicyPatch = (model: string, policy: ImagePolicy | null): Record<string, unknown> => ({
+  modelImagePolicy: { model, policy },
+});
 
 /** The 'vlm' policy cannot be saved without a model id; other policies can. */
 export const isImageVlmModelMissing = (policy: ImagePolicy, model: string): boolean =>

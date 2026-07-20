@@ -559,6 +559,21 @@ const IMAGE_CONVERT_FALLBACK_TEXT = '图片转述失败';
 
 const normalizeImagePolicy = (value) => (IMAGE_POLICIES.has(value) ? value : 'native');
 
+// Per-model overrides live in state.providers[id].modelImagePolicies as a
+// { [modelID]: policy } map; the provider-level imagePolicy stays the default.
+// Unknown entries are dropped so a stale map cannot inject bogus policies.
+const normalizeModelImagePolicies = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([model, policy]) => typeof model === 'string' && model && IMAGE_POLICIES.has(policy)));
+};
+
+// Resolution order: per-model override, then the provider default, then 'native'.
+const resolveImagePolicy = (saved, modelId) => {
+  const override = saved?.modelImagePolicies?.[modelId];
+  return IMAGE_POLICIES.has(override) ? override : normalizeImagePolicy(saved?.imagePolicy);
+};
+
 const normalizeImageVlmModel = (value) => (
   typeof value === 'string' && value.trim() ? value.trim() : null
 );
@@ -1141,6 +1156,7 @@ export const createHaoCodeCompatibilityServer = ({
       maxTokens: positiveInteger(saved.maxTokens) ?? (definition.custom ? positiveInteger(definition.maxTokens) : null),
       imagePolicy: normalizeImagePolicy(saved.imagePolicy),
       imageVlmModel: normalizeImageVlmModel(saved.imageVlmModel),
+      modelImagePolicies: normalizeModelImagePolicies(saved.modelImagePolicies),
       _fe_agentEngine: 'haocode',
     };
   };
@@ -2437,12 +2453,37 @@ export const createHaoCodeCompatibilityServer = ({
       }
       imageVlmModelUpdate = normalizeImageVlmModel(body.imageVlmModel);
     }
+    // Per-model override: { model: string, policy: <policy>|null }; null clears
+    // the override so the model falls back to the provider-level imagePolicy.
+    let modelImagePolicyUpdate = null;
+    if ('modelImagePolicy' in body) {
+      const entry = body.modelImagePolicy;
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return response.status(400).json({ error: 'modelImagePolicy must be an object with model and policy fields.' });
+      }
+      const entryModel = typeof entry.model === 'string' ? entry.model.trim() : '';
+      if (!entryModel) {
+        return response.status(400).json({ error: 'modelImagePolicy.model must be a non-empty string.' });
+      }
+      let entryPolicy = null;
+      if (entry.policy !== null && entry.policy !== undefined) {
+        const rawPolicy = typeof entry.policy === 'string' ? entry.policy.trim() : '';
+        if (!IMAGE_POLICIES.has(rawPolicy)) {
+          return response.status(400).json({ error: 'modelImagePolicy.policy must be one of native, ocr, caption, vlm, drop, or null.' });
+        }
+        entryPolicy = rawPolicy;
+      }
+      modelImagePolicyUpdate = { model: entryModel, policy: entryPolicy };
+    }
     const effectiveImagePolicy = imagePolicyUpdate ?? normalizeImagePolicy(savedSettings.imagePolicy);
     const effectiveImageVlmModel = imageVlmModelUpdate !== undefined
       ? imageVlmModelUpdate
       : normalizeImageVlmModel(savedSettings.imageVlmModel);
     if (effectiveImagePolicy === 'vlm' && !effectiveImageVlmModel) {
       return response.status(400).json({ error: 'imageVlmModel is required when imagePolicy is vlm.' });
+    }
+    if (modelImagePolicyUpdate?.policy === 'vlm' && !effectiveImageVlmModel) {
+      return response.status(400).json({ error: 'imageVlmModel is required when a model image policy is vlm.' });
     }
     await store.mutate((state) => {
       const saved = state.providers[providerId] ?? {};
@@ -2460,6 +2501,13 @@ export const createHaoCodeCompatibilityServer = ({
       if (imageVlmModelUpdate !== undefined) {
         if (imageVlmModelUpdate === null) delete saved.imageVlmModel;
         else saved.imageVlmModel = imageVlmModelUpdate;
+      }
+      if (modelImagePolicyUpdate) {
+        const map = { ...normalizeModelImagePolicies(saved.modelImagePolicies) };
+        if (modelImagePolicyUpdate.policy === null) delete map[modelImagePolicyUpdate.model];
+        else map[modelImagePolicyUpdate.model] = modelImagePolicyUpdate.policy;
+        if (Object.keys(map).length === 0) delete saved.modelImagePolicies;
+        else saved.modelImagePolicies = map;
       }
       state.providers[providerId] = saved;
     });
@@ -2688,7 +2736,7 @@ export const createHaoCodeCompatibilityServer = ({
     // (Promise.all, per-image timeout + fallback inside convertImageToText);
     // drop keeps only the "[Attached image …]" note already in the prompt.
     const savedImageSettings = await store.getProviderSettings(providerId);
-    const imagePolicy = normalizeImagePolicy(savedImageSettings.imagePolicy);
+    const imagePolicy = resolveImagePolicy(savedImageSettings, modelId);
     let runPrompt = prompt;
     let forwardImages = attachments.map((attachment) => attachment.url);
     if (attachments.length > 0 && imagePolicy === 'drop') {

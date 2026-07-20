@@ -15,6 +15,15 @@ const ELF_MACHINE = { x64: 62, arm64: 183 };
 // than Electron-rebuilding it with the source-built modules.
 const REQUIRED_NATIVE_MODULES = ['better_sqlite3.node', 'pty.node', 'sherpa-onnx.node'];
 
+// Runtime assets that must live outside app.asar: onnxruntime cannot load
+// .onnx model files (or its own shared libraries) from inside an asar
+// archive, which previously broke the bundled OCR pipeline in packaged
+// builds. See build.asarUnpack in packages/electron/package.json.
+const REQUIRED_UNPACKED_ASSETS = [
+  'node_modules/@gutenye/ocr-models/assets/ch_PP-OCRv4_det_infer.onnx',
+  'node_modules/onnxruntime-node/package.json',
+];
+
 /** electron-builder AppImage arch token: x64 → x86_64, arm64 → arm64 */
 export const linuxAppImageArchSuffix = (architecture) => (
   architecture === 'x64' ? 'x86_64' : 'arm64'
@@ -98,6 +107,10 @@ export const verifyExtractedPayload = ({
 
   const unpackedModules = path.join(root, 'resources', 'app.asar.unpacked', 'node_modules');
   if (!fs.existsSync(unpackedModules)) throw new Error(`Missing unpacked native modules: ${unpackedModules}`);
+  for (const asset of REQUIRED_UNPACKED_ASSETS) {
+    const assetPath = path.join(root, 'resources', 'app.asar.unpacked', asset);
+    if (!fs.existsSync(assetPath)) throw new Error(`Missing unpacked runtime asset: ${asset}`);
+  }
   const nativeModules = collectFiles(unpackedModules, (name, fullPath) => {
     if (!name.endsWith('.node')) return false;
     const normalizedPath = fullPath.split(path.sep).join('/');

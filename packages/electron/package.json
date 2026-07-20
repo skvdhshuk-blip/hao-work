@@ -1,6 +1,6 @@
 {
   "name": "@openchamber/electron",
-  "version": "1.16.24",
+  "version": "1.16.25",
   "private": true,
   "description": "Hao Work desktop runtime powered by HaoCode",
   "author": "Hao Work contributors",
@@ -49,6 +49,13 @@
     "files": [
       "dist-bundle/main.mjs",
       "preload.mjs"
+    ],
+    "asarUnpack": [
+      "**/node_modules/@gutenye/ocr-models/**",
+      "**/node_modules/onnxruntime-node/**",
+      "**/node_modules/@xenova/transformers/**",
+      "**/node_modules/sharp/**",
+      "**/node_modules/@img/**"
     ],
     "extraResources": [
       {

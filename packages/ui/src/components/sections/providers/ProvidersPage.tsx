@@ -36,17 +36,21 @@ import { QuotaCredentials } from './QuotaCredentials';
 import {
   buildCustomProviderBody,
   buildHaoCodeSettingsPatch,
+  buildModelImagePolicyPatch,
   DEFAULT_CUSTOM_PROVIDER_TYPE,
   DEFAULT_IMAGE_POLICY,
   extractCreatedProviderId,
   IMAGE_POLICIES,
   isImageVlmModelMissing,
   normalizeImagePolicy,
+  normalizeModelImagePolicies,
   parsePositiveIntOverride,
   parseProvidersPayload,
+  resolveModelImagePolicy,
   settingsNumberToInput,
   settingsVlmModelToInput,
   type ImagePolicy,
+  type ModelImagePolicies,
   type ProviderOption,
   type ProviderSources,
 } from './providerSettings';
@@ -107,6 +111,8 @@ export const ProvidersPage: React.FC = () => {
   const [haoCodeImagePolicy, setHaoCodeImagePolicy] = React.useState<ImagePolicy>(DEFAULT_IMAGE_POLICY);
   const [haoCodeImageVlmModel, setHaoCodeImageVlmModel] = React.useState('');
   const [haoCodeSettingsBusy, setHaoCodeSettingsBusy] = React.useState(false);
+  const [modelImagePolicies, setModelImagePolicies] = React.useState<ModelImagePolicies>({});
+  const [modelImagePolicyBusy, setModelImagePolicyBusy] = React.useState<string | null>(null);
   const [customName, setCustomName] = React.useState('');
   const [customBaseUrl, setCustomBaseUrl] = React.useState('');
   const [customProviderType, setCustomProviderType] = React.useState('');
@@ -240,6 +246,7 @@ export const ProvidersPage: React.FC = () => {
       setHaoCodeMaxTokens(settingsNumberToInput(payload?.maxTokens));
       setHaoCodeImagePolicy(normalizeImagePolicy(payload?.imagePolicy));
       setHaoCodeImageVlmModel(settingsVlmModelToInput(payload?.imageVlmModel));
+      setModelImagePolicies(normalizeModelImagePolicies(payload?.modelImagePolicies));
     }).catch((error) => {
       if (!cancelled) console.error('Failed to load HaoCode provider settings:', error);
     });
@@ -351,12 +358,38 @@ export const ProvidersPage: React.FC = () => {
       setHaoCodeMaxTokens(settingsNumberToInput(payload?.maxTokens));
       setHaoCodeImagePolicy(normalizeImagePolicy(payload?.imagePolicy));
       setHaoCodeImageVlmModel(settingsVlmModelToInput(payload?.imageVlmModel));
+      setModelImagePolicies(normalizeModelImagePolicies(payload?.modelImagePolicies));
       await reloadOpenCodeConfiguration({ scopes: ['providers'], mode: 'active' });
       toast.success(t('settings.providers.page.haocode.toast.saved'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('settings.providers.page.haocode.toast.saveFailed'));
     } finally {
       setHaoCodeSettingsBusy(false);
+    }
+  };
+
+  const handleSaveModelImagePolicy = async (providerId: string, modelId: string, policy: ImagePolicy | null) => {
+    const previous = modelImagePolicies;
+    const optimistic = { ...previous };
+    if (policy === null) delete optimistic[modelId];
+    else optimistic[modelId] = policy;
+    // Optimistic update; a failed PATCH restores the previous map.
+    setModelImagePolicies(optimistic);
+    setModelImagePolicyBusy(modelId);
+    try {
+      const response = await runtimeFetch(`/api/provider/${encodeURIComponent(providerId)}/settings`, {
+        method: 'PATCH',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildModelImagePolicyPatch(modelId, policy)),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || t('settings.providers.page.models.imagePolicy.saveFailed'));
+      setModelImagePolicies(normalizeModelImagePolicies(payload?.modelImagePolicies));
+    } catch (error) {
+      setModelImagePolicies(previous);
+      toast.error(error instanceof Error ? error.message : t('settings.providers.page.models.imagePolicy.saveFailed'));
+    } finally {
+      setModelImagePolicyBusy(null);
     }
   };
 
@@ -1418,6 +1451,49 @@ export const ProvidersPage: React.FC = () => {
                               </span>
                             ))}
                           </div>
+                        )}
+                        {modelId && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                disabled={modelImagePolicyBusy === modelId}
+                                aria-label={t('settings.providers.page.models.imagePolicy.ariaLabel', { model: modelName })}
+                                title={t('settings.providers.page.models.imagePolicy.ariaLabel', { model: modelName })}
+                                className="flex h-6 items-center gap-1 rounded px-1.5 text-muted-foreground hover:text-foreground hover:bg-[var(--interactive-hover)]/50 disabled:opacity-50"
+                              >
+                                <span className="typography-micro whitespace-nowrap">
+                                  {t(`settings.providers.page.haocode.imagePolicy.${resolveModelImagePolicy(modelImagePolicies, haoCodeImagePolicy, modelId)}`)}
+                                </span>
+                                <Icon name="arrow-down-s" className="h-3 w-3 flex-shrink-0 text-muted-foreground/50" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-[260px] p-1">
+                              <DropdownMenuItem
+                                onSelect={() => void handleSaveModelImagePolicy(selectedProvider.id, modelId, null)}
+                                className="flex items-center justify-between"
+                              >
+                                <span className="truncate">
+                                  {t('settings.providers.page.models.imagePolicy.inherit', { policy: t(`settings.providers.page.haocode.imagePolicy.${haoCodeImagePolicy}`) })}
+                                </span>
+                                {!modelImagePolicies[modelId] && (
+                                  <Icon name="check" className="h-4 w-4 text-[var(--primary-base)]" />
+                                )}
+                              </DropdownMenuItem>
+                              {IMAGE_POLICIES.map((policy) => (
+                                <DropdownMenuItem
+                                  key={policy}
+                                  onSelect={() => void handleSaveModelImagePolicy(selectedProvider.id, modelId, policy)}
+                                  className="flex items-center justify-between"
+                                >
+                                  <span className="truncate">{t(`settings.providers.page.haocode.imagePolicy.${policy}`)}</span>
+                                  {modelImagePolicies[modelId] === policy && (
+                                    <Icon name="check" className="h-4 w-4 text-[var(--primary-base)]" />
+                                  )}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         )}
                         <button
                           type="button"

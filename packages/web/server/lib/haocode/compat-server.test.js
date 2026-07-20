@@ -2122,12 +2122,109 @@ describe('HaoCode compatibility server', () => {
     expect(await get()).toMatchObject({ imagePolicy: 'ocr', imageVlmModel: null });
   });
 
+  test('validates and persists per-model image policy overrides through provider settings PATCH', async () => {
+    const runtime = await createRuntime();
+    const patch = (body) => fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const get = () => fetch(`${runtime.baseUrl}/provider/deepseek/settings`).then((response) => response.json());
+
+    expect(await get()).toMatchObject({ modelImagePolicies: {} });
+
+    expect((await patch({ modelImagePolicy: 'ocr' })).status).toBe(400);
+    expect((await patch({ modelImagePolicy: { policy: 'ocr' } })).status).toBe(400);
+    expect((await patch({ modelImagePolicy: { model: '  ', policy: 'ocr' } })).status).toBe(400);
+    expect((await patch({ modelImagePolicy: { model: 'deepseek-chat', policy: 'bogus' } })).status).toBe(400);
+    expect((await patch({ modelImagePolicy: { model: 'deepseek-chat', policy: 7 } })).status).toBe(400);
+    // A vlm override requires the provider-level vision model id.
+    expect((await patch({ modelImagePolicy: { model: 'deepseek-chat', policy: 'vlm' } })).status).toBe(400);
+    expect(await get()).toMatchObject({ modelImagePolicies: {} });
+
+    const set = await patch({ modelImagePolicy: { model: 'deepseek-chat', policy: 'ocr' } });
+    expect(set.status).toBe(200);
+    expect(await set.json()).toMatchObject({ modelImagePolicies: { 'deepseek-chat': 'ocr' } });
+    expect(await get()).toMatchObject({ modelImagePolicies: { 'deepseek-chat': 'ocr' } });
+
+    // Setting another model accumulates; clearing one keeps the rest.
+    expect((await patch({ modelImagePolicy: { model: 'deepseek-v4-flash', policy: 'drop' } })).status).toBe(200);
+    const cleared = await patch({ modelImagePolicy: { model: 'deepseek-chat', policy: null } });
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({ modelImagePolicies: { 'deepseek-v4-flash': 'drop' } });
+
+    // Clearing the last override removes the stored map.
+    expect((await patch({ modelImagePolicy: { model: 'deepseek-v4-flash', policy: null } })).status).toBe(200);
+    expect(await get()).toMatchObject({ modelImagePolicies: {} });
+
+    // A vlm override persists once the vision model is configured.
+    expect((await patch({ imageVlmModel: 'gpt-4o', modelImagePolicy: { model: 'deepseek-chat', policy: 'vlm' } })).status).toBe(200);
+    expect(await get()).toMatchObject({ imageVlmModel: 'gpt-4o', modelImagePolicies: { 'deepseek-chat': 'vlm' } });
+  });
+
   const readImagesProbePayload = async (runtime, sessionId) => {
     const records = await waitForAssistantStop(runtime.baseUrl, sessionId);
     return JSON.parse(records
       .find((record) => record.info.role === 'assistant')
       .parts.find((part) => part.type === 'text').text);
   };
+
+  test('per-model image policy overrides the provider default and falls back when cleared', async () => {
+    const calls = [];
+    const runtime = await createRuntime({
+      imageConverters: {
+        ocr: async (dataUri) => { calls.push(dataUri); return '覆盖模型文字'; },
+        caption: async () => { throw new Error('caption should not run'); },
+        vlm: async () => { throw new Error('vlm should not run'); },
+      },
+    });
+    await configureDeepSeek(runtime.baseUrl);
+    const patch = (body) => fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const dataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=';
+    const imageParts = (text) => [
+      { type: 'text', text },
+      { type: 'file', mime: 'image/png', url: dataUri, filename: 'shot.png' },
+    ];
+
+    // Provider default is native; the per-model ocr override wins for that model.
+    expect((await patch({ modelImagePolicy: { model: 'deepseek-chat', policy: 'ocr' } })).status).toBe(200);
+    const overrideSession = await createSession(runtime);
+    const overrideResponse = await prompt(runtime.baseUrl, runtime.project, overrideSession.id, 'images-probe override', {
+      model: { providerID: 'deepseek', modelID: 'deepseek-chat' },
+      parts: imageParts('images-probe override'),
+    });
+    expect(overrideResponse.status).toBe(200);
+    const overridePayload = await readImagesProbePayload(runtime, overrideSession.id);
+    expect(calls).toEqual([dataUri]);
+    expect(overridePayload.images).toBeNull();
+    expect(overridePayload.prompt).toContain('[图片 shot.png: 覆盖模型文字]');
+
+    // Other models still follow the provider default (native).
+    const defaultSession = await createSession(runtime);
+    const defaultResponse = await prompt(runtime.baseUrl, runtime.project, defaultSession.id, 'images-probe default', {
+      parts: imageParts('images-probe default'),
+    });
+    expect(defaultResponse.status).toBe(200);
+    const defaultPayload = await readImagesProbePayload(runtime, defaultSession.id);
+    expect(calls).toEqual([dataUri]);
+    expect(defaultPayload.images).toEqual([dataUri]);
+
+    // Clearing the override falls back to the provider default again.
+    expect((await patch({ modelImagePolicy: { model: 'deepseek-chat', policy: null } })).status).toBe(200);
+    const clearedSession = await createSession(runtime);
+    const clearedResponse = await prompt(runtime.baseUrl, runtime.project, clearedSession.id, 'images-probe cleared', {
+      model: { providerID: 'deepseek', modelID: 'deepseek-chat' },
+      parts: imageParts('images-probe cleared'),
+    });
+    expect(clearedResponse.status).toBe(200);
+    const clearedPayload = await readImagesProbePayload(runtime, clearedSession.id);
+    expect(calls).toEqual([dataUri]);
+    expect(clearedPayload.images).toEqual([dataUri]);
+  });
 
   test('converts images to prompt text and withholds them under the ocr image policy', async () => {
     const calls = [];
