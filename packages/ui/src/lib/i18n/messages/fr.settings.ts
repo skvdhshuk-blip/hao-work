@@ -1279,7 +1279,7 @@ export const settingsDict = {
   'settings.providers.page.haocode.imagePolicyDescription': 'Choisissez comment les images sont traitées avant d’être envoyées au modèle. Pour les modèles sans prise en charge des images, utilisez l’OCR, une description d’image ou un modèle désigné. Chaque modèle peut remplacer ce réglage par défaut dans la liste des modèles.',
   'settings.providers.page.haocode.imagePolicy.native': 'Envoi natif',
   'settings.providers.page.haocode.imagePolicy.ocr': 'Reconnaissance OCR (intégrée)',
-  'settings.providers.page.haocode.imagePolicy.caption': 'Description d’image (petit modèle intégré)',
+  'settings.providers.page.haocode.imagePolicy.caption': 'OCR + description d’image (intégré)',
   'settings.providers.page.haocode.imagePolicy.vlm': 'Reformulation par un modèle désigné (VLM)',
   'settings.providers.page.haocode.imagePolicy.drop': 'Ignorer les images',
   'settings.providers.page.models.imagePolicy.inherit': 'Hériter ({policy})',

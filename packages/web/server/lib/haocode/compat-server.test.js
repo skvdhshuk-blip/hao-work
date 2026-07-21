@@ -2532,3 +2532,56 @@ describe('message id ordering for revert visibility', () => {
     expect(secondAssistant.info.id > secondUserId).toBe(true);
   });
 });
+
+describe('caption image policy runs OCR and caption combined', () => {
+  const dataUri = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=';
+  const imageParts = (text) => [
+    { type: 'text', text },
+    { type: 'file', mime: 'image/png', url: dataUri, filename: 'shot.png' },
+  ];
+  const setup = async (converters) => {
+    const runtime = await createRuntime({ imageConverters: { vlm: async () => { throw new Error('vlm should not run'); }, ...converters } });
+    await configureDeepSeek(runtime.baseUrl);
+    const response = await fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imagePolicy: 'caption' }),
+    });
+    expect(response.status).toBe(200);
+    return runtime;
+  };
+  const readPayload = async (runtime, sessionId) => {
+    const records = await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${sessionId}/message`).then((item) => item.json());
+      return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
+    });
+    return JSON.parse(records.find((record) => record.info.role === 'assistant').parts.find((part) => part.type === 'text').text);
+  };
+
+  test('combines OCR text and scene description into one prompt section', async () => {
+    const runtime = await setup({
+      ocr: async () => '图中文字',
+      caption: async () => 'a screenshot of a chart',
+    });
+    const session = await createSession(runtime);
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'images-probe combined', { parts: imageParts('images-probe combined') });
+    expect(response.status).toBe(200);
+    const payload = await readPayload(runtime, session.id);
+    expect(payload.images).toBeNull();
+    expect(payload.prompt).toContain('[识别文字]\n图中文字');
+    expect(payload.prompt).toContain('[画面描述]\na screenshot of a chart');
+  });
+
+  test('degrades to the surviving section when one half fails', async () => {
+    const runtime = await setup({
+      ocr: async () => { throw new Error('ocr broke'); },
+      caption: async () => 'a screenshot of a chart',
+    });
+    const session = await createSession(runtime);
+    const response = await prompt(runtime.baseUrl, runtime.project, session.id, 'images-probe degraded', { parts: imageParts('images-probe degraded') });
+    expect(response.status).toBe(200);
+    const payload = await readPayload(runtime, session.id);
+    expect(payload.prompt).not.toContain('[识别文字]');
+    expect(payload.prompt).toContain('[画面描述]\na screenshot of a chart');
+  });
+});

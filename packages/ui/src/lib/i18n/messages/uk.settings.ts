@@ -1354,7 +1354,7 @@ export const settingsDict = {
   "settings.providers.page.haocode.imagePolicyDescription": "Виберіть, як зображення обробляються перед надсиланням моделі. Для моделей без підтримки зображень використовуйте OCR, опис зображення або вказану модель. Окремі моделі можуть перевизначити це значення за замовчуванням у списку моделей нижче.",
   "settings.providers.page.haocode.imagePolicy.native": "Нативне надсилання",
   "settings.providers.page.haocode.imagePolicy.ocr": "Розпізнавання OCR (вбудоване)",
-  "settings.providers.page.haocode.imagePolicy.caption": "Опис зображення (вбудована мала модель)",
+  "settings.providers.page.haocode.imagePolicy.caption": "OCR + опис зображення (вбудований)",
   "settings.providers.page.haocode.imagePolicy.vlm": "Перефразування вказаною моделлю (VLM)",
   "settings.providers.page.haocode.imagePolicy.drop": "Відкинути зображення",
   "settings.providers.page.models.imagePolicy.inherit": "Успадкувати ({policy})",

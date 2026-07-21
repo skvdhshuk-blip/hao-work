@@ -1354,7 +1354,7 @@ export const settingsDict = {
   'settings.providers.page.haocode.imagePolicyDescription': '모델로 보내기 전에 이미지를 처리하는 방식을 선택합니다. 이미지를 지원하지 않는 모델은 OCR, 이미지 설명 또는 지정 모델 변환을 사용할 수 있습니다. 아래 모델 목록에서 모델별로 이 기본값을 재정의할 수 있습니다.',
   'settings.providers.page.haocode.imagePolicy.native': '네이티브 전송',
   'settings.providers.page.haocode.imagePolicy.ocr': 'OCR 인식 (내장)',
-  'settings.providers.page.haocode.imagePolicy.caption': '이미지 설명 (내장 소형 모델)',
+  'settings.providers.page.haocode.imagePolicy.caption': 'OCR + 이미지 설명 병용 (내장)',
   'settings.providers.page.haocode.imagePolicy.vlm': '지정 모델로 변환 (VLM)',
   'settings.providers.page.haocode.imagePolicy.drop': '이미지 버리기',
   'settings.providers.page.models.imagePolicy.inherit': '상속 ({policy})',

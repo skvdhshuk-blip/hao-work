@@ -6,7 +6,8 @@
 //   @gutenye/ocr-node) fully offline — no downloads, strong Chinese quality.
 // - `caption` runs a small image-captioning model through
 //   @xenova/transformers (weights lazily downloaded into
-//   `<dataDir>/haocode/models/`).
+//   `<dataDir>/haocode/models/`). The `caption` policy in compat-server
+//   combines it with OCR: both run and each contributes a section.
 // - `vlm` asks a vision-capable model through the provider's own chat
 //   completions / messages endpoint.
 //

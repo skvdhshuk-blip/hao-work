@@ -1403,7 +1403,7 @@ export const settingsDict = {
   'settings.providers.page.haocode.imagePolicyDescription': 'Wybierz, jak obrazy są przetwarzane przed wysłaniem do modelu. Dla modeli bez obsługi obrazów użyj OCR, opisu obrazu lub wskazanego modelu. Poszczególne modele mogą zastąpić to ustawienie domyślne na liście modeli poniżej.',
   'settings.providers.page.haocode.imagePolicy.native': 'Wysyłanie natywne',
   'settings.providers.page.haocode.imagePolicy.ocr': 'Rozpoznawanie OCR (wbudowane)',
-  'settings.providers.page.haocode.imagePolicy.caption': 'Opis obrazu (wbudowany mały model)',
+  'settings.providers.page.haocode.imagePolicy.caption': 'OCR + opis obrazu (wbudowany)',
   'settings.providers.page.haocode.imagePolicy.vlm': 'Przekazanie przez wskazany model (VLM)',
   'settings.providers.page.haocode.imagePolicy.drop': 'Odrzuć obrazy',
   'settings.providers.page.models.imagePolicy.inherit': 'Dziedzicz ({policy})',

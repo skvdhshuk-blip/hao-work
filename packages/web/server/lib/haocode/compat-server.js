@@ -892,13 +892,32 @@ export const createHaoCodeCompatibilityServer = ({
   // Convert one image to text per the provider's image policy. A failed or
   // timed-out conversion degrades to a placeholder line instead of blocking
   // the conversation; the image itself is never forwarded after conversion.
+  // The 'caption' policy is a combined pass: OCR extracts embedded text and
+  // the caption model describes the scene; whichever half succeeds
+  // contributes its section, and only a double failure degrades.
   const convertImageToText = async (policy, dataUri, vlm) => {
     try {
+      if (policy === 'caption') {
+        const [ocrResult, captionResult] = await Promise.allSettled([
+          withTimeout(converters.ocr(dataUri), IMAGE_CONVERT_TIMEOUT_MS, 'image ocr conversion'),
+          withTimeout(converters.caption(dataUri), IMAGE_CONVERT_TIMEOUT_MS, 'image caption conversion'),
+        ]);
+        const sections = [];
+        if (ocrResult.status === 'fulfilled' && ocrResult.value?.trim()) {
+          sections.push(`[识别文字]\n${ocrResult.value.trim()}`);
+        } else if (ocrResult.status === 'rejected') {
+          logger.warn?.(`[HaoCode compat] image ocr conversion failed: ${ocrResult.reason?.message}`);
+        }
+        if (captionResult.status === 'fulfilled' && captionResult.value?.trim()) {
+          sections.push(`[画面描述]\n${captionResult.value.trim()}`);
+        } else if (captionResult.status === 'rejected') {
+          logger.warn?.(`[HaoCode compat] image caption conversion failed: ${captionResult.reason?.message}`);
+        }
+        return sections.length ? sections.join('\n') : IMAGE_CONVERT_FALLBACK_TEXT;
+      }
       const task = policy === 'ocr'
         ? converters.ocr(dataUri)
-        : policy === 'caption'
-          ? converters.caption(dataUri)
-          : converters.vlm(dataUri, vlm);
+        : converters.vlm(dataUri, vlm);
       const text = await withTimeout(task, IMAGE_CONVERT_TIMEOUT_MS, `image ${policy} conversion`);
       return typeof text === 'string' && text.trim() ? text.trim() : IMAGE_CONVERT_FALLBACK_TEXT;
     } catch (error) {

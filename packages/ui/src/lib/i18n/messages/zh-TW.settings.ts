@@ -1266,7 +1266,7 @@ export const settingsDict = {
   'settings.providers.page.haocode.imagePolicyDescription': '選擇圖片傳送給模型前的預設處理方式。對不支援圖片的模型，可改用 OCR、圖片描述或指定模型轉述。可在下方模型列表中為個別模型覆寫此預設值。',
   'settings.providers.page.haocode.imagePolicy.native': '原生傳送',
   'settings.providers.page.haocode.imagePolicy.ocr': 'OCR 辨識（內建）',
-  'settings.providers.page.haocode.imagePolicy.caption': '圖片描述（內建小模型）',
+  'settings.providers.page.haocode.imagePolicy.caption': 'OCR + 圖片描述聯用（內建）',
   'settings.providers.page.haocode.imagePolicy.vlm': '指定模型轉述 (VLM)',
   'settings.providers.page.haocode.imagePolicy.drop': '捨棄圖片',
   'settings.providers.page.models.imagePolicy.inherit': '繼承（{policy}）',

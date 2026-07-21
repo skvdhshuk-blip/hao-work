@@ -1387,7 +1387,7 @@ export const settingsDict = {
   'settings.providers.page.haocode.imagePolicyDescription': 'モデルへ送信する前の画像の処理方法を選択します。画像に対応しないモデルでは OCR、画像説明、または指定モデルによる言い換えを使用できます。下のモデル一覧でモデルごとにこのデフォルトを上書きできます。',
   'settings.providers.page.haocode.imagePolicy.native': 'ネイティブ送信',
   'settings.providers.page.haocode.imagePolicy.ocr': 'OCR 認識（内蔵）',
-  'settings.providers.page.haocode.imagePolicy.caption': '画像説明（内蔵小モデル）',
+  'settings.providers.page.haocode.imagePolicy.caption': 'OCR + 画像説明の併用（内蔵）',
   'settings.providers.page.haocode.imagePolicy.vlm': '指定モデルで言い換え (VLM)',
   'settings.providers.page.haocode.imagePolicy.drop': '画像を破棄',
   'settings.providers.page.models.imagePolicy.inherit': '継承（{policy}）',

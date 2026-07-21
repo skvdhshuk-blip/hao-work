@@ -1387,7 +1387,7 @@ export const settingsDict = {
   'settings.providers.page.haocode.imagePolicyDescription': 'Choose how images are processed before they are sent to the model. Use OCR, caption, or a VLM pass-through for models without image support. Individual models can override this default in the model list below.',
   'settings.providers.page.haocode.imagePolicy.native': 'Send images natively',
   'settings.providers.page.haocode.imagePolicy.ocr': 'OCR to text (built-in)',
-  'settings.providers.page.haocode.imagePolicy.caption': 'Image caption (built-in small model)',
+  'settings.providers.page.haocode.imagePolicy.caption': 'OCR + image caption (built-in)',
   'settings.providers.page.haocode.imagePolicy.vlm': 'Describe with a specified model (VLM)',
   'settings.providers.page.haocode.imagePolicy.drop': 'Drop images',
   'settings.providers.page.models.imagePolicy.inherit': 'Inherit ({policy})',
