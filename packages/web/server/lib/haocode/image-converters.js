@@ -25,6 +25,7 @@ const VLM_DESCRIBE_PROMPT = '用中文简要描述这张图片的内容，50 字
 
 const OPENAI_VLM_MAX_TOKENS = 256;
 const ANTHROPIC_VLM_VERSION = '2023-06-01';
+const DEFAULT_VLM_REQUEST_TIMEOUT_MS = 60_000;
 
 // Parse a `data:<mime>;base64,<payload>` URI. Returns null for non-base64 or
 // non-data payloads (file paths and remote URLs are not supported by the
@@ -35,10 +36,22 @@ const parseDataUri = (dataUri) => {
   return { mimeType: match[1] || 'image/png', base64: match[2] };
 };
 
+const endpointUrl = (baseUrl, resourcePath, { apiVersion = '' } = {}) => {
+  const url = new URL(baseUrl.trim());
+  let prefix = url.pathname.replace(/\/+$/, '');
+  const versionPath = apiVersion ? `/${apiVersion.replace(/^\/+|\/+$/g, '')}` : '';
+  if (versionPath && !prefix.endsWith(versionPath)) prefix = `${prefix}${versionPath}`;
+  url.pathname = `${prefix}${resourcePath}`;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+};
+
 export const createImageConverters = ({
   dataDir,
   logger = console,
   fetchImpl = globalThis.fetch?.bind(globalThis),
+  vlmRequestTimeoutMs = DEFAULT_VLM_REQUEST_TIMEOUT_MS,
 }) => {
   const modelsDir = path.join(dataDir, 'haocode', 'models');
   let rapidOcrPromise = null;
@@ -147,6 +160,27 @@ export const createImageConverters = ({
     return typeof text === 'string' ? text.trim() : '';
   });
 
+  const fetchVlm = async (url, init) => {
+    const timeoutMs = Number(vlmRequestTimeoutMs);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return fetchImpl(url, init);
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`VLM request timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        fetchImpl(url, { ...init, signal: controller.signal }),
+        timeout,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   // Ask a vision-capable model on the provider's own endpoint to describe the
   // image. OpenAI-compatible providers receive chat/completions with an
   // image_url part; anthropic providers receive /v1/messages with a base64
@@ -156,11 +190,10 @@ export const createImageConverters = ({
     if (typeof model !== 'string' || !model.trim()) throw new Error('VLM image description requires a model id.');
     if (typeof baseUrl !== 'string' || !baseUrl.trim()) throw new Error('VLM image description requires a base URL.');
     if (typeof fetchImpl !== 'function') throw new Error('VLM image description requires fetch.');
-    const root = baseUrl.trim().replace(/\/+$/, '');
     if (providerType === 'anthropic') {
       const parsed = parseDataUri(dataUri);
       if (!parsed) throw new Error('Anthropic VLM description requires a base64 data URI.');
-      const response = await fetchImpl(`${root}/v1/messages`, {
+      const response = await fetchVlm(endpointUrl(baseUrl, '/messages', { apiVersion: 'v1' }), {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -189,7 +222,11 @@ export const createImageConverters = ({
       if (!text) throw new Error('VLM response did not include a description.');
       return text;
     }
-    const response = await fetchImpl(`${root}/chat/completions`, {
+    const response = await fetchVlm(endpointUrl(baseUrl, '/chat/completions', {
+      // The built-in OpenAI provider stores only the API origin. Custom OpenAI
+      // gateways may already end in /v1; endpointUrl avoids duplicating it.
+      apiVersion: providerType === 'openai' ? 'v1' : '',
+    }), {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
