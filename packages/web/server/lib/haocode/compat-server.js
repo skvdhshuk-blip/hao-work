@@ -889,36 +889,47 @@ export const createHaoCodeCompatibilityServer = ({
   const supervisor = createWorkerSupervisor(workerOptions);
   const converters = imageConverters ?? createImageConverters({ dataDir, logger, fetchImpl });
 
+  // onnxruntime-node backs BOTH the OCR engine and the caption pipeline, and
+  // concurrent native InferenceSession loads segfault the host process
+  // (observed on packaged Electron: EXC_BAD_ACCESS in
+  // InferenceSessionWrap::LoadModel when OCR and caption loaded in parallel).
+  // Serialize every local converter call through one process-wide queue.
+  let localConversionQueue = Promise.resolve();
+  const enqueueLocalConversion = (task) => {
+    const run = localConversionQueue.then(task, task);
+    localConversionQueue = run.then(() => undefined, () => undefined);
+    return run;
+  };
+  const runLocalConversion = async (label, task, sections, heading) => {
+    try {
+      const text = await withTimeout(enqueueLocalConversion(task), IMAGE_CONVERT_TIMEOUT_MS, `image ${label} conversion`);
+      if (typeof text === 'string' && text.trim()) sections.push(heading ? `${heading}\n${text.trim()}` : text.trim());
+    } catch (error) {
+      logger.warn?.(`[HaoCode compat] image ${label} conversion failed: ${error.message}`);
+    }
+  };
   // Convert one image to text per the provider's image policy. A failed or
   // timed-out conversion degrades to a placeholder line instead of blocking
   // the conversation; the image itself is never forwarded after conversion.
   // The 'caption' policy is a combined pass: OCR extracts embedded text and
   // the caption model describes the scene; whichever half succeeds
-  // contributes its section, and only a double failure degrades.
+  // contributes its section, and only a double failure degrades. The two
+  // halves run sequentially (see the queue note above).
   const convertImageToText = async (policy, dataUri, vlm) => {
     try {
       if (policy === 'caption') {
-        const [ocrResult, captionResult] = await Promise.allSettled([
-          withTimeout(converters.ocr(dataUri), IMAGE_CONVERT_TIMEOUT_MS, 'image ocr conversion'),
-          withTimeout(converters.caption(dataUri), IMAGE_CONVERT_TIMEOUT_MS, 'image caption conversion'),
-        ]);
         const sections = [];
-        if (ocrResult.status === 'fulfilled' && ocrResult.value?.trim()) {
-          sections.push(`[识别文字]\n${ocrResult.value.trim()}`);
-        } else if (ocrResult.status === 'rejected') {
-          logger.warn?.(`[HaoCode compat] image ocr conversion failed: ${ocrResult.reason?.message}`);
-        }
-        if (captionResult.status === 'fulfilled' && captionResult.value?.trim()) {
-          sections.push(`[画面描述]\n${captionResult.value.trim()}`);
-        } else if (captionResult.status === 'rejected') {
-          logger.warn?.(`[HaoCode compat] image caption conversion failed: ${captionResult.reason?.message}`);
-        }
+        await runLocalConversion('ocr', () => converters.ocr(dataUri), sections, '[识别文字]');
+        await runLocalConversion('caption', () => converters.caption(dataUri), sections, '[画面描述]');
         return sections.length ? sections.join('\n') : IMAGE_CONVERT_FALLBACK_TEXT;
       }
-      const task = policy === 'ocr'
-        ? converters.ocr(dataUri)
-        : converters.vlm(dataUri, vlm);
-      const text = await withTimeout(task, IMAGE_CONVERT_TIMEOUT_MS, `image ${policy} conversion`);
+      if (policy === 'ocr') {
+        const sections = [];
+        await runLocalConversion('ocr', () => converters.ocr(dataUri), sections, null);
+        const [only] = sections;
+        return only?.trim() ? only.trim() : IMAGE_CONVERT_FALLBACK_TEXT;
+      }
+      const text = await withTimeout(converters.vlm(dataUri, vlm), IMAGE_CONVERT_TIMEOUT_MS, 'image vlm conversion');
       return typeof text === 'string' && text.trim() ? text.trim() : IMAGE_CONVERT_FALLBACK_TEXT;
     } catch (error) {
       logger.warn?.(`[HaoCode compat] image ${policy} conversion failed: ${error.message}`);
