@@ -7,7 +7,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { createHaoCodeStore, createId, projectIdForDirectory } from './store.js';
+import { createHaoCodeStore, createId, createMessageId, projectIdForDirectory } from './store.js';
 import { createImageConverters } from './image-converters.js';
 import { createWorkerSupervisor } from './worker-supervisor.js';
 import { getModelsMetadata } from '../opencode/models-metadata.js';
@@ -1764,7 +1764,7 @@ export const createHaoCodeCompatibilityServer = ({
   };
 
   const runSession = async ({ session, parentMessageId, providerId, modelId, request }) => {
-    const assistantId = createId('msg');
+    const assistantId = createMessageId();
     const now = Date.now();
     const assistant = {
       id: assistantId,
@@ -2803,7 +2803,7 @@ export const createHaoCodeCompatibilityServer = ({
       runPrompt = [prompt, ...descriptions].join('\n\n');
       forwardImages = [];
     }
-    const messageId = request.body?.messageID || createId('msg');
+    const messageId = request.body?.messageID || createMessageId();
     const now = Date.now();
     const user = {
       id: messageId,

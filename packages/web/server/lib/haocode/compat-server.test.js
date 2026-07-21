@@ -2485,3 +2485,50 @@ describe('session revert/unrevert endpoints', () => {
     expect(body.error).toMatch(/Message not found/);
   });
 });
+
+describe('message id ordering for revert visibility', () => {
+  const promptWithoutId = (baseUrl, project, sessionId, text) => fetch(
+    `${baseUrl}/session/${sessionId}/prompt_async?directory=${encodeURIComponent(project)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: { providerID: 'deepseek', modelID: 'deepseek-v4-flash' },
+        agent: 'build',
+        parts: [{ type: 'text', text }],
+      }),
+    },
+  );
+
+  test('server-generated ids stay lexicographically ascending so revert keeps earlier turns', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    expect((await promptWithoutId(runtime.baseUrl, runtime.project, session.id, 'first')).status).toBe(200);
+    await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+      return messages.some((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
+    });
+    expect((await promptWithoutId(runtime.baseUrl, runtime.project, session.id, 'second')).status).toBe(200);
+    const records = await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+      const assistants = messages.filter((record) => record.info.role === 'assistant' && record.info.finish === 'stop');
+      return assistants.length >= 2 ? messages : null;
+    });
+
+    const ids = records.map((record) => record.info.id);
+    const sorted = [...ids].sort();
+    expect(ids).toEqual(sorted);
+
+    // Reverting at the second user message must keep the entire first turn
+    // visible under the UI's `message.id < revertMessageID` filter.
+    const secondUserId = records.filter((record) => record.info.role === 'user')[1].info.id;
+    const visible = records.filter((record) => record.info.id < secondUserId);
+    expect(visible.some((record) => record.info.role === 'assistant')).toBe(true);
+
+    // And the server assistant id of the second turn sorts after the prompt.
+    const secondAssistant = records.filter((record) => record.info.role === 'assistant')[1];
+    expect(secondAssistant.info.id > secondUserId).toBe(true);
+  });
+});

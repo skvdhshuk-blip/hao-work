@@ -41,6 +41,27 @@ const normalizeState = (decoded) => ({
 
 export const createId = (prefix) => `${prefix}_${Date.now().toString(36)}${crypto.randomBytes(8).toString('hex')}`;
 
+// Message IDs must sort lexicographically by creation time: the UI derives
+// revert visibility from `message.id < session.revert.messageID` and the
+// renderer generates user-message IDs as `msg_<12-hex timestamp*0x1000>`
+// (6-byte big-endian, wrapping mod 2^48). Plain `createId('msg')` uses a
+// base36 timestamp which compares GREATER than the hex scheme, so any
+// revert would hide every server-generated assistant message. Mirror the
+// renderer scheme here, with the counter starting high so a server message
+// created in the same millisecond as its user prompt still sorts after it.
+let lastMessageIdTimestamp = 0;
+let messageIdCounter = 0;
+export const createMessageId = () => {
+  const timestamp = Date.now();
+  if (timestamp !== lastMessageIdTimestamp) {
+    lastMessageIdTimestamp = timestamp;
+    messageIdCounter = 0x800;
+  }
+  messageIdCounter += 1;
+  const sortable = (BigInt(timestamp) * BigInt(0x1000) + BigInt(messageIdCounter)) & ((BigInt(1) << BigInt(48)) - BigInt(1));
+  return `msg_${sortable.toString(16).padStart(12, '0')}${crypto.randomBytes(8).toString('hex')}`;
+};
+
 export const projectIdForDirectory = (directory) => `project_${crypto.createHash('sha1').update(directory).digest('hex').slice(0, 16)}`;
 
 export const createHaoCodeStore = ({ rootDir, logger = console }) => {
