@@ -2656,6 +2656,46 @@ export const createHaoCodeCompatibilityServer = ({
     publish(updated.directory, event('session.updated', { sessionID: updated.id, info: updated }));
     return response.json(updated);
   });
+  // Session-level revert marker. The UI derives hidden messages from
+  // session.revert.messageID, so this only records intent on the session —
+  // it does NOT restore files (no snapshot infrastructure in this server).
+  app.post('/session/:sessionID/revert', async (request, response) => {
+    const messageID = typeof request.body?.messageID === 'string' ? request.body.messageID : '';
+    if (!messageID) return response.status(400).json({ error: 'messageID is required.' });
+    const partID = typeof request.body?.partID === 'string' ? request.body.partID : null;
+    let updated = null;
+    let messageFound = false;
+    await store.mutate((state) => {
+      const session = state.sessions.find((item) => item.id === request.params.sessionID);
+      if (!session) return;
+      const records = state.messages[session.id] ?? [];
+      messageFound = records.some((record) => record?.info?.id === messageID);
+      if (!messageFound) return;
+      session.revert = { messageID, ...(partID ? { partID } : {}) };
+      session.time.updated = Date.now();
+      updated = { ...session };
+    });
+    if (!messageFound) {
+      const session = await store.getSession(request.params.sessionID);
+      if (!session) return response.status(404).json({ error: 'Session not found.' });
+      return response.status(400).json({ error: 'Message not found.' });
+    }
+    publish(updated.directory, event('session.updated', { sessionID: updated.id, info: updated }));
+    return response.json(updated);
+  });
+  app.post('/session/:sessionID/unrevert', async (request, response) => {
+    let updated = null;
+    await store.mutate((state) => {
+      const session = state.sessions.find((item) => item.id === request.params.sessionID);
+      if (!session) return;
+      delete session.revert;
+      session.time.updated = Date.now();
+      updated = { ...session };
+    });
+    if (!updated) return response.status(404).json({ error: 'Session not found.' });
+    publish(updated.directory, event('session.updated', { sessionID: updated.id, info: updated }));
+    return response.json(updated);
+  });
   app.delete('/session/:sessionID', async (request, response) => {
     let removed = null;
     supervisor.abort(request.params.sessionID);

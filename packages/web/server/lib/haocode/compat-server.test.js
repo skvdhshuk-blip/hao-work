@@ -139,7 +139,7 @@ if (request.action === 'resume_interrupt') {
   const runtime = createHaoCodeCompatibilityServer({
     dataDir,
     logger: { log() {}, error() {} },
-    workerOptions: { phpBinary: process.execPath, workerPath: worker },
+    workerOptions: { phpBinary: process.execPath, phpArgs: [], workerPath: worker },
     modelsMetadataLoader,
     ...serverOptions,
   });
@@ -617,7 +617,7 @@ describe('HaoCode compatibility server', () => {
     const restarted = createHaoCodeCompatibilityServer({
       dataDir: fixture.dataDir,
       logger: { log() {}, error() {} },
-      workerOptions: { phpBinary: process.execPath, workerPath: fixture.worker },
+      workerOptions: { phpBinary: process.execPath, phpArgs: [], workerPath: fixture.worker },
     });
     await restarted.start();
     runtimes.push(restarted);
@@ -2424,5 +2424,64 @@ describe('HaoCode compatibility server', () => {
       providerType: 'openai_chat',
       model: 'gpt-4o',
     })).rejects.toThrow('429');
+  });
+});
+
+describe('session revert/unrevert endpoints', () => {
+  const postJson = (url, body) => fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+
+  const firstMessageId = async (baseUrl, sessionId) => {
+    const records = await waitFor(async () => {
+      const messages = await fetch(`${baseUrl}/session/${sessionId}/message`).then((item) => item.json());
+      return messages.length ? messages : null;
+    });
+    return records[0].info.id;
+  };
+
+  test('revert sets a session-level marker and unrevert clears it', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'hello')).status).toBe(200);
+    const messageId = await firstMessageId(runtime.baseUrl, session.id);
+
+    const reverted = await postJson(`${runtime.baseUrl}/session/${session.id}/revert`, { messageID: messageId, partID: 'part_1' })
+      .then((item) => item.json());
+    expect(reverted.revert).toEqual({ messageID: messageId, partID: 'part_1' });
+
+    const listed = await fetch(`${runtime.baseUrl}/session?directory=${encodeURIComponent(runtime.project)}`).then((item) => item.json());
+    expect(listed.find((item) => item.id === session.id).revert.messageID).toBe(messageId);
+
+    const unreverted = await postJson(`${runtime.baseUrl}/session/${session.id}/unrevert`).then((item) => item.json());
+    expect(unreverted.revert).toBeUndefined();
+  });
+
+  test('revert rejects unknown sessions with 404', async () => {
+    const runtime = await createRuntime();
+    const response = await postJson(`${runtime.baseUrl}/session/sess_missing/revert`, { messageID: 'msg_x' });
+    expect(response.status).toBe(404);
+  });
+
+  test('unrevert rejects unknown sessions with 404', async () => {
+    const runtime = await createRuntime();
+    const response = await postJson(`${runtime.baseUrl}/session/sess_missing/unrevert`);
+    expect(response.status).toBe(404);
+  });
+
+  test('revert requires messageID and rejects unknown messages with 400', async () => {
+    const runtime = await createRuntime();
+    const session = await createSession(runtime);
+
+    const missing = await postJson(`${runtime.baseUrl}/session/${session.id}/revert`);
+    expect(missing.status).toBe(400);
+
+    const unknownMessage = await postJson(`${runtime.baseUrl}/session/${session.id}/revert`, { messageID: 'msg_nope' });
+    expect(unknownMessage.status).toBe(400);
+    const body = await unknownMessage.json();
+    expect(body.error).toMatch(/Message not found/);
   });
 });

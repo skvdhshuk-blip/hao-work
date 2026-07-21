@@ -23,6 +23,7 @@ afterEach(async () => {
 
 const supervisorFor = (workerPath, options = {}) => createWorkerSupervisor({
   phpBinary: process.execPath,
+  phpArgs: [],
   workerPath,
   abortGraceMs: 50,
   ...options,
@@ -176,4 +177,39 @@ test('stops delivering later events from the same chunk after a protocol failure
 
   expect(events).toHaveLength(1);
   expect(events[0]?.type).toBe('error');
+});
+
+test('skips PHP warning/notice lines instead of failing the run', async () => {
+  const { root, workerPath } = await fixture(`
+    for await (const _chunk of process.stdin) {}
+    process.stdout.write('Warning: Undefined array key "images" in worker.php on line 142\\n');
+    process.stdout.write('PHP Notice: Something harmless\\n');
+    process.stdout.write(JSON.stringify({ type: 'result', text: 'ok' }) + '\\n');
+  `);
+  const events = [];
+  const supervisor = supervisorFor(workerPath);
+
+  const result = await supervisor.run({
+    sessionId: 'php-noise',
+    request: { cwd: root },
+    onEvent: (event) => events.push(event),
+  });
+
+  expect(result.code).toBe(0);
+  expect(events).toEqual([{ type: 'result', text: 'ok' }]);
+});
+
+test('reports skipped PHP noise when the worker later fails', async () => {
+  const { root, workerPath } = await fixture(`
+    for await (const _chunk of process.stdin) {}
+    process.stdout.write('Deprecated: old thing\\n');
+    process.exit(1);
+  `);
+  const supervisor = supervisorFor(workerPath);
+
+  await expect(supervisor.run({
+    sessionId: 'php-noise-fail',
+    request: { cwd: root },
+    onEvent: () => {},
+  })).rejects.toThrow(/1 PHP warning\/notice line\(s\) skipped/);
 });

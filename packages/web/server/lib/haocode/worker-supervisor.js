@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_MAX_EVENT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_ABORT_GRACE_MS = 1500;
+// Lines PHP prints outside the protocol when display_errors leaks to stdout.
+const PHP_NOISE_PATTERN = /^(?:PHP )?(?:Warning|Notice|Deprecated|Strict standards)\b/i;
 
 const appendChunk = (state, chunk, onLine, maxEventBytes) => {
   // StringDecoder retains an incomplete UTF-8 sequence between pipe chunks;
@@ -30,6 +32,10 @@ const appendChunk = (state, chunk, onLine, maxEventBytes) => {
 
 export const createWorkerSupervisor = ({
   phpBinary = process.env.HAOWORK_PHP_BINARY || 'php',
+  // Force PHP runtime warnings/notices to stderr. The bundled NativePHP
+  // build ships display_errors=STDOUT, which would otherwise print straight
+  // into the JSON-lines channel and corrupt the worker protocol.
+  phpArgs = ['-d', 'display_errors=stderr'],
   workerPath = path.resolve(__dirname, '../../../../haocode-bridge/worker.php'),
   autoloadPath = process.env.HAOWORK_HAOCODE_AUTOLOAD || '',
   maxEventBytes = DEFAULT_MAX_EVENT_BYTES,
@@ -43,7 +49,7 @@ export const createWorkerSupervisor = ({
       return;
     }
 
-    const child = spawn(phpBinary, [workerPath], {
+    const child = spawn(phpBinary, [...phpArgs, workerPath], {
       cwd: request.cwd,
       env: {
         ...process.env,
@@ -53,6 +59,7 @@ export const createWorkerSupervisor = ({
     });
     const stdout = { buffer: '', decoder: new StringDecoder('utf8') };
     let stderr = '';
+    let phpNoiseLines = 0;
     let settled = false;
     let protocolError = null;
     let resolveExit;
@@ -104,6 +111,14 @@ export const createWorkerSupervisor = ({
 
     const deliverLine = (line) => {
       if (protocolError) return;
+      // PHP runtimes configured with display_errors=STDOUT (e.g. the bundled
+      // NativePHP build, or an SDK echo) print warnings straight into the
+      // JSON-lines channel. They are noise, not protocol violations — skip
+      // them so a harmless E_WARNING never kills a conversation.
+      if (PHP_NOISE_PATTERN.test(line)) {
+        phpNoiseLines += 1;
+        return;
+      }
       let message;
       try {
         message = JSON.parse(line);
@@ -165,7 +180,8 @@ export const createWorkerSupervisor = ({
         resolve({ code, signal });
         return;
       }
-      reject(new Error(stderr.trim() || `HaoCode worker exited with ${signal || `code ${code}`}.`));
+      const noiseNote = phpNoiseLines > 0 ? ` (${phpNoiseLines} PHP warning/notice line(s) skipped)` : '';
+      reject(new Error(`${stderr.trim() || `HaoCode worker exited with ${signal || `code ${code}`}.`}${noiseNote}`));
     });
 
     // Avoid an unhandled EPIPE when a worker exits before consuming the request;
