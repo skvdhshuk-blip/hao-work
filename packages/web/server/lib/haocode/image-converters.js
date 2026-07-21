@@ -51,7 +51,21 @@ export const createImageConverters = ({
   const getRapidOcr = () => {
     rapidOcrPromise ??= (async () => {
       const { default: Ocr } = await import('@gutenye/ocr-node');
-      return Ocr.create();
+      const { default: defaultModels } = await import('@gutenye/ocr-models/node');
+      // Packaged Electron apps: @gutenye/ocr-models resolves its assets from
+      // its own module URL, which points into app.asar. The .onnx files are
+      // asarUnpack'ed, but onnxruntime's native loader bypasses Electron's
+      // asar-aware fs and fails with ENOTDIR — rewrite the paths to the real
+      // app.asar.unpacked location. No-op in dev (paths have no app.asar).
+      const toUnpacked = (value) => (
+        typeof value === 'string' && value.includes('app.asar') && !value.includes('app.asar.unpacked')
+          ? value.replace('app.asar', 'app.asar.unpacked')
+          : value
+      );
+      const models = defaultModels && typeof defaultModels === 'object'
+        ? Object.fromEntries(Object.entries(defaultModels).map(([key, value]) => [key, toUnpacked(value)]))
+        : undefined;
+      return Ocr.create(models ? { models } : {});
     })().catch((error) => {
       rapidOcrPromise = null;
       throw error;
