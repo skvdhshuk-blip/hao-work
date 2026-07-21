@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 
 import { createHaoCodeStore, createId, createMessageId, projectIdForDirectory } from './store.js';
 import { createImageConverters } from './image-converters.js';
+import { createImageConversionWorker } from './image-conversion-worker.js';
 import { createWorkerSupervisor } from './worker-supervisor.js';
 import { getModelsMetadata } from '../opencode/models-metadata.js';
 import { getAgentConfig, listAgentConfigs } from '../opencode/agents.js';
@@ -887,7 +888,17 @@ export const createHaoCodeCompatibilityServer = ({
   const server = http.createServer(app);
   const store = createHaoCodeStore({ rootDir: path.join(dataDir, 'haocode') });
   const supervisor = createWorkerSupervisor(workerOptions);
-  const converters = imageConverters ?? createImageConverters({ dataDir, logger, fetchImpl });
+  // Local converters run in an isolated child process: both OCR and caption
+  // are onnxruntime-backed and a native segfault must not take down the host
+  // (observed in the packaged Electron main process). The VLM converter is
+  // plain HTTP and stays in-process. Tests inject `imageConverters`
+  // wholesale and bypass the worker entirely.
+  const imageConversionWorker = createImageConversionWorker({ dataDir, logger });
+  const converters = imageConverters ?? {
+    ocr: imageConversionWorker.ocr,
+    caption: imageConversionWorker.caption,
+    vlm: createImageConverters({ dataDir, logger, fetchImpl }).vlm,
+  };
 
   // onnxruntime-node backs BOTH the OCR engine and the caption pipeline, and
   // concurrent native InferenceSession loads segfault the host process
@@ -2999,6 +3010,7 @@ export const createHaoCodeCompatibilityServer = ({
       ? new Promise((resolve) => server.close(resolve))
       : Promise.resolve();
     for (const providerId of [...pendingOAuth.keys()]) cancelPendingOAuth(providerId);
+    imageConversionWorker.dispose();
     await supervisor.stopAll();
     await Promise.allSettled([...activeRuns]);
     await store.flush();

@@ -1,6 +1,6 @@
 {
   "name": "@openchamber/electron",
-  "version": "1.16.34",
+  "version": "1.16.35",
   "private": true,
   "description": "Hao Work desktop runtime powered by HaoCode",
   "author": "Hao Work contributors",
@@ -51,11 +51,28 @@
       "preload.mjs"
     ],
     "asarUnpack": [
-      "**/node_modules/@gutenye/ocr-models/**",
+      "**/node_modules/@gutenye/**",
       "**/node_modules/onnxruntime-node/**",
+      "**/node_modules/onnxruntime-common/**",
+      "**/node_modules/onnxruntime-web/**",
       "**/node_modules/@xenova/transformers/**",
+      "**/node_modules/@huggingface/jinja/**",
       "**/node_modules/sharp/**",
-      "**/node_modules/@img/**"
+      "**/node_modules/@img/**",
+      "**/node_modules/@techstark/opencv-js/**",
+      "**/node_modules/tiny-invariant/**",
+      "**/node_modules/js-clipper/**",
+      "**/node_modules/adm-zip/**",
+      "**/node_modules/global-agent/**",
+      "**/node_modules/detect-libc/**",
+      "**/node_modules/semver/**",
+      "**/node_modules/color/**",
+      "**/node_modules/color-convert/**",
+      "**/node_modules/color-string/**",
+      "**/node_modules/color-name/**",
+      "**/node_modules/simple-swizzle/**",
+      "**/node_modules/is-arrayish/**",
+      "**/node_modules/@openchamber/web/server/lib/haocode/**"
     ],
     "extraResources": [
       {
