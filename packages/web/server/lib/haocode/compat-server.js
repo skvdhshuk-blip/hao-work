@@ -1827,6 +1827,11 @@ export const createHaoCodeCompatibilityServer = ({
         return;
       }
       if (message.type === 'tool_start') {
+        // Close any open narration segments: text after a tool call starts a
+        // NEW part so parts stay in chronological order (text, tool, text)
+        // instead of all tools sinking below one consolidated text block.
+        textPart = null;
+        reasoningPart = null;
         const part = {
           id: createId('part'),
           sessionID: session.id,

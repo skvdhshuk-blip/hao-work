@@ -452,7 +452,11 @@ describe('HaoCode compatibility server', () => {
       return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
     });
     const assistant = records.find((record) => record.info.role === 'assistant');
-    expect(assistant.parts.find((part) => part.type === 'text').text).toBe('hello world');
+    // Narration is split at tool boundaries so parts stay chronological:
+    // [text 'hello ', tool Read, text 'world'] instead of one consolidated
+    // text block with every tool card sunk below it.
+    expect(assistant.parts.filter((part) => part.type === 'text').map((part) => part.text).join('')).toBe('hello world');
+    expect(assistant.parts.map((part) => part.type)).toEqual(['text', 'tool', 'text']);
     expect(assistant.parts.find((part) => part.type === 'tool')).toMatchObject({
       tool: 'Read',
       state: { status: 'completed', output: '# Fixture' },
@@ -621,7 +625,7 @@ describe('HaoCode compatibility server', () => {
     const restored = await fetch(`${baseUrl}/session/${session.id}`).then((item) => item.json());
     const messages = await fetch(`${baseUrl}/session/${session.id}/message`).then((item) => item.json());
     expect(restored.id).toBe(session.id);
-    expect(messages.some((record) => record.parts.some((part) => part.text === 'hello world'))).toBe(true);
+    expect(messages.some((record) => record.parts.filter((part) => part.type === 'text').map((part) => part.text).join('') === 'hello world')).toBe(true);
   });
 
   test('keeps parent user messages when a limited page contains only assistant turns', async () => {
