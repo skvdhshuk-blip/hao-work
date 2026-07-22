@@ -2621,3 +2621,82 @@ describe('keyless local providers', () => {
     expect(probe.apiKey).toBe('local');
   });
 });
+
+describe('remote model list endpoint', () => {
+  test('fetches OpenAI-shaped model ids with a bearer key and dedupes them', async () => {
+    const calls = [];
+    const runtime = await createRuntime({
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return { ok: true, json: async () => ({ data: [{ id: 'm-b' }, { id: 'm-a' }, { id: 'm-b' }, { name: 'no-id' }] }) };
+      },
+    });
+    await configureDeepSeek(runtime.baseUrl);
+    const result = await fetch(`${runtime.baseUrl}/provider/deepseek/models`).then((item) => item.json());
+    expect(result.models).toEqual(['m-a', 'm-b']);
+    expect(calls[0].url).toBe('https://api.deepseek.com/models');
+    expect(calls[0].init.headers.authorization).toBe('Bearer test-key');
+  });
+
+  test('uses x-api-key and the v1 prefix for anthropic providers', async () => {
+    const calls = [];
+    const runtime = await createRuntime({
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return { ok: true, json: async () => ({ data: [{ id: 'claude-sonnet-4-20250514' }] }) };
+      },
+    });
+    await fetch(`${runtime.baseUrl}/auth/anthropic`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'api', key: 'sk-ant-test' }),
+    });
+    const result = await fetch(`${runtime.baseUrl}/provider/anthropic/models`).then((item) => item.json());
+    expect(result.models).toEqual(['claude-sonnet-4-20250514']);
+    expect(calls[0].url).toBe('https://api.anthropic.com/v1/models');
+    expect(calls[0].init.headers['x-api-key']).toBe('sk-ant-test');
+    expect(calls[0].init.headers['anthropic-version']).toBe('2023-06-01');
+  });
+
+  test('keyless local providers reach their loopback endpoints without saved keys', async () => {
+    const calls = [];
+    const runtime = await createRuntime({
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return { ok: true, json: async () => ({ data: [{ id: 'qwen3-coder' }] }) };
+      },
+    });
+    const result = await fetch(`${runtime.baseUrl}/provider/ollama/models`).then((item) => item.json());
+    expect(result.models).toEqual(['qwen3-coder']);
+    expect(calls[0].url).toBe('http://localhost:11434/v1/models');
+    expect(calls[0].init.headers.authorization).toBe('Bearer local');
+  });
+
+  test('returns 502 when the provider errors and 401 without credentials', async () => {
+    const failing = await createRuntime({ fetchImpl: async () => ({ ok: false, status: 429 }) });
+    await configureDeepSeek(failing.baseUrl);
+    const failed = await fetch(`${failing.baseUrl}/provider/deepseek/models`);
+    expect(failed.status).toBe(502);
+
+    const runtime = await createRuntime();
+    const unauthorized = await fetch(`${runtime.baseUrl}/provider/deepseek/models`);
+    expect(unauthorized.status).toBe(401);
+    const missing = await fetch(`${runtime.baseUrl}/provider/nope/models`);
+    expect(missing.status).toBe(404);
+  });
+
+  test('PATCH settings merges a bulk models list', async () => {
+    const runtime = await createRuntime();
+    const patch = (body) => fetch(`${runtime.baseUrl}/provider/deepseek/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect((await patch({ models: ['m-1', 'm-2', 'm-1'] })).status).toBe(200);
+    expect((await patch({ models: ['m-2', 'm-3'] })).status).toBe(200);
+    const settings = await fetch(`${runtime.baseUrl}/provider/deepseek/settings`).then((item) => item.json());
+    expect(settings.models).toEqual(['m-1', 'm-2', 'm-3']);
+    expect((await patch({ models: ['ok', 42] })).status).toBe(400);
+    expect((await patch({ models: 'not-array' })).status).toBe(400);
+  });
+});

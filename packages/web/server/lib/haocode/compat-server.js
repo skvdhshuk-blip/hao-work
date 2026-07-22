@@ -2477,6 +2477,16 @@ export const createHaoCodeCompatibilityServer = ({
     const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
     const providerType = typeof body.providerType === 'string' ? body.providerType.trim() : '';
     const model = typeof body.model === 'string' ? body.model.trim() : '';
+    // Bulk model merge: 'models' must be an array of non-empty strings; the
+    // sanitized entries are unioned into saved.models (used by the
+    // fetch-remote-model-list flow).
+    let modelsMerge = null;
+    if ('models' in body) {
+      if (!Array.isArray(body.models)) return response.status(400).json({ error: 'models must be an array of model id strings.' });
+      const sanitized = body.models.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim());
+      if (sanitized.length !== body.models.length) return response.status(400).json({ error: 'models must be an array of model id strings.' });
+      modelsMerge = [...new Set(sanitized)];
+    }
     if (baseUrl && !/^https?:\/\//i.test(baseUrl)) return response.status(400).json({ error: 'Base URL must use http or https.' });
     if (providerType && !PROVIDER_TYPES.has(providerType)) {
       return response.status(400).json({ error: 'Unsupported HaoCode provider type.' });
@@ -2559,6 +2569,7 @@ export const createHaoCodeCompatibilityServer = ({
       if (providerType) saved.providerType = providerType;
       else delete saved.providerType;
       if (model) saved.models = [...new Set([...(Array.isArray(saved.models) ? saved.models : []), model])];
+      if (modelsMerge) saved.models = [...new Set([...(Array.isArray(saved.models) ? saved.models : []), ...modelsMerge])];
       for (const [key, value] of Object.entries(limitUpdates)) {
         if (value === null) delete saved[key];
         else saved[key] = value;
@@ -2579,6 +2590,49 @@ export const createHaoCodeCompatibilityServer = ({
       state.providers[providerId] = saved;
     });
     return response.json(await providerSettingsResponse(providerId, definition));
+  });
+  // Fetch the remote model list from the provider's own API so users do not
+  // have to type model ids. Reuses the worker credential chain (oauth
+  // refresh, saved key, env aliases, keyless placeholder) through
+  // providerSettings(). Anthropic speaks GET /v1/models with x-api-key (or
+  // Bearer for OAuth access tokens); OpenAI-compatible providers speak
+  // GET {baseUrl}/models with a Bearer key. Ollama and LM Studio expose the
+  // OpenAI shape on their /v1 roots, so the same path works for them.
+  app.get('/provider/:providerID/models', async (request, response) => {
+    const providerId = request.params.providerID;
+    const definitions = await providerDefinitions();
+    if (!definitions[providerId]) return response.status(404).json({ error: 'Unknown provider.' });
+    const settings = await providerSettings(providerId);
+    if (!settings.apiKey) {
+      return response.status(401).json({ error: `Configure a ${providerId} API key first.` });
+    }
+    const base = typeof settings.baseUrl === 'string' ? settings.baseUrl.replace(/\/+$/, '') : '';
+    if (!base) return response.status(400).json({ error: 'Provider base URL is not configured.' });
+    const url = settings.providerType === 'anthropic'
+      ? `${base}${base.endsWith('/v1') ? '' : '/v1'}/models`
+      : `${base}/models`;
+    const headers = {
+      accept: 'application/json',
+      ...(settings.headers ?? {}),
+      ...(settings.providerType === 'anthropic'
+        ? { 'anthropic-version': '2023-06-01', ...(settings.oauthBearer ? { authorization: `Bearer ${settings.apiKey}` } : { 'x-api-key': settings.apiKey }) }
+        : { authorization: `Bearer ${settings.apiKey}` }),
+    };
+    let payload;
+    try {
+      const remoteResponse = await fetchImpl(url, { headers, signal: AbortSignal.timeout(10_000) });
+      if (!remoteResponse.ok) {
+        return response.status(502).json({ error: `Provider responded with ${remoteResponse.status}.` });
+      }
+      payload = await remoteResponse.json();
+    } catch (error) {
+      return response.status(502).json({ error: error instanceof Error ? error.message : 'Failed to reach the provider.' });
+    }
+    const list = Array.isArray(payload?.data) ? payload.data : [];
+    const models = [...new Set(list
+      .map((item) => (typeof item?.id === 'string' ? item.id.trim() : ''))
+      .filter(Boolean))].sort();
+    return response.json({ models });
   });
   app.put('/auth/:providerID', async (request, response) => {
     const providerId = request.params.providerID;

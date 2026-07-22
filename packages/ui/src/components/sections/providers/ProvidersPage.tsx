@@ -111,6 +111,7 @@ export const ProvidersPage: React.FC = () => {
   const [haoCodeImagePolicy, setHaoCodeImagePolicy] = React.useState<ImagePolicy>(DEFAULT_IMAGE_POLICY);
   const [haoCodeImageVlmModel, setHaoCodeImageVlmModel] = React.useState('');
   const [haoCodeSettingsBusy, setHaoCodeSettingsBusy] = React.useState(false);
+  const [fetchModelsBusy, setFetchModelsBusy] = React.useState(false);
   const [modelImagePolicies, setModelImagePolicies] = React.useState<ModelImagePolicies>({});
   const [modelImagePolicyBusy, setModelImagePolicyBusy] = React.useState<string | null>(null);
   const [customName, setCustomName] = React.useState('');
@@ -319,6 +320,37 @@ export const ProvidersPage: React.FC = () => {
       toast.error(t('settings.providers.page.toast.apiKeySaveFailed'));
     } finally {
       setAuthBusyKey(null);
+    }
+  };
+
+  const handleFetchRemoteModels = async (providerId: string) => {
+    setFetchModelsBusy(true);
+    try {
+      const response = await runtimeFetch(`/api/provider/${encodeURIComponent(providerId)}/models`, {
+        headers: { Accept: 'application/json' },
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error || t('settings.providers.page.models.fetch.failed'));
+      const remote = (Array.isArray(payload?.models) ? payload.models as unknown[] : [])
+        .filter((item): item is string => typeof item === 'string' && item.length > 0);
+      if (remote.length === 0) throw new Error(t('settings.providers.page.models.fetch.empty'));
+      const existing = (Array.isArray(selectedProvider?.models) ? selectedProvider.models : [])
+        .map((model) => (typeof model?.id === 'string' ? model.id : ''))
+        .filter((id) => id.length > 0);
+      const merged = [...new Set([...existing, ...remote])];
+      const patch = await runtimeFetch(`/api/provider/${encodeURIComponent(providerId)}/settings`, {
+        method: 'PATCH',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models: merged }),
+      });
+      const patchPayload = await patch.json().catch(() => null);
+      if (!patch.ok) throw new Error(patchPayload?.error || t('settings.providers.page.models.fetch.failed'));
+      await reloadOpenCodeConfiguration({ scopes: ['providers'], mode: 'active' });
+      toast.success(t('settings.providers.page.models.fetch.success', { count: remote.length }));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('settings.providers.page.models.fetch.failed'));
+    } finally {
+      setFetchModelsBusy(false);
     }
   };
 
@@ -1364,6 +1396,15 @@ export const ProvidersPage: React.FC = () => {
               )}
             </h3>
             <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="xs"
+                className="!font-normal"
+                disabled={fetchModelsBusy}
+                onClick={() => handleFetchRemoteModels(selectedProvider.id)}
+              >
+                {fetchModelsBusy ? t('settings.providers.page.actions.saving') : t('settings.providers.page.models.actions.fetchRemote')}
+              </Button>
               <Button
                 variant="outline"
                 size="xs"
