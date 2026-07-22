@@ -159,7 +159,7 @@ describe('checkForUpdates', () => {
           downloadUrl: 'https://github.com/openchamber/openchamber/releases/download/v1.10.0/OpenChamber-1.10.0-42-android.aab',
         }),
       })
-      .when('api.github.com/repos/openchamber/openchamber/releases/tags/v1.10.0', {
+      .when('api.github.com/repos/skvdhshuk-blip/hao-work/releases/tags/v1.10.0', {
         ok: true,
         json: async () => ({
           assets: [

@@ -307,10 +307,7 @@ export const useUpdateStore = create<UpdateStore>()((set, get) => ({
     }
 
     try {
-      const ok = await restartToApplyUpdate();
-      if (!ok) {
-        throw new Error('Desktop restart only works on Local instance');
-      }
+      await restartToApplyUpdate();
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : 'Failed to restart',

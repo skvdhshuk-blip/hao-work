@@ -723,12 +723,20 @@ export const downloadDesktopUpdate = async (
   }
 };
 
-export const restartToApplyUpdate = async (): Promise<boolean> => {
+export const restartToApplyUpdate = async (): Promise<void> => {
   if (!hasDesktopInvoke()) {
-    return false;
+    throw new Error('Desktop bridge is not available');
   }
 
-  return restartDesktopApp();
+  try {
+    await invokeDesktop('desktop_restart');
+  } catch (error) {
+    // Surface the real main-process reason (e.g. updater capability or
+    // install-location guards) instead of a generic "Local instance" message.
+    const raw = error instanceof Error ? error.message : String(error);
+    const cleaned = raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
+    throw new Error(cleaned || raw);
+  }
 };
 
 export const restartDesktopApp = async (): Promise<boolean> => {

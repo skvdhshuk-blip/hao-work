@@ -11,9 +11,9 @@ const __dirname = path.dirname(__filename);
 const PACKAGE_NAME = '@openchamber/web';
 const PACKAGE_PATH_SEGMENTS = PACKAGE_NAME.split('/');
 const NPM_REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}`;
-const CHANGELOG_URL = 'https://raw.githubusercontent.com/openchamber/openchamber/main/CHANGELOG.md';
-const GITHUB_RELEASES_URL = 'https://github.com/openchamber/openchamber/releases';
-const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/openchamber/openchamber/releases';
+const CHANGELOG_URL = 'https://raw.githubusercontent.com/skvdhshuk-blip/hao-work/main/CHANGELOG.md';
+const GITHUB_RELEASES_URL = 'https://github.com/skvdhshuk-blip/hao-work/releases';
+const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/skvdhshuk-blip/hao-work/releases';
 let cachedDetectedPm = null;
 
 function getSpawnSyncBaseOptions() {
