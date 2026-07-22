@@ -4024,15 +4024,13 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       const applyUpdate = Boolean(state.pendingUpdate?.downloaded && app.isPackaged);
       if (applyUpdate) assertUpdaterCapability({ packaged: app.isPackaged });
       log.info(`[electron] desktop_restart applyUpdate=${applyUpdate} packaged=${app.isPackaged}`);
-      if (applyUpdate && process.platform === 'darwin' && typeof app.isInApplicationsFolder === 'function') {
-        try {
-          if (!app.isInApplicationsFolder()) {
-            throw new Error('Desktop update requires OpenChamber.app to be installed in /Applications');
-          }
-        } catch (error) {
-          log.warn('[electron] desktop_restart blocked', error);
-          throw error;
-        }
+      if (applyUpdate && process.platform === 'darwin' && typeof app.isInApplicationsFolder === 'function'
+        && !app.isInApplicationsFolder()) {
+        // Do not block: Squirrel.Mac replaces the app in place and the
+        // containing folder (e.g. ~/Downloads) is usually writable. Hard-
+        // failing here silently swallowed the update for anyone running
+        // from outside /Applications.
+        log.warn('[electron] desktop_restart outside /Applications, attempting in-place update anyway');
       }
       if (applyUpdate) {
         // Match the working updater pattern closely: only bypass the macOS

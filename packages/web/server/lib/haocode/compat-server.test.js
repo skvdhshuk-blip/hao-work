@@ -1214,7 +1214,7 @@ describe('HaoCode compatibility server', () => {
       'qwen', 'together', 'fireworks', 'cerebras', 'huggingface',
       'kimi-coding', 'volcengine', 'minimax', 'qianfan', 'siliconflow',
       'stepfun', 'longcat', 'packycode', 'shengsuanyun',
-      'github-copilot',
+      'ollama', 'lmstudio', 'github-copilot',
     ]);
     expect(before.connected).not.toContain('deepseek');
     expect(before.default.deepseek).toBe('deepseek-v4-flash');
@@ -2583,5 +2583,41 @@ describe('caption image policy runs OCR and caption combined', () => {
     const payload = await readPayload(runtime, session.id);
     expect(payload.prompt).not.toContain('[识别文字]');
     expect(payload.prompt).toContain('[画面描述]\na screenshot of a chart');
+  });
+});
+
+describe('keyless local providers', () => {
+  test('ollama and lmstudio are listed as connected without credentials', async () => {
+    const runtime = await createRuntime();
+    const data = await fetch(`${runtime.baseUrl}/provider`).then((item) => item.json());
+    expect(data.connected).toContain('ollama');
+    expect(data.connected).toContain('lmstudio');
+    const ollama = data.all.find((provider) => provider.id === 'ollama');
+    expect(ollama.options.baseURL).toBe('http://localhost:11434/v1');
+    expect(data.all.find((provider) => provider.id === 'lmstudio').options.baseURL).toBe('http://localhost:1234/v1');
+
+    const source = await fetch(`${runtime.baseUrl}/provider/ollama/source`).then((item) => item.json());
+    expect(source.sources.auth.exists).toBe(true);
+  });
+
+  test('a keyless provider run sends a placeholder api key to the worker', async () => {
+    const runtime = await createRuntime();
+    const session = await createSession(runtime);
+    const response = await fetch(`${runtime.baseUrl}/session/${session.id}/prompt_async?directory=${encodeURIComponent(runtime.project)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: { providerID: 'ollama', modelID: 'qwen3-coder' },
+        agent: 'build',
+        parts: [{ type: 'text', text: 'provider-probe' }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    const records = await waitFor(async () => {
+      const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message`).then((item) => item.json());
+      return messages.find((record) => record.info.role === 'assistant' && record.info.finish === 'stop') ? messages : null;
+    });
+    const probe = JSON.parse(records.find((record) => record.info.role === 'assistant').parts.find((part) => part.type === 'text').text);
+    expect(probe.apiKey).toBe('local');
   });
 });

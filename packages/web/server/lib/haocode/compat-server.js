@@ -187,6 +187,25 @@ const PROVIDER_DEFINITIONS = {
     env: ['SHENGSUANYUN_API_KEY'],
     models: ['anthropic/claude-sonnet-5', 'openai/gpt-5.5'],
   },
+  // Local providers: OpenAI-compatible servers on loopback. `allowKeyless`
+  // marks them connected without credentials; a placeholder key is sent
+  // because some servers still require a non-empty Authorization header.
+  ollama: {
+    name: 'Ollama (本地)',
+    providerType: 'openai_chat',
+    baseUrl: 'http://localhost:11434/v1',
+    env: ['OLLAMA_API_KEY'],
+    models: ['qwen3-coder', 'deepseek-v3.1'],
+    allowKeyless: true,
+  },
+  lmstudio: {
+    name: 'LM Studio (本地)',
+    providerType: 'openai_chat',
+    baseUrl: 'http://localhost:1234/v1',
+    env: ['LM_STUDIO_API_KEY'],
+    models: ['openai/gpt-oss-20b'],
+    allowKeyless: true,
+  },
 };
 
 // --- GitHub Copilot preset ---------------------------------------------------
@@ -1113,6 +1132,7 @@ export const createHaoCodeCompatibilityServer = ({
         env: [...definition.env],
         models: [...definition.models],
         custom: false,
+        ...(definition.allowKeyless ? { allowKeyless: true } : {}),
       };
     }
     // GitHub Copilot preset: defined outside PROVIDER_DEFINITIONS (separate
@@ -1153,7 +1173,7 @@ export const createHaoCodeCompatibilityServer = ({
     return {
       id,
       name: definition.name,
-      source: saved.apiKey || saved.oauth?.access || hasEnvCredential(definition) ? 'api' : 'custom',
+      source: saved.apiKey || saved.oauth?.access || hasEnvCredential(definition) || definition.allowKeyless ? 'api' : 'custom',
       env: definition.env,
       options: {
         baseURL: baseUrl,
@@ -1655,7 +1675,8 @@ export const createHaoCodeCompatibilityServer = ({
     // request marks them with oauthBearer.
     const oauthAccess = await resolveOAuthAccessToken(providerId);
     return {
-      apiKey: oauthAccess || saved.apiKey || definition.env.map((name) => process.env[name]).find(Boolean) || null,
+      apiKey: oauthAccess || saved.apiKey || definition.env.map((name) => process.env[name]).find(Boolean)
+        || (definition.allowKeyless ? 'local' : null),
       baseUrl: saved.baseUrl || definition.baseUrl,
       providerType: saved.providerType || definition.providerType,
       model,
@@ -2425,7 +2446,7 @@ export const createHaoCodeCompatibilityServer = ({
     const definition = definitions[providerId];
     if (!definition) return response.status(404).json({ error: 'Unknown provider.' });
     const saved = await store.getProviderSettings(providerId);
-    const authExists = Boolean(saved.apiKey || saved.oauth?.access || hasEnvCredential(definition));
+    const authExists = Boolean(saved.apiKey || saved.oauth?.access || hasEnvCredential(definition) || definition.allowKeyless);
     return response.json({
       providerId,
       sources: {
