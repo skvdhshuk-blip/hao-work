@@ -110,7 +110,7 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "resources/icons/icon.icns",
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "artifactName": "Hao-Work-${version}-mac-${arch}.${ext}",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "resources/entitlements.mac.plist",
