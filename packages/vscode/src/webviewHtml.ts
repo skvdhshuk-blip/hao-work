@@ -152,10 +152,10 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       max-width: 280px;
     }
   </style>
-  <title>OpenChamber</title>
+  <title>Hao Work</title>
 </head>
 <body>
-  <!-- Initial loading screen with simplified OpenChamber logo -->
+  <!-- Initial loading screen with simplified Hao Work logo -->
   <div id="initial-loading">
     <svg class="logo" width="70" height="70" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
       <!-- Left face -->
@@ -368,7 +368,7 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
           })
           .catch((error) => {
             attempt += 1;
-            console.warn('[OpenChamber] VS Code webview dev bundle unavailable, retrying...', error);
+            console.warn('[Hao Work] VS Code webview dev bundle unavailable, retrying...', error);
             setStatus(devMessages.waitingDevServer(hostLabel, attempt));
             window.setTimeout(() => {
               tryLoadDevBundle();

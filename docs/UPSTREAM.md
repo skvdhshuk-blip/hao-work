@@ -7,10 +7,11 @@ selected implementation changes.
 ```bash
 git fetch upstream
 git switch main
-git merge --no-ff upstream/main
-bun install --frozen-lockfile
-bun run type-check
-bun run lint
+git log --oneline origin/main..upstream/main
+git diff --stat origin/main..upstream/main
+# Review selected commits and paths before applying anything.
+git diff origin/main..upstream/main -- <selected-path>
+# Apply only the reviewed commit/path changes, then run the affected checks.
 ```
 
 Before merging, inspect `origin/main..upstream/main` and select only useful
@@ -23,7 +24,7 @@ Hao Work-owned code should stay concentrated in `packages/haocode-bridge`,
 Never copy or replace the full OpenChamber tree, and do not accept upstream
 branding or user-facing labels without an explicit product decision.
 
-After the merge, review changed occurrences of `OpenChamber`/`OpenCode` and
+After applying the selected changes, review changed occurrences of `OpenChamber`/`OpenCode` and
 confirm that they are compatibility identifiers or technical references rather
 than accidental Hao Work UI or release names. Run the affected package checks
 before pushing to `origin`.

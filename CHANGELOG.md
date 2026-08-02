@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.17.4] - 2026-08-02
+
+- **Branding:** aligned desktop, web, mobile, and VS Code user-facing identity and links with Hao Work.
+- **Linux packaging:** unified AppImage and autostart identity as `hao-work`, with migration from the legacy `openchamber.desktop` entry; release fixtures now follow Hao Work asset names.
+- **Upstream/release discipline:** documented selective upstream absorption and aligned update and release metadata with the Hao Work repository.
+
 ## [1.17.3] - 2026-08-02
 
 - **HaoCode:** upgraded the bundled PHP bridge to HaoCode v1.18.60 and aligned sandbox resource normalization with the SDK contract.

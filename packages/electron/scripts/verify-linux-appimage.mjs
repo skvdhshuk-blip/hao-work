@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { normalizeTargetArchitecture } from './target-architecture.mjs';
+import { LINUX_IDENTITY } from '../linux-identity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const electronRoot = path.resolve(__dirname, '..');
@@ -89,15 +90,19 @@ export const verifyExtractedPayload = ({
   expectedOpenCodeVersion,
   runCliVersion = defaultCliVersion,
 }) => {
-  const desktopPath = path.join(root, 'openchamber.desktop');
+  const desktopPath = path.join(root, LINUX_IDENTITY.desktopFileName);
   if (!fs.existsSync(desktopPath)) throw new Error(`Missing desktop entry: ${desktopPath}`);
   const desktop = fs.readFileSync(desktopPath, 'utf8');
-  for (const entry of ['Name=Hao Work', 'Icon=openchamber', 'StartupWMClass=openchamber']) {
+  for (const entry of [
+    `Name=${LINUX_IDENTITY.productName}`,
+    `Icon=${LINUX_IDENTITY.iconName}`,
+    `StartupWMClass=${LINUX_IDENTITY.startupWMClass}`,
+  ]) {
     if (!desktop.split(/\r?\n/).includes(entry)) throw new Error(`Desktop identity mismatch: missing ${entry}`);
   }
   if (!/^Exec=AppRun(?:\s|$)/m.test(desktop)) throw new Error('Desktop identity mismatch: expected AppImage AppRun entrypoint');
 
-  assertElfArchitecture(path.join(root, 'openchamber'), targetArchitecture, 'Electron executable');
+  assertElfArchitecture(path.join(root, LINUX_IDENTITY.executableName), targetArchitecture, 'Electron executable');
   const cliPath = path.join(root, 'resources', 'opencode-cli', 'opencode');
   assertElfArchitecture(cliPath, targetArchitecture, 'OpenCode CLI');
   const actualVersion = runCliVersion(cliPath);

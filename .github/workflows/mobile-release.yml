@@ -157,7 +157,7 @@ jobs:
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openchamber-android-${{ needs.resolve-version.outputs.version_name }}-${{ needs.resolve-version.outputs.build_number }}
+          name: hao-work-android-${{ needs.resolve-version.outputs.version_name }}-${{ needs.resolve-version.outputs.build_number }}
           path: |
             packages/mobile/android/app/build/outputs/bundle/release/*.aab
             packages/mobile/android/app/build/outputs/apk/release/*.apk
@@ -174,13 +174,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          cp app/build/outputs/bundle/release/*.aab "release-assets/OpenChamber-${VERSION_NAME}-${BUILD_NUMBER}-android.aab"
-          cp app/build/outputs/apk/release/*.apk "release-assets/OpenChamber-${VERSION_NAME}-${BUILD_NUMBER}-android.apk"
-          files=(
-            app/build/outputs/bundle/release/*.aab
-            app/build/outputs/apk/release/*.apk
-            release-assets/*
-          )
+          cp app/build/outputs/bundle/release/*.aab "release-assets/Hao Work-${VERSION_NAME}-${BUILD_NUMBER}-android.aab"
+          cp app/build/outputs/apk/release/*.apk "release-assets/Hao Work-${VERSION_NAME}-${BUILD_NUMBER}-android.apk"
+          files=(release-assets/*)
           gh release upload "$RELEASE_TAG" "${files[@]}" --clobber --repo "${{ github.repository }}"
         working-directory: ${{ env.ANDROID_PROJECT_DIR }}
 
@@ -384,7 +380,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openchamber-ios-${{ needs.resolve-version.outputs.version_name }}-${{ needs.resolve-version.outputs.build_number }}
+          name: hao-work-ios-${{ needs.resolve-version.outputs.version_name }}-${{ needs.resolve-version.outputs.build_number }}
           path: ${{ runner.temp }}/OpenChamberExport/*.ipa
           if-no-files-found: error
 

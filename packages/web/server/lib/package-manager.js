@@ -113,7 +113,7 @@ async function resolveAndroidApkUrl(version, candidateUrl) {
         && typeof asset.browser_download_url === 'string'
       ))
       : [];
-    const canonicalAsset = apkAssets.find((asset) => /^OpenChamber-.+-android\.apk$/i.test(asset.name));
+    const canonicalAsset = apkAssets.find((asset) => /^Hao Work-.+-android\.apk$/i.test(asset.name));
     return (canonicalAsset || apkAssets[0])?.browser_download_url;
   } catch {
     return undefined;

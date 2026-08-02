@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { LEGACY_LINUX_IDENTITY, LINUX_IDENTITY } from './linux-identity.mjs';
 
-const AUTOSTART_FILE_NAME = 'openchamber.desktop';
+const AUTOSTART_FILE_NAME = LINUX_IDENTITY.desktopFileName;
+const LEGACY_AUTOSTART_FILE_NAME = LEGACY_LINUX_IDENTITY.desktopFileName;
 
 export const resolveLinuxAutostartDirectory = ({
   env = process.env,
@@ -17,6 +19,9 @@ export const resolveLinuxAutostartDirectory = ({
 
 export const resolveLinuxAutostartFilePath = (options = {}) =>
   path.join(resolveLinuxAutostartDirectory(options), AUTOSTART_FILE_NAME);
+
+const resolveLegacyLinuxAutostartFilePath = (options = {}) =>
+  path.join(resolveLinuxAutostartDirectory(options), LEGACY_AUTOSTART_FILE_NAME);
 
 export const resolveLinuxLaunchExecutable = ({
   env = process.env,
@@ -38,7 +43,7 @@ const quoteDesktopExecArg = (value) => {
 };
 
 export const buildLinuxAutostartDesktopEntry = ({
-  appName = 'Hao Work',
+  appName = LINUX_IDENTITY.productName,
   executable,
   backgroundArg,
   env = process.env,
@@ -56,24 +61,27 @@ export const buildLinuxAutostartDesktopEntry = ({
     `Exec=${args.join(' ')}`,
     'Terminal=false',
     'X-GNOME-Autostart-enabled=true',
-    'StartupWMClass=openchamber',
+    `StartupWMClass=${LINUX_IDENTITY.startupWMClass}`,
     '',
   ].join('\n');
 };
 
 export const readLinuxAutostartEnabled = async (options = {}) => {
-  const filePath = resolveLinuxAutostartFilePath(options);
-  try {
-    await fsp.access(filePath, fs.constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
+  const filePaths = [resolveLinuxAutostartFilePath(options), resolveLegacyLinuxAutostartFilePath(options)];
+  const results = await Promise.all(filePaths.map(async (filePath) => {
+    try {
+      await fsp.access(filePath, fs.constants.F_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }));
+  return results.some(Boolean);
 };
 
 export const setLinuxAutostartEnabled = async ({
   enabled,
-  appName = 'Hao Work',
+  appName = LINUX_IDENTITY.productName,
   backgroundArg,
   env = process.env,
   execPath = process.execPath,
@@ -83,11 +91,15 @@ export const setLinuxAutostartEnabled = async ({
   const filePath = path.join(directory, AUTOSTART_FILE_NAME);
 
   if (!enabled) {
-    await fsp.rm(filePath, { force: true });
+    await Promise.all([
+      fsp.rm(filePath, { force: true }),
+      fsp.rm(resolveLegacyLinuxAutostartFilePath({ env, homeDir }), { force: true }),
+    ]);
     return { supported: true, enabled: false, filePath };
   }
 
   await fsp.mkdir(directory, { recursive: true });
+  await fsp.rm(resolveLegacyLinuxAutostartFilePath({ env, homeDir }), { force: true });
   const contents = buildLinuxAutostartDesktopEntry({
     appName,
     backgroundArg,

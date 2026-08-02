@@ -1,13 +1,13 @@
 {
   "name": "openchamber",
-  "displayName": "OpenChamber",
+  "displayName": "Hao Work",
   "description": "%extension.description%",
-  "version": "1.17.3",
+  "version": "1.17.4",
   "publisher": "fedaykindev",
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/openchamber/openchamber.git"
+    "url": "https://github.com/skvdhshuk-blip/hao-work.git"
   },
   "qna": "https://discord.gg/ZYRSdnwwKA",
   "license": "MIT",
@@ -44,7 +44,7 @@
       "activitybar": [
         {
           "id": "openchamber",
-          "title": "OpenChamber",
+          "title": "Hao Work",
           "icon": "assets/icon.svg"
         }
       ]
@@ -61,7 +61,7 @@
     "commands": [
       {
         "command": "openchamber.openSidebar",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.openSidebar.title%",
         "icon": {
           "light": "assets/icon.svg",
@@ -70,34 +70,34 @@
       },
       {
         "command": "openchamber.focusChat",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.focusChat.title%"
       },
       {
         "command": "openchamber.restartApi",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.restartApi.title%"
       },
       {
         "command": "openchamber.showOpenCodeStatus",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.showOpenCodeStatus.title%"
       },
       {
         "command": "openchamber.openAgentManager",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.openAgentManager.title%",
         "icon": "$(circuit-board)"
       },
       {
         "command": "openchamber.openActiveSessionInEditor",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.openActiveSessionInEditor.title%",
         "icon": "$(link-external)"
       },
       {
         "command": "openchamber.openNewSessionInEditor",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.openNewSessionInEditor.title%",
         "icon": {
           "light": "assets/icon.svg",
@@ -106,47 +106,47 @@
       },
       {
         "command": "openchamber.openCurrentOrNewSessionInEditor",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.openCurrentOrNewSessionInEditor.title%",
         "icon": "$(link-external)"
       },
       {
         "command": "openchamber.addToContext",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.addToContext.title%"
       },
       {
         "command": "openchamber.explain",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.explain.title%"
       },
       {
         "command": "openchamber.improveCode",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.improveCode.title%"
       },
       {
         "command": "openchamber.newSession",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.newSession.title%",
         "icon": "$(add)"
       },
       {
         "command": "openchamber.showSettings",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.showSettings.title%",
         "icon": "$(settings-gear)"
       },
       {
         "command": "openchamber.attachExplorerToChat",
-        "category": "OpenChamber",
+        "category": "Hao Work",
         "title": "%command.attachExplorerToChat.title%"
       }
     ],
     "submenus": [
       {
         "id": "openchamber.submenu",
-        "label": "OpenChamber"
+        "label": "Hao Work"
       }
     ],
     "menus": {
@@ -204,7 +204,7 @@
       ]
     },
     "configuration": {
-      "title": "OpenChamber",
+      "title": "Hao Work",
       "properties": {
         "openchamber.apiUrl": {
           "type": "string",

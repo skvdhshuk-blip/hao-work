@@ -12,16 +12,17 @@ const fixture = (manifestName, artifactName, fields) => {
   const artifactPath = path.join(root, artifactName);
   const manifestPath = path.join(root, manifestName);
   const bytes = Buffer.from(`artifact:${artifactName}`);
+  const encodedArtifactName = encodeURIComponent(artifactName);
   fs.writeFileSync(artifactPath, bytes);
   fs.writeFileSync(manifestPath, [
     'version: 1.15.0',
     'files:',
     ...(fields || [
-      `  - url: ${artifactName}`,
+      `  - url: ${encodedArtifactName}`,
       `    sha512: ${crypto.createHash('sha512').update(bytes).digest('base64')}`,
       `    size: ${bytes.length}`,
     ]),
-    `path: ${artifactName}`,
+    `path: ${encodedArtifactName}`,
     'releaseDate: 2026-07-10T00:00:00.000Z',
     '',
   ].join('\n'));
@@ -29,8 +30,8 @@ const fixture = (manifestName, artifactName, fields) => {
 };
 
 for (const [manifestName, artifactName] of [
-  ['latest-linux.yml', 'OpenChamber-1.15.0-linux-x86_64.AppImage'],
-  ['latest-linux-arm64.yml', 'OpenChamber-1.15.0-linux-arm64.AppImage'],
+  ['latest-linux.yml', 'Hao Work-1.15.0-linux-x86_64.AppImage'],
+  ['latest-linux-arm64.yml', 'Hao Work-1.15.0-linux-arm64.AppImage'],
 ]) {
   test(`validates architecture-specific ${manifestName}`, () => {
     const value = fixture(manifestName, artifactName);
@@ -43,13 +44,14 @@ for (const [manifestName, artifactName] of [
 }
 
 test('accepts electron-builder field ordering and optional blockMapSize', () => {
-  const artifactName = 'OpenChamber-1.15.0-linux-x86_64.AppImage';
+  const artifactName = 'Hao Work-1.15.0-linux-x86_64.AppImage';
+  const encodedArtifactName = encodeURIComponent(artifactName);
   const bytes = Buffer.from(`artifact:${artifactName}`);
   const value = fixture('latest-linux.yml', artifactName, [
     `  - sha512: ${crypto.createHash('sha512').update(bytes).digest('base64')}`,
     `    size: ${bytes.length}`,
     '    blockMapSize: 1234',
-    `    url: ${artifactName}`,
+    `    url: ${encodedArtifactName}`,
   ]);
   try {
     assert.equal(verifyUpdateManifest({ ...value, expectedVersion: '1.15.0' }).name, artifactName);
@@ -59,9 +61,9 @@ test('accepts electron-builder field ordering and optional blockMapSize', () => 
 });
 
 test('rejects a manifest that points at the other architecture artifact', () => {
-  const value = fixture('latest-linux-arm64.yml', 'OpenChamber-1.15.0-linux-arm64.AppImage');
+  const value = fixture('latest-linux-arm64.yml', 'Hao Work-1.15.0-linux-arm64.AppImage');
   try {
-    const x64Artifact = path.join(value.root, 'OpenChamber-1.15.0-linux-x86_64.AppImage');
+    const x64Artifact = path.join(value.root, 'Hao Work-1.15.0-linux-x86_64.AppImage');
     fs.copyFileSync(value.artifactPath, x64Artifact);
     assert.throws(() => verifyUpdateManifest({
       manifestPath: value.manifestPath,

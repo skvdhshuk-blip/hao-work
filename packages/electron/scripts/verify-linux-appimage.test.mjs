@@ -3,8 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
+import { LINUX_IDENTITY } from '../linux-identity.mjs';
 import { linuxAppImageArchSuffix, readElfArchitecture, verifyExtractedPayload } from './verify-linux-appimage.mjs';
+
+const electronRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const writeElf = (filePath, architecture) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -16,10 +20,10 @@ const writeElf = (filePath, architecture) => {
 
 const createPayload = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-payload-test-'));
-  fs.writeFileSync(path.join(root, 'openchamber.desktop'), [
-    '[Desktop Entry]', 'Name=Hao Work', 'Exec=AppRun --no-sandbox %U', 'Icon=openchamber', 'StartupWMClass=openchamber', '',
+  fs.writeFileSync(path.join(root, LINUX_IDENTITY.desktopFileName), [
+    '[Desktop Entry]', `Name=${LINUX_IDENTITY.productName}`, `Exec=AppRun --no-sandbox %U`, `Icon=${LINUX_IDENTITY.iconName}`, `StartupWMClass=${LINUX_IDENTITY.startupWMClass}`, '',
   ].join('\n'));
-  writeElf(path.join(root, 'openchamber'), 'x64');
+  writeElf(path.join(root, LINUX_IDENTITY.executableName), 'x64');
   writeElf(path.join(root, 'resources/opencode-cli/opencode'), 'x64');
   for (const name of ['better_sqlite3.node', 'pty.node', 'sherpa-onnx.node']) {
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules', name), 'x64');
@@ -34,6 +38,14 @@ const createPayload = () => {
   }
   return root;
 };
+
+test('Linux verifier identity matches electron-builder configuration', () => {
+  const electronPackage = JSON.parse(fs.readFileSync(path.join(electronRoot, 'package.json'), 'utf8'));
+  assert.equal(electronPackage.build.productName, LINUX_IDENTITY.productName);
+  assert.equal(electronPackage.build.linux.executableName, LINUX_IDENTITY.executableName);
+  assert.equal(electronPackage.build.linux.desktop.entry.Icon, LINUX_IDENTITY.iconName);
+  assert.equal(electronPackage.build.linux.desktop.entry.StartupWMClass, LINUX_IDENTITY.startupWMClass);
+});
 
 test('reads supported ELF architectures', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-elf-test-'));

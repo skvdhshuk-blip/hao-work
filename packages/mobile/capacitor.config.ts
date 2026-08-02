@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.openchamber.app',
-  appName: 'OpenChamber',
+  appName: 'Hao Work',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

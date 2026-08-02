@@ -21,13 +21,13 @@ struct OpenChamberNewSessionControl: ControlWidget {
             }
         }
         .displayName("New Session")
-        .description("Start a new OpenChamber session.")
+        .description("Start a new Hao Work session.")
     }
 }
 
 @available(iOS 18.0, *)
 struct OpenNewSessionIntent: AppIntent {
-    static let title: LocalizedStringResource = "New OpenChamber Session"
+    static let title: LocalizedStringResource = "New Hao Work Session"
     static let openAppWhenRun: Bool = true
     static let isDiscoverable: Bool = true
 
