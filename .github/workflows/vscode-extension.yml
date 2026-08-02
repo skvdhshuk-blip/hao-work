@@ -49,12 +49,3 @@ jobs:
         with:
           name: openchamber-vscode-vsix
           path: packages/vscode/*.vsix
-
-      - name: Attach VSIX to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          files: packages/vscode/*.vsix
-          generate_release_notes: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
