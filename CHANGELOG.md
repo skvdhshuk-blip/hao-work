@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.17.6] - 2026-08-02
+
+- **HaoCode:** upgraded the bundled SDK to v1.18.62 so non-Anthropic providers honor their configured context window.
+- **Context reliability:** fixed DeepSeek/OpenAI-compatible sessions being reduced to a one-token safe input limit when the model output budget is large.
+
 ## [1.17.5] - 2026-08-02
 
 - **HaoCode:** upgraded the bundled SDK to v1.18.61 and aligned automatic context compaction with each model's safe input budget.
