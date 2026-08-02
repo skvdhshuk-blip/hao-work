@@ -1,6 +1,6 @@
 {
   "name": "@openchamber/web",
-  "version": "1.16.38",
+  "version": "1.17.3",
   "private": false,
   "type": "module",
   "main": "./server/index.js",
@@ -28,7 +28,7 @@
     "@gutenye/ocr-models": "^1.4.2",
     "@gutenye/ocr-node": "^1.4.8",
     "@octokit/rest": "^22.0.1",
-    "@opencode-ai/sdk": "1.17.18",
+    "@opencode-ai/sdk": "1.18.11",
     "@simplewebauthn/server": "13.3.1",
     "@xenova/transformers": "^2.17.2",
     "adm-zip": "^0.5.16",

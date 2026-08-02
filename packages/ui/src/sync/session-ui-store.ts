@@ -68,9 +68,39 @@ import { useSessionWorktreeStore } from "./session-worktree-store"
 import { getAttachedSessionDirectory } from "./session-worktree-contract"
 import { setSessionOpener } from "./session-navigation"
 import { getRuntimeKey } from "@/lib/runtime-switch"
+import { clearLastActiveSession, persistLastActiveSession } from "./last-session-cache"
+import { persistWorktreeTopology, readPersistedWorktreeTopology } from "./worktree-topology-cache"
 import { rememberRuntimeLiveStatus } from "./runtime-live-memory"
 
 export type { AttachedFile }
+
+type GoalCommand = { name: string; template?: string }
+
+export function expandSlashCommandGoalObjective(content: string, commands: GoalCommand[]): string {
+  if (!content.startsWith("/")) return content
+  const [head, ...tail] = content.split(" ")
+  const command = commands.find((candidate) => candidate.name === head.slice(1))
+  if (!command?.template?.trim()) return content
+  const argumentsText = tail.join(" ")
+  if (command.template.includes("$ARGUMENTS")) {
+    return command.template.replaceAll("$ARGUMENTS", argumentsText)
+  }
+
+  const positions = [...command.template.matchAll(/\$(\d+)/g)].map((match) => Number(match[1]))
+  if (positions.length > 0) {
+    const parsedArguments = [...argumentsText.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)]
+      .map((match) => match[1] ?? match[2] ?? match[3] ?? "")
+    const lastPosition = Math.max(...positions)
+    return command.template.replace(/\$(\d+)/g, (_match, value: string) => {
+      const position = Number(value)
+      return position === lastPosition
+        ? parsedArguments.slice(position - 1).join(" ")
+        : (parsedArguments[position - 1] ?? "")
+    })
+  }
+
+  return argumentsText ? `${command.template}\n\n${argumentsText}` : command.template
+}
 
 // ---------------------------------------------------------------------------
 // Send routing — shell mode, slash commands, or normal prompt
@@ -172,6 +202,7 @@ export function routeMessage(params: {
 
 type SendMessageOptions = {
   sessionId?: string
+  directory?: string
   delivery?: 'steer'
 }
 
@@ -254,7 +285,7 @@ export type SessionUIState = {
   setCurrentSession: (id: string | null, directoryHint?: string | null) => void
   prepareForRuntimeSwitch: (apiBaseUrl?: string | null) => void
   restoreForRuntimeSwitch: (apiBaseUrl?: string | null) => void
-  openNewSessionDraft: (options?: Partial<NewSessionDraftState>) => void
+  openNewSessionDraft: (options?: Partial<NewSessionDraftState> & { automatic?: boolean }) => void
   closeNewSessionDraft: () => void
   setNewSessionDraftTarget: (target: { projectId?: string | null; selectedProjectId?: string | null; directoryOverride?: string | null }, options?: { force?: boolean }) => void
   setDraftPreserveDirectoryOverride: (value: boolean) => void
@@ -392,6 +423,8 @@ type RuntimeSessionMemory = {
   sessionId: string | null
   directory: string | null
   draft: NewSessionDraftState
+  worktreeMetadata: Map<string, WorktreeMetadata>
+  availableWorktreesByProject: Map<string, WorktreeMetadata[]>
 }
 const runtimeSessionMemory = new Map<string, RuntimeSessionMemory>()
 
@@ -408,6 +441,8 @@ const writeRuntimeSessionMemory = (key: string, patch: Partial<RuntimeSessionMem
     sessionId: current?.sessionId ?? null,
     directory: current?.directory ?? null,
     draft: current?.draft ? cloneDraft(current.draft) : { ...DEFAULT_DRAFT },
+    worktreeMetadata: current?.worktreeMetadata ?? new Map(),
+    availableWorktreesByProject: current?.availableWorktreesByProject ?? new Map(),
     ...patch,
   })
 }
@@ -519,37 +554,13 @@ export async function materializeOpenDraftSession(selection: {
 // the FIRST launch — yielding a single project-scoped config load instead of a
 // worktree+project double-load. Discovery refreshes it in the background.
 // ---------------------------------------------------------------------------
-const WORKTREE_MAP_STORAGE_KEY = 'oc.worktreeMap'
-
-const loadPersistedWorktreeMap = (): Map<string, WorktreeMetadata[]> => {
-  try {
-    const raw = getDeferredSafeStorage().getItem(WORKTREE_MAP_STORAGE_KEY)
-    if (!raw) return new Map()
-    const entries = JSON.parse(raw) as Array<[string, WorktreeMetadata[]]>
-    if (!Array.isArray(entries)) return new Map()
-    return new Map(
-      entries.filter((entry) => Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1])),
-    )
-  } catch {
-    return new Map()
-  }
-}
-
-const persistWorktreeMap = (serialized: string): void => {
-  try {
-    getDeferredSafeStorage().setItem(WORKTREE_MAP_STORAGE_KEY, serialized)
-  } catch {
-    // quota / serialization error — ignore; discovery still refreshes at runtime
-  }
-}
-
 const flattenWorktreeMap = (map: Map<string, WorktreeMetadata[]>): WorktreeMetadata[] => {
   const out: WorktreeMetadata[] = []
   for (const list of map.values()) out.push(...list)
   return out
 }
 
-const PERSISTED_WORKTREE_MAP = loadPersistedWorktreeMap()
+const PERSISTED_WORKTREE_MAP = readPersistedWorktreeTopology(runtimeMemoryKey())
 
 export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   currentSessionId: null,
@@ -602,6 +613,12 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // same child store that send/SSE events will update during startup races.
     set({ currentSessionId: id, currentSessionDirectory: id ? resolvedDir ?? null : null })
     writeRuntimeSessionMemory(key, { sessionId: id, directory: resolvedDir ?? null })
+    // Keep the last NON-null session per runtime across app restarts (cold
+    // mobile launches reopen it after the instance reconnects). Going back to
+    // a draft intentionally does not erase it.
+    if (id) {
+      persistLastActiveSession(key, { sessionId: id, directory: resolvedDir ?? null })
+    }
 
     // Kick off the message fetch on the same tick, before React commits the
     // state change and fires ChatContainer.useEffect. The fetch is
@@ -660,6 +677,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       sessionId: currentSessionId,
       directory,
       draft: cloneDraft(get().newSessionDraft),
+      worktreeMetadata: new Map(get().worktreeMetadata),
+      availableWorktreesByProject: new Map(get().availableWorktreesByProject),
     })
   },
 
@@ -669,6 +688,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const restoredSessionId = memory?.sessionId ?? activeSessionByRuntime.get(key) ?? null
     const restoredDraft = memory?.draft ? cloneDraft(memory.draft) : { ...DEFAULT_DRAFT }
     const restoredDirectory = memory?.directory ?? null
+    const availableWorktreesByProject = memory?.availableWorktreesByProject
+      ?? readPersistedWorktreeTopology(key)
     if (restoredDirectory) {
       useDirectoryStore.getState().setDirectory(restoredDirectory, { showOverlay: false })
     }
@@ -679,6 +700,9 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       abortPromptSessionId: null,
       abortPromptExpiresAt: null,
       error: null,
+      worktreeMetadata: memory?.worktreeMetadata ?? new Map(),
+      availableWorktrees: flattenWorktreeMap(availableWorktreesByProject),
+      availableWorktreesByProject,
       sessionAbortFlags: new Map(),
       pendingChangesBarDismissed: new Map(),
     })
@@ -693,6 +717,15 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // openNewSessionDraft
   // ---------------------------------------------------------------------------
   openNewSessionDraft: (options) => {
+    // A USER-initiated draft open is a navigation choice: the next cold launch
+    // should land on the draft, not re-open the session left behind — drop the
+    // persisted last-session pointer for this runtime. `automatic: true` marks
+    // programmatic fallback opens (e.g. ChatContainer's "no session active"
+    // auto-draft at boot), which must NOT consume the pointer — the cold-launch
+    // restore races exactly that auto-open.
+    if (!options?.automatic) {
+      clearLastActiveSession(runtimeMemoryKey())
+    }
     const projectsState = useProjectsStore.getState()
     const projects = projectsState.projects
     const availableWorktreesByProject = get().availableWorktreesByProject
@@ -793,6 +826,23 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // closeNewSessionDraft
   // ---------------------------------------------------------------------------
   closeNewSessionDraft: () => {
+    const currentDraft = get().newSessionDraft
+    if (
+      !currentDraft.open
+      && currentDraft.selectedProjectId == null
+      && currentDraft.directoryOverride == null
+      && currentDraft.pendingWorktreeRequestId == null
+      && currentDraft.bootstrapPendingDirectory == null
+      && !currentDraft.preserveDirectoryOverride
+      && currentDraft.parentID == null
+      && currentDraft.title === undefined
+      && currentDraft.initialPrompt === undefined
+      && currentDraft.syntheticParts === undefined
+      && currentDraft.targetFolderId === undefined
+      && currentDraft.permissionAutoAcceptEnabled === undefined
+    ) {
+      return
+    }
     const nextDraft: NewSessionDraftState = {
         open: false,
         selectedProjectId: null,
@@ -1046,15 +1096,33 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       )
       additionalParts = [...(additionalParts ?? []), { text: goalIntro, synthetic: true }]
     }
-    const applyArmedGoal = (goalSessionId: string, goalDirectory: string | null | undefined) => {
+    const applyArmedGoal = async (goalSessionId: string, goalDirectory: string | null | undefined) => {
       if (!goalArmed) return
       const uiState = useUIStore.getState()
       const tokenBudget = uiState.sessionGoalDefaultBudgetEnabled ? uiState.sessionGoalDefaultBudget : null
-      const objective = goalArm.objectiveOverride?.trim() || content
-      void setSessionGoal(goalSessionId, goalDirectory ?? undefined, { objective, tokenBudget }, null)
-        .catch((error) => {
-          console.warn("[session-ui-store] failed to set goal from armed send", error)
-        })
+      let objective = goalArm.objectiveOverride?.trim() || content
+      if (!goalArm.objectiveOverride && content.startsWith("/")) {
+        const directoryCommands = getDirectoryState(goalDirectory ?? undefined)?.command ?? []
+        const storedCommands = useCommandsStore.getState().commands
+        const knownCommands = [...directoryCommands, ...storedCommands]
+        objective = expandSlashCommandGoalObjective(content, knownCommands)
+        if (objective === content) {
+          try {
+            objective = expandSlashCommandGoalObjective(
+              content,
+              await opencodeClient.listCommandsWithDetails(goalDirectory),
+            )
+          } catch {
+            // Command dispatch remains authoritative; raw invocation is a safe objective fallback.
+          }
+        }
+      }
+      try {
+        await setSessionGoal(goalSessionId, goalDirectory ?? undefined, { objective, tokenBudget }, null)
+      } catch (error) {
+        useSessionGoalArmStore.getState().setArmed(true, goalArm.objectiveOverride)
+        throw error
+      }
     }
 
     // ---- New session from draft ----
@@ -1082,6 +1150,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         filename: a.filename,
       }))
 
+      await applyArmedGoal(createdDraftSession.sessionId, createdDraftSession.directory)
       await routeMessage({
         sessionId: createdDraftSession.sessionId,
         directory: createdDraftSession.directory,
@@ -1105,7 +1174,6 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
           })),
         })),
       })
-      applyArmedGoal(createdDraftSession.sessionId, createdDraftSession.directory)
       return
     }
 
@@ -1145,7 +1213,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     }
 
     const currentSessionDirectory = targetSessionId
-      ? normalizePath(get().getDirectoryForSession(targetSessionId))
+      ? normalizePath(options?.directory ?? get().getDirectoryForSession(targetSessionId))
       : null
     if (targetSessionId) {
       notifyMessageSent(targetSessionId)
@@ -1162,6 +1230,9 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       filename: a.filename,
     }))
 
+    if (targetSessionId) {
+      await applyArmedGoal(targetSessionId, currentSessionDirectory)
+    }
     await routeMessage({
       sessionId: targetSessionId || "",
       directory: currentSessionDirectory,
@@ -1185,9 +1256,6 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         })),
       })),
     })
-    if (targetSessionId) {
-      applyArmedGoal(targetSessionId, currentSessionDirectory)
-    }
   },
 
   // ---------------------------------------------------------------------------
@@ -1196,12 +1264,13 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   createSession: async (title, directoryOverride, parentID, metadata) => {
     const draft = get().newSessionDraft
     const targetFolderId = draft.targetFolderId
-    get().closeNewSessionDraft()
 
     try {
       const dir = directoryOverride ?? opencodeClient.getDirectory()
       const session = await createSessionAction(title, dir, parentID ?? null, metadata)
       if (!session) return null
+
+      get().closeNewSessionDraft()
 
       if (targetFolderId) {
         const scopeKey = directoryOverride || get().lastLoadedDirectory || session.directory
@@ -1612,13 +1681,14 @@ setSessionOpener((sessionID, directory) => {
 // comparison avoids redundant localStorage writes when the Map reference
 // changed but the content is identical (e.g., re-discovery that found the
 // same worktrees).
-let lastPersistedWorktreeSerialized = ''
+const lastPersistedWorktreeSerializedByRuntime = new Map<string, string>()
 useSessionUIStore.subscribe((state, prev) => {
   if (state.availableWorktreesByProject !== prev.availableWorktreesByProject) {
+    const runtimeKey = runtimeMemoryKey()
     const serialized = JSON.stringify([...state.availableWorktreesByProject.entries()])
-    if (serialized !== lastPersistedWorktreeSerialized) {
-      lastPersistedWorktreeSerialized = serialized
-      persistWorktreeMap(serialized)
+    if (serialized !== lastPersistedWorktreeSerializedByRuntime.get(runtimeKey)) {
+      lastPersistedWorktreeSerializedByRuntime.set(runtimeKey, serialized)
+      persistWorktreeTopology(runtimeKey, state.availableWorktreesByProject)
     }
   }
 })

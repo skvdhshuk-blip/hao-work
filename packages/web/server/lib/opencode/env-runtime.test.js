@@ -119,6 +119,19 @@ const createRuntime = (settings, options = {}) => {
 };
 
 describe('OpenCode env runtime', () => {
+  it('searches an explicit PATH without mutating the process environment', () => {
+    const defaultDir = createTempDir('openchamber-default-path-');
+    const explicitDir = createTempDir('openchamber-explicit-path-');
+    const binary = path.join(explicitDir, process.platform === 'win32' ? 'custom-shell.exe' : 'custom-shell');
+    fs.writeFileSync(binary, '#!/bin/sh\nexit 0\n');
+    if (process.platform !== 'win32') fs.chmodSync(binary, 0o755);
+    process.env.PATH = defaultDir;
+    const { runtime } = createRuntime({});
+
+    expect(runtime.searchPathFor('custom-shell', explicitDir)).toBe(binary);
+    expect(process.env.PATH).toBe(defaultDir);
+  });
+
   it('throws a specific error for a missing configured OpenCode binary in strict mode', async () => {
     const { runtime } = createRuntime({ opencodeBinary: '/missing/opencode' });
 
@@ -151,7 +164,7 @@ describe('OpenCode env runtime', () => {
     expect(state.resolvedOpencodeBinarySource).toBe('settings');
   });
 
-  it('prefers a user-installed OpenCode from PATH over the bundled CLI', () => {
+  it('prefers the bundled CLI over a user-installed OpenCode from PATH', () => {
     const bundledDir = createTempDir('openchamber-bundled-opencode-');
     const bundledBinary = path.join(bundledDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
     const pathDir = createTempDir('openchamber-path-opencode-');
@@ -167,8 +180,20 @@ describe('OpenCode env runtime', () => {
     delete process.env.OPENCODE_BINARY;
     const { runtime, state } = createRuntime({});
 
-    expect(runtime.resolveOpencodeCliPath()).toBe(pathBinary);
-    expect(state.resolvedOpencodeBinarySource).toBe('path');
+    expect(runtime.resolveOpencodeCliPath()).toBe(bundledBinary);
+    expect(state.resolvedOpencodeBinarySource).toBe('bundled');
+  });
+
+  it('recognizes the bundled CLI by canonical path', () => {
+    const bundledDir = createTempDir('openchamber-bundled-opencode-');
+    const bundledBinary = path.join(bundledDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
+    fs.writeFileSync(bundledBinary, '#!/bin/sh\nexit 0\n');
+    if (process.platform !== 'win32') fs.chmodSync(bundledBinary, 0o755);
+    process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR = bundledDir;
+    const { runtime } = createRuntime({});
+
+    expect(runtime.isBundledOpenCodeCliPath(bundledBinary)).toBe(true);
+    expect(runtime.isBundledOpenCodeCliPath(path.join(bundledDir, 'other'))).toBe(false);
   });
 
   it('keeps explicit OpenCode binary ahead of bundled CLI', () => {
@@ -190,7 +215,7 @@ describe('OpenCode env runtime', () => {
     expect(state.resolvedOpencodeBinarySource).toBe('env');
   });
 
-  it('falls back to the bundled OpenCode CLI from Electron resourcesPath when nothing else is installed', () => {
+  it('resolves the bundled OpenCode CLI from Electron resourcesPath', () => {
     const resourcesPath = createTempDir('openchamber-resources-');
     const bundledDir = path.join(resourcesPath, 'opencode-cli');
     const bundledBinary = path.join(bundledDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
@@ -206,8 +231,6 @@ describe('OpenCode env runtime', () => {
     process.env.PATH = createTempDir('openchamber-empty-path-');
     delete process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR;
     delete process.env.OPENCODE_BINARY;
-    // The bundled CLI is the LAST resort now — hide the machine's own installs
-    // from the home-directory fallbacks and shell discovery.
     const emptyHome = createTempDir('openchamber-empty-home-');
     const { runtime, state } = createRuntime({}, {
       spawnSync: () => ({ status: 1, stdout: '', stderr: '' }),

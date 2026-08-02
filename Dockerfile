@@ -5,10 +5,12 @@ WORKDIR /app
 FROM base AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
+COPY bun-patches ./bun-patches
 COPY packages/ui/package.json ./packages/ui/
 COPY packages/web/package.json ./packages/web/
 COPY packages/electron/package.json ./packages/electron/
 COPY packages/vscode/package.json ./packages/vscode/
+COPY packages/mobile/package.json ./packages/mobile/
 RUN bun install --frozen-lockfile --ignore-scripts
 
 FROM deps AS builder
@@ -45,7 +47,7 @@ ENV PATH=${NPM_CONFIG_PREFIX}/bin:${PATH}
 
 RUN npm config set prefix /home/openchamber/.npm-global && mkdir -p /home/openchamber/.npm-global && \
   mkdir -p /home/openchamber/.local /home/openchamber/.config /home/openchamber/.ssh && \
-  npm install -g opencode-ai
+  npm install -g opencode-ai@1.18.11
 
 # cloudflared 2026.3.0 - update digest explicitly when upgrading
 COPY --from=cloudflare/cloudflared@sha256:6d91c121b803126f7a5344005d17a9324788fc09d305b6e2560ec6040a7ae283 /usr/local/bin/cloudflared /usr/local/bin/cloudflared

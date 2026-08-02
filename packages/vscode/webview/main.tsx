@@ -13,6 +13,9 @@ import {
 } from '@openchamber/ui/lib/theme/vscode/adapter';
 import { getBootstrapMessages, readStoredLocaleForBootstrap } from '@openchamber/ui/lib/i18n';
 import type { VSCodeActiveEditorFile } from '@/sync/input-store';
+import { usePermissionStore } from '@openchamber/ui/stores/permissionStore';
+import { processVSCodePermissionAutoAccept } from '@openchamber/ui/sync/vscode-permission-auto-accept';
+import type { PermissionRequest } from '@opencode-ai/sdk/v2/client';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
 type PanelType = 'chat' | 'agentManager';
@@ -408,15 +411,24 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     });
   }
 
-  if (normalizedPathname === '/api/notifications/auto-accept' && method === 'POST') {
+  if (normalizedPathname === '/api/permission-auto-accept' && method === 'GET') {
+    const snapshot = await sendBridgeMessage('api:permission-auto-accept:get');
+    return new Response(JSON.stringify(snapshot), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const permissionPolicyMatch = normalizedPathname.match(/^\/api\/permission-auto-accept\/sessions\/([^/]+)$/);
+  if (permissionPolicyMatch && method === 'PUT') {
     const bodyText = await extractBodyText(url, init, method);
-    const body = bodyText
-      ? JSON.parse(bodyText) as { sessionId?: unknown; enabled?: unknown }
-      : {};
-    const result = await sendBridgeMessage<{ success?: boolean }>('api:notifications/auto-accept', body)
-      .catch(() => ({ success: false }));
-    return new Response(JSON.stringify(result), {
-      status: result?.success === false ? 400 : 200,
+    const body = bodyText ? JSON.parse(bodyText) as { enabled?: unknown } : {};
+    const snapshot = await sendBridgeMessage('api:permission-auto-accept:set', {
+      sessionId: decodeURIComponent(permissionPolicyMatch[1]),
+      enabled: body.enabled,
+    });
+    return new Response(JSON.stringify(snapshot), {
+      status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -981,6 +993,17 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     });
   }
 
+  if (pathname === '/api/opencode/upgrade-status' && method === 'GET') {
+    const data = await sendBridgeMessage('api:opencode/upgrade-status');
+    return jsonResponse(data);
+  }
+
+  if (pathname === '/api/opencode/upgrade' && method === 'POST') {
+    const body = await extractJsonBody(input, init, method);
+    const result = await sendBridgeMessage<{ status: number; body: unknown }>('api:opencode/upgrade', body);
+    return jsonResponse(result.body, result.status);
+  }
+
   if (pathname === '/api/zen/models' && method === 'GET') {
     try {
       const data = await sendBridgeMessage('api:zen:models');
@@ -1099,6 +1122,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
 };
 
 const originalFetch = window.fetch.bind(window);
+let sseStreamCounter = 0;
 window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const targetUrl = typeof input === 'string' || input instanceof URL ? normalizeUrl(input) : normalizeUrl((input as Request).url);
   const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -1137,12 +1161,10 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = { ...headersFromRequest, ...headersFromInit };
 
     if (isSseApiPath(targetUrl.pathname)) {
-      const start = await vscodeStreamPerfMeasure('vscode.webview.sse_start_ms', () => startSseProxy({ path: suffixPath, headers }));
-      if (!start.streamId) {
-        return new Response(null, { status: start.status || 503, headers: start.headers || {} });
-      }
-
-      const streamId = start.streamId;
+      // Install the listener before the extension opens the upstream stream. A
+      // reconnect can replay an event immediately, before the start response
+      // has crossed the VS Code bridge.
+      const streamId = `sse_webview_${Date.now()}_${++sseStreamCounter}`;
       const signal = (input instanceof Request ? input.signal : init?.signal) as AbortSignal | undefined;
       const encoder = new TextEncoder();
       let unsubscribe: (() => void) | null = null;
@@ -1200,6 +1222,18 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
           void stopSseProxy({ streamId }).catch(() => {});
         },
       });
+
+      let start;
+      try {
+        start = await vscodeStreamPerfMeasure('vscode.webview.sse_start_ms', () => startSseProxy({ path: suffixPath, headers, streamId }));
+      } catch (error) {
+        await stream.cancel();
+        throw error;
+      }
+      if (!start.streamId) {
+        void stream.cancel();
+        return new Response(null, { status: start.status || 503, headers: start.headers || {} });
+      }
 
       return new Response(stream, { status: start.status || 200, headers: start.headers || { 'content-type': 'text/event-stream' } });
     }
@@ -1657,7 +1691,7 @@ const getNotificationDirectory = (payload: Record<string, unknown>): string | nu
 };
 
 window.addEventListener('openchamber:vscode-notification-event', (event) => {
-  const detail = (event as CustomEvent<{ payload?: unknown }>).detail;
+  const detail = (event as CustomEvent<{ directory?: string; payload?: unknown }>).detail;
   const payload = detail?.payload;
   if (!payload || typeof payload !== 'object') {
     return;
@@ -1674,8 +1708,7 @@ window.addEventListener('openchamber:vscode-notification-event', (event) => {
 
   Promise.all([
     import('@/stores/useUIStore'),
-    import('@/stores/permissionStore'),
-  ]).then(async ([{ useUIStore }, { usePermissionStore }]) => {
+  ]).then(async ([{ useUIStore }]) => {
     await ensureNotificationSettingsSynced();
     const settings = useUIStore.getState();
     if (!settings.nativeNotificationsEnabled) {
@@ -1763,7 +1796,14 @@ window.addEventListener('openchamber:vscode-notification-event', (event) => {
 
     if (type === 'permission.asked') {
       if (!settings.notifyOnQuestion) return;
-      if (usePermissionStore.getState().isSessionAutoAccepting(sessionId)) return;
+      const requestId = getPayloadString(properties.id);
+      if (requestId) {
+        const accepted = await processVSCodePermissionAutoAccept(
+          properties as unknown as PermissionRequest,
+          detail?.directory,
+        );
+        if (accepted) return;
+      }
       const permission = getPayloadString(properties.permission);
       const sessionTitle = getPayloadString(properties.sessionTitle);
       const fallbackMessage = sessionTitle || permission || 'Agent is waiting for your approval';
@@ -1785,6 +1825,17 @@ window.addEventListener('openchamber:vscode-notification-event', (event) => {
 onCommand('settingsSynced', () => {
   import('@openchamber/ui/lib/persistence').then(({ syncDesktopSettings }) => {
     void syncDesktopSettings();
+  });
+});
+
+onCommand('permissionAutoAcceptSynced', (payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  const snapshot = payload as { sessions?: unknown; revision?: unknown };
+  const sessions = snapshot.sessions;
+  if (!sessions || typeof sessions !== 'object') return;
+  usePermissionStore.getState().applySnapshot({
+    sessions: sessions as Record<string, boolean>,
+    revision: typeof snapshot.revision === 'number' ? snapshot.revision : undefined,
   });
 });
 

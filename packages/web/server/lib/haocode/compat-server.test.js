@@ -1166,6 +1166,29 @@ describe('HaoCode compatibility server', () => {
     expect(sandbox.cpuCount).toBe(4);
   });
 
+  test('normalizes sandbox resource values outside the HaoCode SDK limits', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+
+    await fetch(`${runtime.baseUrl}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _fe_sandboxEnabled: true,
+        _fe_sandboxBaseRootfs: '/srv/base',
+        _fe_sandboxMemoryMb: 128,
+        _fe_sandboxCpuCount: 65,
+      }),
+    });
+
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'sandbox-config')).status).toBe(200);
+    const stopped = await waitForAssistantStop(runtime.baseUrl, session.id);
+    const sandbox = JSON.parse(stopped.at(-1).parts.find((part) => part.type === 'text').text);
+    expect(sandbox.memoryMb).toBe(4096);
+    expect(sandbox.cpuCount).toBe(4);
+  });
+
   test('passes allow-all sandbox network through unchanged', async () => {
     const runtime = await createRuntime();
     await configureDeepSeek(runtime.baseUrl);

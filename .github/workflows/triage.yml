@@ -33,7 +33,10 @@ jobs:
           private-key: ${{ secrets.OC_REVIEW_APP_PRIVATE_KEY }}
 
       - name: Install opencode
-        run: curl -fsSL https://opencode.ai/install | bash
+        run: |
+          set -euo pipefail
+          opencode_version="$(node -p "require('./package.json').dependencies['@opencode-ai/sdk']")"
+          npm install --global --no-audit --no-fund "opencode-ai@$opencode_version"
 
       - name: Resolve triage command
         id: command

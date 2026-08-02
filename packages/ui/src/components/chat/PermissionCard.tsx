@@ -9,6 +9,7 @@ import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { Icon } from "@/components/icon/Icon";
 import { DiffPreview, WritePreview } from './DiffPreview';
 import { useI18n, type I18nKey } from '@/lib/i18n';
+import { getVisiblePermissionPatterns } from './permissionCardPatterns';
 
 const PERMISSION_BASH_CUSTOM_STYLE: React.CSSProperties = {
   margin: 0,
@@ -134,6 +135,7 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
 
   const toolName = permission.permission || 'unknown';
   const tool = toolName.toLowerCase();
+  const isBashTool = tool === 'bash' || tool === 'shell' || tool === 'shell_command';
 
   const getMeta = (key: string, fallback: string = ''): string => {
     const val = permission.metadata[key];
@@ -148,6 +150,10 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
     return Boolean(val);
   };
   const displayToolName = getToolDisplayName(toolName);
+  const bashCommand = isBashTool
+    ? getMeta('command') || getMeta('cmd') || getMeta('script')
+    : '';
+  const visiblePatterns = getVisiblePermissionPatterns(permission.patterns, bashCommand);
 
   // Smart-mode escalation context merged into metadata by the compat server.
   const escalationReason = getMeta('_fe_escalationReason');
@@ -159,8 +165,7 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
 
   const renderToolContent = () => {
 
-    if (tool === 'bash' || tool === 'shell' || tool === 'shell_command') {
-      const command = getMeta('command') || getMeta('cmd') || getMeta('script');
+    if (isBashTool) {
       const description = getMeta('description');
       const workingDir = getMeta('cwd') || getMeta('working_directory') || getMeta('directory') || getMeta('path');
       const timeout = getMetaNum('timeout');
@@ -181,11 +186,11 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
             </div>
           )}
           {}
-          {command && (
+          {bashCommand && (
             <div>
               <WorkerHighlightedCode
                 language="bash"
-                code={command}
+                code={bashCommand}
                 style={PERMISSION_BASH_CUSTOM_STYLE}
                 codeStyle={PERMISSION_BASH_CODE_TAG_PROPS.style}
                 wrap
@@ -352,11 +357,11 @@ export const PermissionCard: React.FC<PermissionCardProps> = ({
 
           {}
           <div className="px-2 py-2">
-            {permission.patterns.length > 0 && (
+            {visiblePatterns.length > 0 && (
               <div className="mb-2">
                 <div className="typography-meta text-muted-foreground mb-1">{t('chat.permissionCard.patterns')}</div>
                 <code className="typography-meta px-2 py-1 bg-muted/30 rounded block break-all">
-                  {permission.patterns.join(", ")}
+                  {visiblePatterns.join(", ")}
                 </code>
               </div>
             )}

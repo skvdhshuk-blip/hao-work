@@ -9,6 +9,7 @@ import { fetchQuotaForProvider, listConfiguredQuotaProviders } from './quotaProv
 import { fetchOpenCodeGoUsage } from './opencodeGoQuota';
 import { credentialStatus, deleteCredential, importCursorCredential, normalizeCredential, readCredential, validateCredential, writeCredential, type ManagedProvider } from './quotaCredentials';
 import { getSessionActivitySnapshot } from './sessionActivityWatcher';
+import { getOpenCodeUpgradeStatus, upgradeManagedOpenCode } from './opencode-upgrade-runtime';
 import type { BridgeContext, BridgeResponse } from './bridge';
 
 type BridgeMessageInput = {
@@ -76,10 +77,13 @@ const getOrCreateInstallId = (scope: string): string => {
   return installId;
 };
 
-const mapNodePlatformToApiPlatform = (value: string): 'macos' | 'windows' | 'linux' | 'web' => {
+const mapNodePlatformToApiPlatform = (value: string): 'macos' | 'windows' | 'linux' | 'android' | 'ios' | 'web' => {
+  // The webview already sends API-shaped values; Node's os.platform() is the fallback source.
+  if (value === 'macos' || value === 'windows' || value === 'linux' || value === 'android' || value === 'ios' || value === 'web') {
+    return value;
+  }
   if (value === 'darwin') return 'macos';
   if (value === 'win32') return 'windows';
-  if (value === 'linux') return 'linux';
   return 'web';
 };
 
@@ -269,6 +273,15 @@ export async function handleSystemBridgeMessage(
       }
     }
 
+    case 'api:opencode/upgrade-status': {
+      return { id, type, success: true, data: await getOpenCodeUpgradeStatus(ctx?.manager) };
+    }
+
+    case 'api:opencode/upgrade': {
+      const target = (payload as { target?: unknown } | undefined)?.target;
+      return { id, type, success: true, data: await upgradeManagedOpenCode(ctx?.manager, target) };
+    }
+
     case 'api:session-activity:get': {
       return { id, type, success: true, data: getSessionActivitySnapshot() };
     }
@@ -305,7 +318,6 @@ export async function handleSystemBridgeMessage(
           : os.arch();
         const reportUsage = body.reportUsage !== false;
 
-        const installId = getOrCreateInstallId('vscode');
         const requestBody = {
           appType: 'vscode',
           deviceClass,
@@ -313,7 +325,7 @@ export async function handleSystemBridgeMessage(
           arch: mapNodeArchToApiArch(archRaw),
           channel: 'stable',
           currentVersion,
-          installId,
+          ...(reportUsage ? { installId: getOrCreateInstallId('vscode') } : {}),
           instanceMode,
           reportUsage,
         };
@@ -556,15 +568,6 @@ export async function handleSystemBridgeMessage(
         const errorMessage = error instanceof Error ? error.message : String(error);
         return { id, type, success: false, error: errorMessage };
       }
-    }
-
-    case 'api:notifications/auto-accept': {
-      const request = (payload || {}) as { sessionId?: unknown; enabled?: unknown };
-      const sessionId = typeof request.sessionId === 'string' ? request.sessionId.trim() : '';
-      if (!sessionId) {
-        return { id, type, success: false, error: 'sessionId is required' };
-      }
-      return { id, type, success: true, data: { success: true } };
     }
 
     default:

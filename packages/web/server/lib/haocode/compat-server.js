@@ -440,8 +440,24 @@ const normalizeHitlReviewModel = (value) => (
 const SANDBOX_NETWORKS = new Set(['blocked', 'allow-all']);
 const DEFAULT_SANDBOX_MEMORY_MB = 4096;
 const DEFAULT_SANDBOX_CPU_COUNT = 4;
+const MIN_SANDBOX_MEMORY_MB = 256;
+const MAX_SANDBOX_CPU_COUNT = 64;
 
 const normalizeSandboxNetwork = (value) => (SANDBOX_NETWORKS.has(value) ? value : 'blocked');
+
+const normalizeSandboxMemoryMb = (value) => {
+  if (!Number.isFinite(value)) return DEFAULT_SANDBOX_MEMORY_MB;
+  const normalized = Math.trunc(value);
+  return normalized >= MIN_SANDBOX_MEMORY_MB ? normalized : DEFAULT_SANDBOX_MEMORY_MB;
+};
+
+const normalizeSandboxCpuCount = (value) => {
+  if (!Number.isFinite(value)) return DEFAULT_SANDBOX_CPU_COUNT;
+  const normalized = Math.trunc(value);
+  return normalized >= 1 && normalized <= MAX_SANDBOX_CPU_COUNT
+    ? normalized
+    : DEFAULT_SANDBOX_CPU_COUNT;
+};
 
 const buildSandboxRequest = (config) => {
   if (!config || config._fe_sandboxEnabled !== true) {
@@ -453,12 +469,8 @@ const buildSandboxRequest = (config) => {
     // instead of throwing inside the worker. UI surfaces the missing runtime.
     return { enabled: false };
   }
-  const memoryMb = Number.isFinite(config._fe_sandboxMemoryMb)
-    ? config._fe_sandboxMemoryMb
-    : DEFAULT_SANDBOX_MEMORY_MB;
-  const cpuCount = Number.isFinite(config._fe_sandboxCpuCount)
-    ? config._fe_sandboxCpuCount
-    : DEFAULT_SANDBOX_CPU_COUNT;
+  const memoryMb = normalizeSandboxMemoryMb(config._fe_sandboxMemoryMb);
+  const cpuCount = normalizeSandboxCpuCount(config._fe_sandboxCpuCount);
   return {
     enabled: true,
     provider: 'tokimo',

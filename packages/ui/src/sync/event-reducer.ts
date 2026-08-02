@@ -165,6 +165,7 @@ export type SessionMaterializationReason =
   | "stream-reconnect"
   | "transport-switch"
   | "stale-status-resync"
+  | "settled-running-tool"
 
 export type DirectoryEventResult = boolean | {
   changed: boolean
@@ -278,6 +279,21 @@ export function applyDirectoryEvent(
     return true
   }
 
+  const markSessionEvent = (sessionID: string, deleted: boolean) => {
+    const revision = (draft.sessionRevision ?? 0) + 1
+    draft.sessionRevision = revision
+    draft.sessionListSource = "live"
+    draft.sessionEventRevision = draft.sessionEventRevision ?? {}
+    draft.sessionDeletedRevision = draft.sessionDeletedRevision ?? {}
+    if (deleted) {
+      draft.sessionDeletedRevision[sessionID] = revision
+      delete draft.sessionEventRevision[sessionID]
+    } else {
+      draft.sessionEventRevision[sessionID] = revision
+      delete draft.sessionDeletedRevision[sessionID]
+    }
+  }
+
   switch (event.type) {
     case "server.instance.disposed": {
       callbacks?.onRefresh?.("")
@@ -298,6 +314,7 @@ export function applyDirectoryEvent(
         trimSessions(draft)
         if (!info.parentID) draft.sessionTotal += 1
       }
+      markSessionEvent(info.id, false)
       return true
     }
 
@@ -317,6 +334,7 @@ export function applyDirectoryEvent(
         if (result.found) sessions.splice(result.index, 1)
         cleanupSessionCaches(draft, info.id, callbacks?.onSetSessionTodo)
         if (!info.parentID) draft.sessionTotal = Math.max(0, draft.sessionTotal - 1)
+        markSessionEvent(info.id, true)
         return true
       }
 
@@ -326,16 +344,21 @@ export function applyDirectoryEvent(
         sessions.splice(result.index, 0, info)
         trimSessions(draft)
       }
+      markSessionEvent(info.id, false)
       return true
     }
 
     case "session.deleted": {
-      const info = (event.properties as { info: Session }).info
       const sessions = draft.session
-      const result = Binary.search(sessions, info.id, (s) => s.id)
+      const props = event.properties as { info?: Session; sessionID?: string }
+      const sessionID = props.info?.id ?? props.sessionID
+      if (!sessionID) return false
+      const result = Binary.search(sessions, sessionID, (s) => s.id)
+      const info = props.info ?? (result.found ? sessions[result.index] : undefined)
       if (result.found) sessions.splice(result.index, 1)
-      cleanupSessionCaches(draft, info.id, callbacks?.onSetSessionTodo)
-      if (!info.parentID) draft.sessionTotal = Math.max(0, draft.sessionTotal - 1)
+      cleanupSessionCaches(draft, sessionID, callbacks?.onSetSessionTodo)
+      if (!info?.parentID) draft.sessionTotal = Math.max(0, draft.sessionTotal - 1)
+      markSessionEvent(sessionID, true)
       return true
     }
 

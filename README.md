@@ -55,6 +55,7 @@ bun run dev
 ```
 
 默认页面为 `http://127.0.0.1:5180`，API 服务为 `http://127.0.0.1:3902`。在 Settings → Providers 中保存 Provider 凭据后即可创建会话。
+Linux Desktop ships as AppImage with in-app window controls and auto-update when running from a writable AppImage.
 
 开发时可覆盖 bridge 运行环境：
 

@@ -251,6 +251,10 @@ export const VSCodeLayout: React.FC = () => {
     setCurrentView('sessions');
   }, []);
 
+  const handleSessionSelected = React.useCallback(() => {
+    setCurrentView('chat');
+  }, []);
+
   const isSessionInActiveWorkspace = React.useCallback((session: Session): boolean => {
     if (!activeWorkspacePath) {
       return false;
@@ -442,7 +446,7 @@ export const VSCodeLayout: React.FC = () => {
     // No initialSessionId means open a new session draft
     if (!initialSessionId) {
       hasAppliedInitialSession.current = true;
-      openNewSessionDraft();
+      openNewSessionDraft({ automatic: true });
       return;
     }
 
@@ -590,7 +594,7 @@ export const VSCodeLayout: React.FC = () => {
             />
             <div className="flex-1 overflow-hidden">
               <ErrorBoundary>
-                <ChatView />
+                <ChatView active={currentView === 'chat'} />
               </ErrorBoundary>
             </div>
           </div>
@@ -609,7 +613,7 @@ export const VSCodeLayout: React.FC = () => {
                 <SessionSidebar
                   mobileVariant
                   allowReselect
-                  onSessionSelected={() => setCurrentView('chat')}
+                  onSessionSelected={handleSessionSelected}
                   hideDirectoryControls
                 />
               </div>
@@ -628,7 +632,7 @@ export const VSCodeLayout: React.FC = () => {
             />
             <div className="flex-1 overflow-hidden">
               <ErrorBoundary>
-                <ChatView />
+                <ChatView active={currentView === 'chat'} />
               </ErrorBoundary>
             </div>
           </div>

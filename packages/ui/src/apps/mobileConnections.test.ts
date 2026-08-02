@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 
-import { loadMobileConnections, upsertMobileConnection, validateMobileConnectionSession, type MobileRelayConfig } from './mobileConnections';
+import { createMobilePasswordOperationTracker, loadMobileConnections, migrateLegacyInlineTokenRecords, upsertMobileConnection, validateMobileConnectionSession, type MobileRelayConfig } from './mobileConnections';
 
 const originalFetch = globalThis.fetch;
 const originalWindow = globalThis.window;
@@ -40,6 +40,36 @@ const testRelay: MobileRelayConfig = {
 };
 
 describe('mobile connection storage', () => {
+  test('cancellation invalidates an in-flight password completion', async () => {
+    const tracker = createMobilePasswordOperationTracker();
+    const operation = tracker.begin();
+    let resolveLogin: () => void = () => {
+      throw new Error('Login was not started');
+    };
+    let switchedRuntime = false;
+    const completion = new Promise<void>((resolve) => { resolveLogin = resolve; }).then(() => {
+      if (tracker.isCurrent(operation)) switchedRuntime = true;
+    });
+
+    tracker.cancel();
+    resolveLogin();
+    await completion;
+
+    expect(switchedRuntime).toBe(false);
+  });
+
+  test('removes inline tokens only after each secure migration succeeds', async () => {
+    const result = await migrateLegacyInlineTokenRecords([
+      { id: 'ok', url: 'http://ok.example', clientToken: 'token-ok' },
+      { id: 'failed', url: 'http://failed.example', clientToken: 'token-failed' },
+    ], async (url) => url.includes('ok.example'));
+
+    expect(result.migrated).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.records[0]).toEqual({ id: 'ok', url: 'http://ok.example', hasToken: true });
+    expect(result.records[1]).toEqual({ id: 'failed', url: 'http://failed.example', clientToken: 'token-failed' });
+  });
+
   test('entries persisted before candidates migrate to a single direct candidate', async () => {
     try {
       installTestWindow();

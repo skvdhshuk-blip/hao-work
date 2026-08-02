@@ -8,6 +8,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
     crypto,
     clientReloadDelayMs,
     getOpenCodeResolutionSnapshot,
+    getOpenCodeUpgradeCapability,
     formatSettingsResponse,
     readSettingsFromDisk,
     readSettingsFromDiskMigrated,
@@ -44,7 +45,6 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
   // Hao Work always owns its local engine. The compatibility API keeps these
   // historical route names, but no OpenCode binary is discovered or upgraded.
   const isBundledOpenCodeBinaryActive = async () => true;
-
   const readOpenCodeCurrentVersion = async () => {
     const healthResponse = await fetch(buildOpenCodeUrl('/global/health', ''), {
       method: 'GET',
@@ -144,11 +144,15 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
     res.json({ source: 'haocode', path: null, managed: true, _fe_agentEngine: 'haocode' });
   });
 
+  let openCodeUpgradePromise = null;
+
   app.post('/api/opencode/upgrade', async (req, res) => {
     try {
-      if (await isBundledOpenCodeBinaryActive()) {
+      const capability = getOpenCodeUpgradeCapability();
+      if (!capability.supported) {
         return res.status(409).json({
           success: false,
+          code: 'OPENCODE_UPGRADE_MANAGED_BY_OPENCHAMBER',
           error: 'HaoCode is bundled with Hao Work and is upgraded with the application.',
         });
       }
@@ -156,36 +160,57 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
       const target = typeof req.body?.target === 'string' && req.body.target.trim().length > 0
         ? req.body.target.trim()
         : undefined;
-      const response = await fetch(buildOpenCodeUrl('/global/upgrade', ''), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          ...getOpenCodeAuthHeaders(),
-        },
-        body: JSON.stringify(target ? { target } : {}),
-      });
-      const payload = await response.json().catch(() => null);
-      if (!response.ok) {
-        return res.status(response.status).json({
-          success: false,
-          error: payload?.error || response.statusText || 'Failed to upgrade OpenCode',
+      const upgradeOperation = (async () => {
+        const response = await fetch(buildOpenCodeUrl('/global/upgrade', ''), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            ...getOpenCodeAuthHeaders(),
+          },
+          body: JSON.stringify(target ? { target } : {}),
         });
-      }
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          return {
+            status: response.status,
+            body: {
+              success: false,
+              error: payload?.error || response.statusText || 'Failed to upgrade OpenCode',
+            },
+          };
+        }
+
+        try {
+          await refreshOpenCodeAfterConfigChange('OpenCode upgrade');
+        } catch (restartError) {
+          return {
+            status: 500,
+            body: {
+              success: false,
+              upgraded: true,
+              error: restartError instanceof Error
+                ? `OpenCode upgraded, but restart failed: ${restartError.message}`
+                : 'OpenCode upgraded, but restart failed',
+            },
+          };
+        }
+
+        return {
+          status: 200,
+          body: { ...(payload ?? { success: true }), restarted: true },
+        };
+      })();
+      openCodeUpgradePromise = upgradeOperation;
 
       try {
-        await refreshOpenCodeAfterConfigChange('OpenCode upgrade');
-      } catch (restartError) {
-        return res.status(500).json({
-          success: false,
-          upgraded: true,
-          error: restartError instanceof Error
-            ? `OpenCode upgraded, but restart failed: ${restartError.message}`
-            : 'OpenCode upgraded, but restart failed',
-        });
+        const result = await upgradeOperation;
+        return res.status(result.status).json(result.body);
+      } finally {
+        if (openCodeUpgradePromise === upgradeOperation) {
+          openCodeUpgradePromise = null;
+        }
       }
-
-      return res.json({ ...(payload ?? { success: true }), restarted: true });
     } catch (error) {
       console.error('Failed to upgrade OpenCode:', error);
       return res.status(500).json({
@@ -197,13 +222,14 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
 
   app.get('/api/opencode/upgrade-status', async (_req, res) => {
     try {
-      if (await isBundledOpenCodeBinaryActive()) {
+      const capability = getOpenCodeUpgradeCapability();
+      if (!capability.supported) {
         const current = await readOpenCodeCurrentVersion().catch(() => ({ ok: false, currentVersion: null }));
         return res.json({
           available: false,
           currentVersion: current.ok ? current.currentVersion : null,
           latestVersion: null,
-          source: 'bundled',
+          upgrade: capability,
         });
       }
 
@@ -230,6 +256,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
         available,
         currentVersion,
         latestVersion,
+        upgrade: capability,
       });
     } catch (error) {
       return res.status(500).json({

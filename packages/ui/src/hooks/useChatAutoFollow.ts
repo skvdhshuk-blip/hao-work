@@ -20,6 +20,7 @@ export interface AnimationHandlers {
 
 interface UseChatAutoFollowOptions {
     currentSessionId: string | null;
+    currentSessionKey: string | null;
     sessionMessageCount: number;
     sessionIsWorking: boolean;
     isMobile: boolean;
@@ -156,6 +157,7 @@ const nestedScrollableCanConsumeUp = (root: HTMLElement, target: EventTarget | n
 
 export const useChatAutoFollow = ({
     currentSessionId,
+    currentSessionKey,
     sessionMessageCount,
     sessionIsWorking,
     isMobile,
@@ -186,8 +188,10 @@ export const useChatAutoFollow = ({
     sessionMessageCountRef.current = sessionMessageCount;
     const currentSessionIdRef = React.useRef(currentSessionId);
     currentSessionIdRef.current = currentSessionId;
+    const currentSessionKeyRef = React.useRef(currentSessionKey);
+    currentSessionKeyRef.current = currentSessionKey;
 
-    const lastSessionIdRef = React.useRef<string | null>(null);
+    const lastSessionKeyRef = React.useRef<string | null>(null);
 
     // Programmatic-scroll marker: the bottom position we last
     // wrote and when. A scroll event whose scrollTop matches `top` within a few
@@ -346,13 +350,19 @@ export const useChatAutoFollow = ({
         const el = scrollRef.current;
         if (!el) return;
         markAuto(el);
+        // `scrollHeight` is rounded to an integer while the real content height
+        // is fractional (prose line-heights), so `scrollTop = scrollHeight`
+        // leaves a 0–1px remainder that oscillates per streamed token and makes
+        // bottom-anchored rows jitter vertically. An over-large target clamps to
+        // the exact fractional maximum instead, pinning content to the bottom.
+        const overshootTarget = el.scrollHeight + 4096;
         if (behavior === 'smooth') {
-            el.scrollTo({ top: el.scrollHeight, behavior });
+            el.scrollTo({ top: overshootTarget, behavior });
             return;
         }
         // Direct `scrollTop` assignment bypasses any CSS `scroll-behavior: smooth`
         // and lands in the same frame — no visible catch-up animation.
-        el.scrollTop = el.scrollHeight;
+        el.scrollTop = overshootTarget;
     }, [markAuto]);
 
     // `force` true = user-intent jump (clears released and always scrolls).
@@ -370,15 +380,14 @@ export const useChatAutoFollow = ({
         if (!el) return;
         if (!force && stateRef.current !== 'following') return;
 
-        const distance = distanceFromBottom(el);
-        if (distance < AUTO_MATCH_TOLERANCE_PX) {
-            // Already at the bottom; just refresh the auto marker so the next
-            // scroll event is recognised as ours.
-            markAuto(el);
-            return;
-        }
+        // Always re-pin, even when already within tolerance of the bottom.
+        // Sub-tolerance growth (fractional line-height remainders) would
+        // otherwise leave the bottom drifting by up to ±AUTO_MATCH_TOLERANCE_PX
+        // between full re-pins, which reads as 1px vertical jitter on
+        // bottom-anchored rows during streaming. The write happens pre-paint
+        // (ResizeObserver) and is a no-op when the position is unchanged.
         scrollToBottomNow(force ? behavior : 'auto');
-    }, [isActive, markAuto, scrollToBottomNow, setStateValue]);
+    }, [isActive, scrollToBottomNow, setStateValue]);
 
     // User left the bottom — release auto-follow.
     const stop = React.useCallback(() => {
@@ -463,14 +472,14 @@ export const useChatAutoFollow = ({
     }, [flushSave]);
 
     const restoreSnapshot = React.useCallback(async (): Promise<boolean> => {
-        const sessionId = currentSessionIdRef.current;
-        if (!sessionId) return false;
+        const sessionKey = currentSessionKeyRef.current;
+        if (!sessionKey) return false;
 
         const container = scrollRef.current;
         if (!container) {
             // ChatViewport not mounted yet (e.g., session still hydrating).
             // Record the request so the container-attach effect can replay it.
-            pendingInitialRestoreRef.current = sessionId;
+            pendingInitialRestoreRef.current = sessionKey;
             setStateValue('following');
             return false;
         }
@@ -491,18 +500,18 @@ export const useChatAutoFollow = ({
 
     // ── session change ───────────────────────────────────────────────────────
     React.useEffect(() => {
-        if (!currentSessionId || currentSessionId === lastSessionIdRef.current) {
+        if (!currentSessionId || !currentSessionKey || currentSessionKey === lastSessionKeyRef.current) {
             return;
         }
-        lastSessionIdRef.current = currentSessionId;
+        lastSessionKeyRef.current = currentSessionKey;
         MessageFreshnessDetector.getInstance().recordSessionStart(currentSessionId);
         flushSave();
         autoRef.current = null;
         // Drop any pending restore request inherited from a different session.
-        if (pendingInitialRestoreRef.current && pendingInitialRestoreRef.current !== currentSessionId) {
+        if (pendingInitialRestoreRef.current && pendingInitialRestoreRef.current !== currentSessionKey) {
             pendingInitialRestoreRef.current = null;
         }
-    }, [currentSessionId, flushSave]);
+    }, [currentSessionId, currentSessionKey, flushSave]);
 
     // When work begins and we are still
     // following, pin to the bottom. When work stops, keep following alive for a
@@ -542,10 +551,10 @@ export const useChatAutoFollow = ({
     // preventing a visible flash of content at the wrong scroll position.
     React.useLayoutEffect(() => {
         if (!containerEl) return;
-        if (pendingInitialRestoreRef.current && pendingInitialRestoreRef.current === currentSessionId) {
+        if (pendingInitialRestoreRef.current && pendingInitialRestoreRef.current === currentSessionKey) {
             void restoreSnapshot();
         }
-    }, [containerEl, currentSessionId, restoreSnapshot]);
+    }, [containerEl, currentSessionKey, restoreSnapshot]);
 
     // ── scroll event handling ────────────────────────────────────────────────
     const handleScrollEvent = React.useCallback(() => {

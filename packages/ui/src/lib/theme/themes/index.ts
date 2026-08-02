@@ -7,6 +7,8 @@ import openchamberLightRaw from './fields-of-the-shire-light.json';
 import openchamberDarkRaw from './fields-of-the-shire-dark.json';
 import neonGridLightRaw from './neon-grid-light.json';
 import neonGridDarkRaw from './neon-grid-dark.json';
+import upstreamOpenchamberLightRaw from './openchamber-light.json';
+import upstreamOpenchamberDarkRaw from './openchamber-dark.json';
 
 const flexokiLightTheme = withPrColors(flexokiLightRaw as Theme);
 const flexokiDarkTheme = withPrColors(flexokiDarkRaw as Theme);
@@ -14,6 +16,8 @@ const openchamberLightTheme = withPrColors(openchamberLightRaw as Theme);
 const openchamberDarkTheme = withPrColors(openchamberDarkRaw as Theme);
 const neonGridLightTheme = withPrColors(neonGridLightRaw as Theme);
 const neonGridDarkTheme = withPrColors(neonGridDarkRaw as Theme);
+const upstreamOpenchamberLightTheme = withPrColors(upstreamOpenchamberLightRaw as Theme);
+const upstreamOpenchamberDarkTheme = withPrColors(upstreamOpenchamberDarkRaw as Theme);
 
 export const DEFAULT_LIGHT_THEME_ID = 'neon-grid-light' as const;
 export const DEFAULT_DARK_THEME_ID = 'neon-grid-dark' as const;
@@ -23,6 +27,8 @@ export const themes: Theme[] = [
   neonGridDarkTheme,
   openchamberLightTheme,
   openchamberDarkTheme,
+  upstreamOpenchamberLightTheme,
+  upstreamOpenchamberDarkTheme,
   flexokiLightTheme,
   flexokiDarkTheme,
   ...presetThemes.filter(

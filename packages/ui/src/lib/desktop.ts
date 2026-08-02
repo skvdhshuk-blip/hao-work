@@ -1,4 +1,4 @@
-import type { ProjectEntry } from '@/lib/api/types';
+import type { ProjectEntry, TerminalShell } from '@/lib/api/types';
 import { getInjectedBootOutcome } from '@/lib/desktopBoot';
 import type { DraftStarterRef } from '@/lib/draftStarters';
 import type { MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
@@ -38,8 +38,11 @@ export type SkillCatalogConfig = {
   gitIdentityId?: string;
 };
 
-export type DesktopWindowControlsPosition = 'auto' | 'left' | 'right';
+export type DesktopWindowControlsPosition = 'left' | 'right';
 export type DesktopWindowControlsSide = 'left' | 'right';
+export type DesktopWindowControlAction = 'close' | 'minimize' | 'maximize';
+// No fixed-width constant: control width depends on the style (classic vs traffic-lights).
+export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
 
 export type DesktopSettings = {
   themeId?: string;
@@ -58,6 +61,7 @@ export type DesktopSettings = {
   desktopLanAccessEnabled?: boolean;
   desktopKeepAwakeEnabled?: boolean;
   desktopMinimizeToTrayEnabled?: boolean;
+  desktopMacMenuBarEnabled?: boolean;
   desktopUiPassword?: string;
   projects?: ProjectEntry[];
   activeProjectId?: string;
@@ -103,6 +107,7 @@ export type DesktopSettings = {
     renamedGroups?: Record<string, string>;  // groupId -> custom label
   }>;  // Per-provider custom model groups configuration
   autoDeleteEnabled?: boolean;
+  autoSaveEnabled?: boolean;
   autoDeleteAfterDays?: number;
   sessionRetentionAction?: 'archive' | 'delete';
   tunnelProvider?: string;
@@ -140,8 +145,11 @@ export type DesktopSettings = {
   pwaOrientation?: 'system' | 'portrait' | 'landscape';
   mobileKeyboardMode?: MobileKeyboardMode;
   desktopWindowControlsPosition?: DesktopWindowControlsPosition;
+  desktopWindowControlsStyle?: DesktopWindowControlsStyle;
   inputSpellcheckEnabled?: boolean;
   showOpenCodeUpdateNotifications?: boolean;
+  agentControlToolEnabled?: boolean;
+  optimizeSystemPrompt?: boolean;
   openCodeUpdateToastDismissedVersion?: string;
   showToolFileIcons?: boolean;
   codeBlockLineWrap?: boolean;
@@ -163,6 +171,8 @@ export type DesktopSettings = {
   showSplitAssistantMessageActions?: boolean;
   fontSize?: number;
   terminalFontSize?: number;
+  terminalShell?: TerminalShell;
+  terminalLoginShells?: TerminalShell[];
   editorFontSize?: number;
   uiFont?: string;
   monoFont?: string;
@@ -203,8 +213,10 @@ export type DesktopSettings = {
   sttLanguage?: string;
   // Global draft welcome starters (pinned commands/skills), persisted to settings.json
   draftStarters?: DraftStarterRef[];
+  draftStartersVisible?: boolean;
   // One-time migration marker: Craft a Goal was offered in the starter row.
   draftStartersCraftGoalAdded?: boolean;
+  draftStartersScheduleTaskAdded?: boolean;
 };
 
 type DesktopBridgeGlobal = {
@@ -220,8 +232,10 @@ type DesktopBridgeGlobal = {
 
 type ElectronRuntimeGlobal = {
   runtime?: string;
+  arch?: string;
   macVibrancy?: boolean;
   macVibrancySupported?: boolean;
+  trayEnabled?: boolean;
 };
 
 const getElectronRuntime = (): ElectronRuntimeGlobal | null => {
@@ -242,8 +256,8 @@ export const getElectronPlatform = (): string | null => {
   return typeof platform === 'string' ? platform : null;
 };
 
-/** Width of the three in-app window control buttons (3 × w-11). */
-export const DESKTOP_WINDOW_CONTROLS_WIDTH_PX = 132;
+/** Default side for in-app window controls (Windows-style, right). */
+export const DEFAULT_DESKTOP_WINDOW_CONTROLS_POSITION: DesktopWindowControlsPosition = 'right';
 
 /** Windows and Linux use frameless windows with in-app minimize/maximize/close controls. */
 export const usesFramelessElectronChrome = (): boolean => {
@@ -252,21 +266,36 @@ export const usesFramelessElectronChrome = (): boolean => {
   return platform === 'win32' || platform === 'linux';
 };
 
-export const getDefaultDesktopWindowControlsSide = (platform: string | null = getElectronPlatform()): DesktopWindowControlsSide => {
-  if (platform === 'linux') {
-    return 'left';
+/** Normalize a stored preference; legacy `auto` maps to the right-side default. */
+export const normalizeDesktopWindowControlsPosition = (
+  value: unknown,
+): DesktopWindowControlsPosition | undefined => {
+  if (value === 'left' || value === 'right') {
+    return value;
   }
-  return 'right';
+  // Legacy "auto" never read OS chrome config; treat it as the right default.
+  if (value === 'auto') {
+    return DEFAULT_DESKTOP_WINDOW_CONTROLS_POSITION;
+  }
+  return undefined;
 };
 
 export const resolveDesktopWindowControlsSide = (
   preference: DesktopWindowControlsPosition | undefined,
-  platform: string | null = getElectronPlatform(),
 ): DesktopWindowControlsSide => {
-  if (preference === 'left' || preference === 'right') {
-    return preference;
-  }
-  return getDefaultDesktopWindowControlsSide(platform);
+  return preference === 'left' ? 'left' : DEFAULT_DESKTOP_WINDOW_CONTROLS_POSITION;
+};
+
+/**
+ * Left matches macOS traffic-light order (close, minimize, maximize).
+ * Right keeps Windows order (minimize, maximize, close).
+ */
+export const getDesktopWindowControlsOrder = (
+  side: DesktopWindowControlsSide,
+): DesktopWindowControlAction[] => {
+  return side === 'left'
+    ? ['close', 'minimize', 'maximize']
+    : ['minimize', 'maximize', 'close'];
 };
 
 export const hasDesktopInvoke = (): boolean => {
@@ -657,6 +686,9 @@ export const checkForDesktopUpdates = async (): Promise<UpdateInfo | null> => {
     return null;
   }
 
+  // Propagate updater capability / feed errors so the UI can show actionable
+  // messages (missing AppImage, read-only path, network failure). Missing
+  // latest-linux*.yml is already normalized to available:false in main.
   const info = await invokeDesktop<UpdateInfo>('desktop_check_for_updates');
   return info as UpdateInfo;
 };
@@ -912,11 +944,6 @@ export const fetchDesktopInstalledApps = async (
 ): Promise<FetchDesktopInstalledAppsResult> => {
   if (!hasDesktopInvoke() || !isDesktopLocalOriginActive()) {
     return { apps: [], success: false, hasCache: false, isCacheStale: false };
-  }
-
-  // Linux desktop does not resolve installed GUI apps; skip the IPC round-trip.
-  if (getElectronPlatform() === 'linux') {
-    return { apps: [], success: true, hasCache: false, isCacheStale: false };
   }
 
   const candidate = Array.isArray(apps) ? apps.filter((value) => typeof value === 'string') : [];

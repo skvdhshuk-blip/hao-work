@@ -38,4 +38,6 @@ In `smart` mode the worker emits one `auto_decision` JSON-lines event per auto-d
 
 Shutdown is a drain operation: the compatibility server terminates workers, waits for active session pipelines, and flushes the serialized state queue before callers may remove its data directory. Store initialization and writes are serialized so concurrent sessions cannot race the initial state load or share a temporary state file.
 
+The adapter normalizes persisted or direct-API sandbox resource values before constructing the worker request: memory below `256 MB` and CPU counts outside `1..64` fall back to the documented defaults, matching the HaoCode SDK constructor contract.
+
 Do not leak HaoCode PHP objects into the browser contract. Adapter-only response fields must use the `_fe_` prefix. Secrets stay in the local runtime-state file with mode `0600` and are never returned by API responses.
