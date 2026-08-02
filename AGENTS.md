@@ -1,8 +1,8 @@
-# OpenChamber Agent Guide
+# Hao Work Agent Guide
 
 ## Purpose
 
-OpenChamber provides shared web, desktop, VS Code, hosted-mobile, and native-mobile UI surfaces for OpenCode.
+Hao Work provides shared web, desktop, VS Code, hosted-mobile, and native-mobile UI surfaces around its HaoCode runtime and OpenCode-compatible APIs.
 
 This file contains only always-on repository rules and routing. Detailed workflows belong to project skills and module documentation.
 
@@ -45,6 +45,14 @@ Shared contracts must define intentional behavior for every applicable runtime: 
 - Enforce security and correctness in core/runtime logic, not only UI visibility or prompts.
 - Keep entrypoints and bridges thin; place domain logic in focused owning modules.
 - Update owning documentation when module ownership, contracts, or invariants change.
+
+## Upstream Integration And Product Identity
+
+- Hao Work is the primary project. `origin/main`, Hao Work's product behavior, branding, package identity, release configuration, and HaoCode integration are the source of truth.
+- Treat `upstream` (`openchamber/openchamber`) as a read-only donor of selected improvements, not as the project to copy or rebrand around. Before merging, inspect the upstream diff and explicitly select useful features, bug fixes, security fixes, performance fixes, and tests.
+- Resolve upstream conflicts in favor of the current Hao Work project and reapply only the selected behavior. Never replace the Hao Work tree wholesale or blindly accept upstream names, defaults, assets, package metadata, workflows, or user-facing text.
+- Preserve `Hao Work` and `HaoCode` in product-visible names, settings labels, menus, notifications, release notes, installers, and desktop metadata. Keep `OpenChamber`/`OpenCode` only where compatibility requires it: package/import names, environment variables, protocols, API routes, storage paths, upstream attribution, or explicit technical references.
+- After every upstream integration, run a branding/identity review over the changed files (especially `OpenChamber`, `OpenCode`, `Hao Work`, and `HaoCode` occurrences), then run the affected package checks before committing. A successful merge is not complete if it reintroduces upstream product names into Hao Work UI or release metadata.
 
 ## Correctness Invariants
 

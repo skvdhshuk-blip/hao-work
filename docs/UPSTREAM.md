@@ -1,7 +1,8 @@
-# Syncing OpenChamber upstream
+# Syncing OpenChamber upstream into Hao Work
 
-Hao Work is a GitHub fork of `openchamber/openchamber`. Keep `origin` for
-Hao Work and use `upstream` as a read-only source of OpenChamber changes.
+Hao Work is the primary product and a GitHub fork of `openchamber/openchamber`.
+Keep `origin` for Hao Work and use `upstream` only as a read-only source of
+selected implementation changes.
 
 ```bash
 git fetch upstream
@@ -12,11 +13,20 @@ bun run type-check
 bun run lint
 ```
 
-Resolve conflicts by preserving new upstream UI behavior first, then reapplying
-the smallest Hao Work integration needed. Hao Work-owned code should stay
-concentrated in `packages/haocode-bridge`,
+Before merging, inspect `origin/main..upstream/main` and select only useful
+features, bug fixes, security fixes, performance fixes, and tests. Resolve
+conflicts with the current Hao Work project as the default: preserve Hao Work
+branding, product-visible names, package metadata, release configuration, and
+the HaoCode integration boundary, then reapply the selected upstream behavior.
+Hao Work-owned code should stay concentrated in `packages/haocode-bridge`,
 `packages/web/server/lib/haocode`, and the Electron HaoCode runtime boundary.
-Avoid copying or replacing the full OpenChamber tree.
+Never copy or replace the full OpenChamber tree, and do not accept upstream
+branding or user-facing labels without an explicit product decision.
+
+After the merge, review changed occurrences of `OpenChamber`/`OpenCode` and
+confirm that they are compatibility identifiers or technical references rather
+than accidental Hao Work UI or release names. Run the affected package checks
+before pushing to `origin`.
 
 After validation, push only to the fork:
 

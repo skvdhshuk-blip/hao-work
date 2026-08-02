@@ -1226,7 +1226,7 @@ export const dict: Record<I18nKey, string> = {
   "filesView.editor.controlsTitle": "Елементи керування редактора",
   "filesView.editor.pickFileFromTree": "Вибрати файл із дерева.",
   "filesView.editor.cannotPreviewBinary": "Неможливо попередньо переглянути бінарний файл",
-  "filesView.editor.binaryFileDescription": "Цей файл є бінарним і його не можна редагувати в OpenChamber. Завантажте його, щоб відкрити в іншій програмі.",
+  "filesView.editor.binaryFileDescription": "Цей файл є бінарним і його не можна редагувати в Hao Work. Завантажте його, щоб відкрити в іншій програмі.",
   "filesView.state.loading": "Завантаження...",
   "filesView.state.openingFileAtChange": "Відкриття файлу на зміні...",
   "filesView.tree.search.placeholder": "Пошук файлів...",

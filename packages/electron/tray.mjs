@@ -301,9 +301,9 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
       );
     } else {
       template.push(
-        { label: 'Show OpenChamber', click: () => onAction({ type: 'show-main-window' }) },
+        { label: 'Show Hao Work', click: () => onAction({ type: 'show-main-window' }) },
         { type: 'separator' },
-        { label: 'Quit OpenChamber', click: () => onAction({ type: 'quit' }) },
+        { label: 'Quit Hao Work', click: () => onAction({ type: 'quit' }) },
       );
     }
 
