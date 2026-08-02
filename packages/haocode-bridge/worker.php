@@ -24,6 +24,24 @@ foreach ($autoloadCandidates as $autoload) {
     }
 }
 
+// Fatal 错误兜底：PHP 致命错误（缺扩展、OOM 等）默认只会写 stderr 并以
+// code 1 退出，supervisor 只能报 "exited with code 1" 的哑消息。
+// shutdown handler 把最后一个致命错误转成协议 error 事件，让真正的原因可见。
+register_shutdown_function(function () {
+    $last = error_get_last();
+    if (! is_array($last)) {
+        return;
+    }
+    if (! in_array($last['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)) {
+        return;
+    }
+    emit([
+        'type' => 'error',
+        'error' => sprintf('PHP fatal: %s (%s:%d)', $last['message'], basename((string) $last['file']), (int) $last['line']),
+        '_fe_exception' => 'PhpFatalError',
+    ]);
+});
+
 if (! class_exists(HaoCode::class)) {
     emit(['type' => 'error', 'error' => 'HaoCode Composer autoloader was not found.']);
     exit(2);

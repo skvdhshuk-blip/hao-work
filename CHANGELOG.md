@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.17.7] - 2026-08-02
+
+- **Permissions:** restored the Hao Work composer approval menu with ask, smart, and auto HITL modes, plus directory-scoped auto-accept.
+- **HaoCode bridge:** surface PHP fatal startup errors as protocol error events so packaged and local runs report the real failure instead of only an exit code.
+
 ## [1.17.6] - 2026-08-02
 
 - **HaoCode:** upgraded the bundled SDK to v1.18.62 so non-Anthropic providers honor their configured context window.
