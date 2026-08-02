@@ -1337,11 +1337,11 @@
         },
         {
             "name": "sk-wang/hao-code",
-            "version": "v1.18.60",
+            "version": "v1.18.61",
             "source": {
                 "type": "git",
                 "url": "https://github.com/skvdhshuk-blip/hao-code.git",
-                "reference": "76a505324a79518d78db4ad7ad808e4e8b4f26ee"
+                "reference": "b443c60a95935b27efb0a7e13b1298ab97eae2ab"
             },
             "require": {
                 "nyholm/psr7": "^1.8",
@@ -1416,7 +1416,7 @@
                 "issues": "https://github.com/skvdhshuk-blip/hao-code/issues",
                 "source": "https://github.com/skvdhshuk-blip/hao-code"
             },
-            "time": "2026-08-02T00:59:39+00:00"
+            "time": "2026-08-02T07:15:19+00:00"
         },
         {
             "name": "swaggest/json-diff",

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.17.5] - 2026-08-02
+
+- **HaoCode:** upgraded the bundled SDK to v1.18.61 and aligned automatic context compaction with each model's safe input budget.
+- **Context reliability:** emergency budget failures now report the estimated and safe token limits instead of only a generic over-budget message.
+
 ## [1.17.4] - 2026-08-02
 
 - **Branding:** aligned desktop, web, mobile, and VS Code user-facing identity and links with Hao Work.
