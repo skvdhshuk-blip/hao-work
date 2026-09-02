@@ -35,6 +35,7 @@ import {
   isWsClosePayload,
   normalizeTunnelRequest,
 } from './tunnel-payloads';
+import { markAmbiguousTransportFailure } from './transport-error';
 
 const EMPTY_PAYLOAD = new Uint8Array(0);
 const textEncoder = new TextEncoder();
@@ -721,6 +722,13 @@ export const createRelayTunnelClient = (options: RelayTunnelClientOptions): Rela
         }
       };
 
+      // The request head is written to the channel below before any of these
+      // failures can fire, so losing the stream never proves the server did
+      // not process the request — only that the response was lost. Callers
+      // that would otherwise retry (prompt sends) must see that distinction.
+      const dispatchedFailure = (message: string): Error =>
+        markAmbiguousTransportFailure(new Error(message));
+
       onAbort = () => {
         sendAbort('aborted');
         finishError(abortError());
@@ -735,7 +743,7 @@ export const createRelayTunnelClient = (options: RelayTunnelClientOptions): Rela
               head = decodeJsonPayload(payload, isHttpResponsePayload);
             } catch (error) {
               sendAbort('malformed response head');
-              finishError(toError(error));
+              finishError(dispatchedFailure(toError(error).message));
               return;
             }
             const nullBody = head.status === 204 || head.status === 205 || head.status === 304;
@@ -773,7 +781,7 @@ export const createRelayTunnelClient = (options: RelayTunnelClientOptions): Rela
           if (frameType === TunnelFrameType.StreamEnd) {
             if (finished) return;
             if (!responseDelivered) {
-              finishError(new Error('tunnel stream ended before response head'));
+              finishError(dispatchedFailure('tunnel stream ended before response head'));
               return;
             }
             finished = true;
@@ -792,11 +800,15 @@ export const createRelayTunnelClient = (options: RelayTunnelClientOptions): Rela
             } catch {
               // Keep the generic reason.
             }
-            finishError(new Error(reason));
+            finishError(dispatchedFailure(reason));
           }
         },
         fail(error) {
-          finishError(error);
+          // Channel death (reconnect, keepalive timeout) with this stream still
+          // open — same rule as above: dispatched, outcome unknown. A fresh
+          // error is tagged instead of the shared one so the tag cannot leak to
+          // waiters whose request never reached the wire.
+          finishError(dispatchedFailure(error.message));
         },
       });
 
@@ -807,24 +819,34 @@ export const createRelayTunnelClient = (options: RelayTunnelClientOptions): Rela
         path: request.path,
         query: request.query,
         headers: request.headers,
+        hasBody: request.body !== null,
       };
       channel.send(encodeTunnelFrame(TunnelFrameType.HttpRequest, streamId, encodeJsonPayload(head)));
       void (async () => {
         try {
+          let sentBodyFrame = false;
           if (request.body) {
             for await (const chunk of request.body) {
               if (finished || channel.dead) return;
               for (const piece of chunkPayload(chunk)) {
                 channel.send(encodeTunnelFrame(TunnelFrameType.HttpBody, streamId, piece));
+                sentBodyFrame = true;
               }
             }
           }
           if (!finished && !channel.dead) {
+            // A body source that yielded no chunks (e.g. an empty stream) still
+            // declared hasBody in the head. Emit one empty body frame so the
+            // host can tell this apart from body frames lost in transit, which
+            // it aborts as an ambiguous transport failure.
+            if (request.body && !sentBodyFrame) {
+              channel.send(encodeTunnelFrame(TunnelFrameType.HttpBody, streamId, EMPTY_PAYLOAD));
+            }
             channel.send(encodeTunnelFrame(TunnelFrameType.StreamEnd, streamId, EMPTY_PAYLOAD));
           }
         } catch (error) {
           sendAbort('request body failed');
-          finishError(toError(error));
+          finishError(dispatchedFailure(toError(error).message));
         }
       })();
     });

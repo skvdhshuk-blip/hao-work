@@ -17,10 +17,13 @@ import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint'
 import { updateDesktopSettings } from '@/lib/persistence';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useSelectionStore } from '@/sync/selection-store';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { useI18n } from '@/lib/i18n';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { isPrimaryMode } from '@/components/chat/mobileControlsUtils';
 
 const getDisplayModel = (
   storedModel: string | undefined
@@ -39,19 +42,36 @@ export const DefaultsSettings: React.FC = () => {
   const setModel = useConfigStore((state) => state.setModel);
   const setAgent = useConfigStore((state) => state.setAgent);
   const setCurrentVariant = useConfigStore((state) => state.setCurrentVariant);
+  const setCurrentVariantOverride = useConfigStore((state) => state.setCurrentVariantOverride);
   const setSettingsDefaultModel = useConfigStore((state) => state.setSettingsDefaultModel);
   const setSettingsDefaultVariant = useConfigStore((state) => state.setSettingsDefaultVariant);
   const setSettingsDefaultAgent = useConfigStore((state) => state.setSettingsDefaultAgent);
+  // A default describes new sessions. Applying it to the open chat is a
+  // convenience, not the point, so it stops where the chat carries a choice the
+  // user made for it — the same pair of signals ModelControls restores from
+  // (`shouldPreserveManualModelOverride`).
+  const selectionIsManual = useConfigStore((state) => state.selectionSource === 'manual');
+  const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const getSessionModelSelection = useSelectionStore((state) => state.getSessionModelSelection);
+  const getSessionAgentSelection = useSelectionStore((state) => state.getSessionAgentSelection);
+  const chatHasOwnModel = Boolean(
+    selectionIsManual && currentSessionId && getSessionModelSelection(currentSessionId),
+  );
+  const chatHasOwnAgent = Boolean(
+    selectionIsManual && currentSessionId && getSessionAgentSelection(currentSessionId),
+  );
   const showDeletionDialog = useUIStore((state) => state.showDeletionDialog);
   const setShowDeletionDialog = useUIStore((state) => state.setShowDeletionDialog);
   const providers = useConfigStore((state) => state.providers);
+  const modelsMetadata = useConfigStore((state) => state.modelsMetadata);
 
   const [defaultModel, setDefaultModel] = React.useState<string | undefined>();
   const [defaultVariant, setDefaultVariant] = React.useState<string | undefined>();
   const [defaultAgent, setDefaultAgent] = React.useState<string | undefined>();
   const [smallModelUseDefault, setSmallModelUseDefault] = React.useState(true);
   const [smallModelOverride, setSmallModelOverride] = React.useState<string | undefined>();
-  const [smallModelProviders, setSmallModelProviders] = React.useState<string[] | undefined>();
+  const [smallModelProviders, setSmallModelProviders] = React.useState<string[]>([]);
+  const [walkthroughModelOverride, setWalkthroughModelOverride] = React.useState<string | undefined>();
   const [isLoading, setIsLoading] = React.useState(true);
 
   const parsedModel = React.useMemo(() => getDisplayModel(defaultModel), [defaultModel]);
@@ -65,6 +85,7 @@ export const DefaultsSettings: React.FC = () => {
           defaultAgent?: string;
           smallModelUseDefault?: boolean;
           smallModelOverride?: string;
+          walkthroughModelOverride?: string;
         } | null = null;
 
         if (!data) {
@@ -84,6 +105,8 @@ export const DefaultsSettings: React.FC = () => {
                   defaultAgent: typeof settings.defaultAgent === 'string' ? settings.defaultAgent : undefined,
                   smallModelUseDefault: typeof raw.smallModelUseDefault === 'boolean' ? raw.smallModelUseDefault : undefined,
                   smallModelOverride: typeof raw.smallModelOverride === 'string' ? raw.smallModelOverride : undefined,
+                  walkthroughModelOverride:
+                    typeof raw.walkthroughModelOverride === 'string' ? raw.walkthroughModelOverride : undefined,
                 };
               }
             } catch {
@@ -123,6 +146,9 @@ export const DefaultsSettings: React.FC = () => {
           if (typeof data.smallModelOverride === 'string' && data.smallModelOverride.trim()) {
             setSmallModelOverride(data.smallModelOverride.trim());
           }
+          if (typeof data.walkthroughModelOverride === 'string' && data.walkthroughModelOverride.trim()) {
+            setWalkthroughModelOverride(data.walkthroughModelOverride.trim());
+          }
         }
       } catch (error) {
         console.warn('Failed to load defaults settings:', error);
@@ -139,14 +165,17 @@ export const DefaultsSettings: React.FC = () => {
       setDefaultModel(newValue);
       setDefaultVariant(undefined);
       setSettingsDefaultVariant(undefined);
-      setCurrentVariant(undefined);
       setSettingsDefaultModel(newValue);
 
-      if (providerId && modelId) {
-        const provider = providers.find((p) => p.id === providerId);
-        if (provider) {
-          setProvider(providerId);
-          setModel(modelId);
+      if (!chatHasOwnModel) {
+        setCurrentVariant(undefined);
+
+        if (providerId && modelId) {
+          const provider = providers.find((p) => p.id === providerId);
+          if (provider) {
+            setProvider(providerId);
+            setModel(modelId);
+          }
         }
       }
 
@@ -164,7 +193,7 @@ export const DefaultsSettings: React.FC = () => {
         console.warn('Failed to save default model:', error);
       }
     },
-    [providers, setCurrentVariant, setModel, setProvider, setSettingsDefaultModel, setSettingsDefaultVariant]
+    [chatHasOwnModel, providers, setCurrentVariant, setModel, setProvider, setSettingsDefaultModel, setSettingsDefaultVariant]
   );
 
   const DEFAULT_VARIANT_VALUE = '__default__';
@@ -181,7 +210,9 @@ export const DefaultsSettings: React.FC = () => {
       const newValue = variant === DEFAULT_VARIANT_VALUE ? undefined : variant || undefined;
       setDefaultVariant(newValue);
       setSettingsDefaultVariant(newValue);
-      setCurrentVariant(newValue);
+      if (!chatHasOwnModel) {
+        setCurrentVariantOverride(newValue ?? null, newValue);
+      }
 
       try {
         await updateDesktopSettings({ defaultVariant: newValue ?? '' });
@@ -189,7 +220,7 @@ export const DefaultsSettings: React.FC = () => {
         console.warn('Failed to save default variant:', error);
       }
     },
-    [setCurrentVariant, setSettingsDefaultVariant]
+    [chatHasOwnModel, setCurrentVariantOverride, setSettingsDefaultVariant]
   );
 
   const handleAgentChange = React.useCallback(
@@ -198,7 +229,7 @@ export const DefaultsSettings: React.FC = () => {
       setDefaultAgent(newValue);
       setSettingsDefaultAgent(newValue);
 
-      if (agentName) {
+      if (agentName && !chatHasOwnAgent) {
         setAgent(agentName);
       }
 
@@ -208,7 +239,7 @@ export const DefaultsSettings: React.FC = () => {
         console.warn('Failed to save default agent:', error);
       }
     },
-    [setAgent, setSettingsDefaultAgent]
+    [chatHasOwnAgent, setAgent, setSettingsDefaultAgent]
   );
 
   const handleSmallModelUseDefaultChange = React.useCallback(
@@ -236,10 +267,42 @@ export const DefaultsSettings: React.FC = () => {
     []
   );
 
-  const parsedSmallModel = React.useMemo(() => getDisplayModel(smallModelOverride), [smallModelOverride]);
+  const handleWalkthroughModelOverrideChange = React.useCallback(
+    async (providerId: string, modelId: string) => {
+      const newValue = providerId && modelId ? `${providerId}/${modelId}` : undefined;
+      setWalkthroughModelOverride(newValue);
+      try {
+        // Clearing the picker is how the user goes back to the small model, so
+        // an empty value is a real choice rather than a no-op.
+        await updateDesktopSettings({ walkthroughModelOverride: newValue ?? '' });
+      } catch (error) {
+        console.warn('Failed to save walkthrough model override:', error);
+      }
+    },
+    []
+  );
 
+  // The walkthrough cannot work at all without schema-shaped output, so models
+  // the catalog says cannot do it are hidden rather than offered and then
+  // refused. A missing capability is not a "no": roughly half the catalog omits
+  // the field, and those models usually work.
+  const isStructuredOutputCapable = React.useCallback(
+    (providerId: string, modelId: string) =>
+      modelsMetadata.get(`${providerId}/${modelId}`)?.structured_output !== false,
+    [modelsMetadata]
+  );
+
+  const parsedSmallModel = React.useMemo(() => getDisplayModel(smallModelOverride), [smallModelOverride]);
+  const parsedWalkthroughModel = React.useMemo(
+    () => getDisplayModel(walkthroughModelOverride),
+    [walkthroughModelOverride]
+  );
   React.useEffect(() => {
-    if (smallModelUseDefault || smallModelProviders !== undefined) return;
+    // Both pickers offer the same providers — the walkthrough runs through the
+    // small model — and the walkthrough picker is always visible, so this is
+    // always worth fetching. The server answers with the providers it has a
+    // credential and an endpoint for, including plugin-registered ones that
+    // exist only inside the running OpenCode.
     let cancelled = false;
     (async () => {
       try {
@@ -250,13 +313,13 @@ export const DefaultsSettings: React.FC = () => {
           setSmallModelProviders(payload.authenticatedProviders.filter((id): id is string => typeof id === 'string'));
         }
       } catch {
-        // leave undefined — picker falls back to showing all providers
+        // Fail closed: never offer providers whose credentials were not verified.
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [smallModelUseDefault, smallModelProviders]);
+  }, []);
 
   const availableVariants = React.useMemo(() => {
     if (!parsedModel.providerId || !parsedModel.modelId) return [];
@@ -275,12 +338,14 @@ export const DefaultsSettings: React.FC = () => {
     if (!supportsVariants && defaultVariant) {
       setDefaultVariant(undefined);
       setSettingsDefaultVariant(undefined);
-      setCurrentVariant(undefined);
+      if (!chatHasOwnModel) {
+        setCurrentVariant(undefined);
+      }
       updateDesktopSettings({ defaultVariant: '' }).catch(() => {
         // best effort
       });
     }
-  }, [defaultVariant, setCurrentVariant, setSettingsDefaultVariant, supportsVariants]);
+  }, [chatHasOwnModel, defaultVariant, setCurrentVariant, setSettingsDefaultVariant, supportsVariants]);
 
   if (isLoading) {
     return null;
@@ -350,6 +415,7 @@ export const DefaultsSettings: React.FC = () => {
               <AgentSelector
                 agentName={defaultAgent || ''}
                 onChange={handleAgentChange}
+                filter={(agent) => isPrimaryMode(agent.mode)}
                 className={SETTINGS_CUSTOM_TRIGGER_CLASS}
               />
             </SettingsFieldRow>
@@ -396,6 +462,32 @@ export const DefaultsSettings: React.FC = () => {
                 />
               </SettingsFieldRow>
             ) : null}
+
+            <SettingsInset className={SETTINGS_OPTION_STACK_CLASS}>
+              <div className="flex items-center gap-1.5">
+                <SettingsGroupTitle>
+                  {t('settings.openchamber.defaults.walkthroughModel.title')}
+                </SettingsGroupTitle>
+                <SettingsInfoHint>
+                  {t('settings.openchamber.defaults.walkthroughModel.description')}
+                </SettingsInfoHint>
+              </div>
+
+              <SettingsFieldRow
+                settingsItem="sessions.walkthrough-model"
+                label={t('settings.openchamber.defaults.walkthroughModel.overrideModel')}
+              >
+                <ModelSelector
+                  providerId={parsedWalkthroughModel.providerId}
+                  modelId={parsedWalkthroughModel.modelId}
+                  onChange={handleWalkthroughModelOverrideChange}
+                  allowedProviderIds={smallModelProviders}
+                  isModelAllowed={isStructuredOutputCapable}
+                  placeholder={t('settings.openchamber.defaults.walkthroughModel.usesSmallModel')}
+                  className={SETTINGS_CUSTOM_TRIGGER_CLASS}
+                />
+              </SettingsFieldRow>
+            </SettingsInset>
           </div>
         </div>
       </SettingsSection>

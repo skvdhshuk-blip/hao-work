@@ -10,7 +10,7 @@ description: Use when creating or modifying OpenChamber UI components, styling, 
 - Use semantic OpenChamber theme tokens; never hardcode hex colors or generic Tailwind palette colors.
 - Use shared UI primitives before introducing feature-local controls.
 - Use the shared `Button`; do not create button wrappers such as `ButtonSmall` or `ButtonLarge`.
-- Every dropdown-style value-picker trigger (shows current value, opens a picker) takes its chrome from `dropdownTriggerVariants` in `packages/ui/src/components/ui/dropdown-trigger.ts` (sizes: `sm` dense h-6, `default` forms h-8; native `SelectTrigger` consumes it). Call sites add layout classes only (width/truncation) — never re-declare border/radius/bg/hover. Deliberately chrome-less pickers (chat composer, headers) are the only exception.
+- Every dropdown-style value-picker trigger takes its chrome from `dropdownTriggerVariants` in `packages/ui/src/components/ui/dropdown-trigger.ts`; call sites add layout classes only. Deliberately chrome-less pickers in composers or headers are the exception.
 - Use the sprite-based `Icon`; never import icons directly from `@remixicon/react`.
 - Apply hover tokens only to interactive elements.
 - Use status colors only for actual status/feedback.
@@ -24,7 +24,7 @@ description: Use when creating or modifying OpenChamber UI components, styling, 
 | Adding, converting, storing, or generating icons | `references/icons.md` |
 | Adding built-in or custom themes | `references/adding-themes.md` |
 
-Load every matching reference before editing. Settings work must also load `settings-ui-patterns`; user-facing or accessible text must load `locale-ui-patterns`.
+Load every matching reference before editing. User-facing or accessible text must load `locale-ui-patterns`. Settings composition is owned by `settings-ui-patterns`, which declares `theme-system` as its one-way companion.
 
 ## Token Decision
 
@@ -71,11 +71,18 @@ import { Icon } from '@/components/icon/Icon';
 
 Use `IconName` for icon values stored in arrays, objects, state, or config. `Icon` has no `size` prop. Run `bun run icons:generate` when introducing a sprite name, and never edit `sprite.ts` manually. Load `references/icons.md` for the complete workflow.
 
-## Verification
+## Animation Contract
 
+Animate only `transform` and `opacity`. Use `transform: rotate(...)`, not the individual `rotate` property. Non-composited properties recalculate style continuously; geometry also triggers layout, and wrappers, `will-change`, `contain`, or stepped timing do not remove that cost. Animate only while conveying live information.
+
+For any other technique, load `performance-engineering` and `scripts/perf/DOCUMENTATION.md`, measure it with `bun run profile:animation`, and add a fixture variant when needed. This skill owns animation styling; `performance-engineering` owns performance evidence.
+
+## Completion Criteria
+
+- Animations are limited to `transform` and `opacity`, or their cost was measured and accepted.
 - No hardcoded/palette colors were introduced.
 - Buttons use shared variants and sizes.
 - Icons use `Icon`/`IconName`, and generated sprite changes are intentional.
 - Hover, selection, primary, and status semantics are distinct.
 - Light/dark/high-contrast and long-text states remain legible.
-- Relevant type-check, visual/runtime validation, and generated-asset checks ran.
+- Every applicable contract and loaded task reference was verified with relevant type-check, visual/runtime validation, and generated-asset checks.

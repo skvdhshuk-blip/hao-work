@@ -10,6 +10,7 @@ import {
 import { sanitizeTerminalHistoryChunk } from './history.js';
 import { consumeTerminalThemeQueries, terminalThemeModeReport } from './theme-response.js';
 import { createTerminalShellResolver, getTerminalShellLoginArgs, normalizeTerminalShell } from './shells.js';
+import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.js';
 
 const MAX_SESSIONS = 20;
 const MAX_HISTORY_BYTES = 512 * 1024;
@@ -66,8 +67,12 @@ export function createTerminalRuntime({
         // required because bun-pty also inherits Bun's native process environment.
         env.NODE_CHANNEL_FD = '';
         delete env.BASH_XTRACEFD; delete env.BASH_ENV; delete env.ENV; delete env.ELECTRON_RUN_AS_NODE;
+        // AppImage exports ARGV0; zsh would otherwise rewrite argv[0] for every command (#2588).
+        // bun-pty also merges the native OS environ, so wrap with `env -u ARGV0` on Linux.
+        stripAppImageArgv0Leak(env);
+        const launch = resolveLinuxPtyLaunch(executable, args);
         const options = { name: 'xterm-256color', cwd, cols, rows, env, ...(process.platform === 'win32' ? { useConpty: true } : {}) };
-        return { process: provider.spawn(executable, args, options), backend: provider.backend, shell: resolvedShell.id, loginShell };
+        return { process: provider.spawn(launch.executable, launch.args, options), backend: provider.backend, shell: resolvedShell.id, loginShell };
       } catch (error) { lastError = error; }
     }
     throw lastError ?? new Error('No executable shell found');
@@ -145,7 +150,7 @@ export function createTerminalRuntime({
             background: session.terminalBackground,
             foreground: session.terminalForeground,
             modeEnabled: session.themeModeEnabled,
-          });
+          }, { respondToPrimaryDeviceAttributes: true });
           session.pendingThemeControlSequence = theme.pending;
           session.themeModeEnabled = theme.modeEnabled;
           for (const response of theme.responses) session.process?.write(response);
@@ -223,7 +228,7 @@ export function createTerminalRuntime({
     }
     if (!existing && sessions.size + pendingSessionCreates.size >= MAX_SESSIONS) throw new Error('Maximum terminal sessions reached');
     const creation = (async () => {
-      const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false };
+      const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false, createdAt: Date.now() };
       await startSession(session, { cwd, cols, rows, themeMode, terminalBackground, terminalForeground, shell: normalizedShell, loginShell });
       sessions.set(id, session);
       return session;
@@ -292,6 +297,34 @@ export function createTerminalRuntime({
       res.status(500).json({ error: error?.message || 'Failed to list terminal shells' });
     }
   });
+  app.get('/api/terminal/sessions', (req, res) => {
+    const rawCwd = typeof req.query?.cwd === 'string' ? req.query.cwd.trim() : '';
+    const cwdFilter = rawCwd ? path.resolve(rawCwd) : null;
+    const list = [];
+    for (const session of sessions.values()) {
+      if (cwdFilter && path.resolve(session.cwd) !== cwdFilter) continue;
+      list.push({
+        sessionId: session.id,
+        cwd: session.cwd,
+        status: session.status,
+        createdAt: Number.isInteger(session.createdAt) ? session.createdAt : null,
+      });
+    }
+    res.json({ sessions: list });
+  });
+  app.post('/api/terminal/touch', (req, res) => {
+    const rawIds = Array.isArray(req.body?.sessionIds) ? req.body.sessionIds : [];
+    const now = Date.now();
+    let touched = 0;
+    for (const id of rawIds) {
+      if (typeof id !== 'string') continue;
+      const session = sessions.get(id);
+      if (!session) continue;
+      session.lastActivity = now;
+      touched += 1;
+    }
+    res.json({ touched });
+  });
   app.post('/api/terminal/create', async (req, res) => {
     try { const session = await createSession(req.body ?? {}); res.json({ sessionId: session.id, cols: session.cols, rows: session.rows, status: session.status }); }
     catch (error) { res.status(error?.message === 'Maximum terminal sessions reached' ? 429 : 400).json({ error: error?.message || 'Failed to create terminal session' }); }
@@ -331,7 +364,7 @@ export function createTerminalRuntime({
       session.process = spawned.process; session.backend = spawned.backend; session.shell = spawned.shell; session.loginShell = spawned.loginShell; session.cwd = cwd; session.cols = cols; session.rows = rows;
       session.history = ''; session.pendingHistoryControlSequence = ''; session.pendingThemeControlSequence = ''; session.themeModeEnabled = false; session.status = 'running'; session.exitCode = null; session.signal = null; session.eventQueue.length = 0;
       session.themeMode = themeMode === 'light' ? 'light' : 'dark'; session.terminalBackground = terminalBackground; session.terminalForeground = terminalForeground;
-      wire(session, spawned.process); void terminateProcess(oldProcess); publish(session, { t: 'restarted', history: '' });
+       wire(session, spawned.process); void terminateProcess(oldProcess); publish(session, { t: 'restarted', history: '' });
     });
     pendingSessionRestarts.set(session.id, restart);
     try {

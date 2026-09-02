@@ -71,6 +71,10 @@ interface TerminalStore {
   getBuffer: (directory: string, tabId: string) => TerminalBuffer;
 
   createTab: (directory: string) => string;
+  adoptServerSessions: (
+    directory: string,
+    serverSessions: Array<{ sessionId: string; status: 'running' | 'exited'; createdAt: number | null }>,
+  ) => void;
   setActiveTab: (directory: string, tabId: string) => void;
   setTabLabel: (directory: string, tabId: string, label: string) => void;
   setTabIconKey: (directory: string, tabId: string, iconKey: string | null) => void;
@@ -156,6 +160,27 @@ function normalizeDirectory(dir: string): string {
   }
   return normalized;
 }
+
+const DEFAULT_TAB_LABEL_PATTERN = /^Terminal(?: (\d+))?$/;
+
+/**
+ * Default labels must stay unique among the directory's open tabs even after
+ * closes (#2718), so number from the highest existing "Terminal N" suffix
+ * instead of the live tab count. Labels are persisted with the tabs, so the
+ * derivation also survives reloads without a dedicated counter. User-renamed
+ * labels only participate when they match the default pattern; they are never
+ * rewritten.
+ */
+const nextDefaultTabLabel = (tabs: readonly TerminalTab[]): string => {
+  let highest = 0;
+  for (const tab of tabs) {
+    const match = DEFAULT_TAB_LABEL_PATTERN.exec(tab.label);
+    if (!match) continue;
+    const value = match[1] ? Number.parseInt(match[1], 10) : 1;
+    if (Number.isSafeInteger(value)) highest = Math.max(highest, value);
+  }
+  return highest === 0 ? 'Terminal' : `Terminal ${highest + 1}`;
+};
 
 const createEmptyTab = (id: string, label: string): TerminalTab => ({
   id,
@@ -295,8 +320,7 @@ export const useTerminalStore = create<TerminalStore>()(
             const existing = newSessions.get(key);
 
             const nextTabId = state.nextTabId + 1;
-            const labelIndex = (existing?.tabs.length ?? 0) + 1;
-            const label = `Terminal ${labelIndex}`;
+            const label = nextDefaultTabLabel(existing?.tabs ?? []);
             const tab = createEmptyTab(tabId, label);
 
             if (!existing) {
@@ -312,6 +336,60 @@ export const useTerminalStore = create<TerminalStore>()(
           });
 
           return tabId;
+        },
+
+        /**
+         * The server owns which terminal sessions exist; the local tab list is
+         * only this client's projection. Adoption is strictly additive: server
+         * sessions no local tab references become tabs (id = session id, the
+         * create/attach contract), and nothing is ever removed here, so a
+         * failed or partial listing cannot destroy local tabs.
+         */
+        adoptServerSessions: (directory, serverSessions) => {
+          const key = normalizeDirectory(directory);
+          if (!key || serverSessions.length === 0) return;
+
+          set((state) => {
+            const existing = state.sessions.get(key);
+            const knownIds = new Set<string>();
+            for (const tab of existing?.tabs ?? []) {
+              knownIds.add(tab.id);
+              if (tab.terminalSessionId) knownIds.add(tab.terminalSessionId);
+            }
+
+            const newcomers = serverSessions.filter((session) => !knownIds.has(session.sessionId));
+            if (newcomers.length === 0) return state;
+
+            const tabs = [...(existing?.tabs ?? [])];
+            // A single untouched placeholder tab (fresh directory state) is
+            // replaced by the first adopted session instead of sitting next to it.
+            const placeholder = tabs.length === 1
+              && tabs[0].terminalSessionId === null
+              && tabs[0].lifecycle === 'idle'
+              && !state.buffers.has(bufferKey(key, tabs[0].id))
+              ? tabs[0]
+              : null;
+            if (placeholder) tabs.length = 0;
+
+            for (const session of newcomers) {
+              const tab: TerminalTab = {
+                ...createEmptyTab(session.sessionId, placeholder && tabs.length === 0 ? placeholder.label : nextDefaultTabLabel(tabs)),
+                terminalSessionId: session.sessionId,
+                lifecycle: session.status,
+                createdAt: session.createdAt ?? Date.now(),
+              };
+              tabs.push(tab);
+            }
+
+            const previousActive = existing?.activeTabId ?? null;
+            const activeTabId = previousActive && tabs.some((tab) => tab.id === previousActive)
+              ? previousActive
+              : tabs[0]?.id ?? null;
+
+            const newSessions = new Map(state.sessions);
+            newSessions.set(key, { tabs, activeTabId });
+            return { sessions: newSessions };
+          });
         },
 
         setActiveTab: (directory: string, tabId: string) => {

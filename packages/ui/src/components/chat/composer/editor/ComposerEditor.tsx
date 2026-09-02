@@ -34,9 +34,11 @@ import {
 
 import { cn } from '@/lib/utils';
 import type { ComposerLanguageContext } from '../language/tokenize';
+import type { ComposerAutoCorrect } from './autocorrect';
 import { composerLanguage, setLanguageContext } from './composerLanguage';
+import { replaceWithCaret } from './documentEdits';
 import type { ComposerEditorViewStore } from './viewStore';
-import { composerEditorTheme, composerNativeSelectionExtension } from './theme';
+import { composerEditorTheme, composerSelectionExtension } from './theme';
 import { handleComposerHostMouseDown } from './hostMouseDown';
 
 export interface ComposerSelection {
@@ -63,8 +65,8 @@ export interface ComposerEditorHandle {
     selectAll(): void;
     /** Replace the current selection, leaving the caret after the insertion. */
     insertText(text: string): void;
-    /** Replace an explicit range; the caret lands at `caret` or after the text. */
-    replaceRange(from: number, to: number, text: string, caret?: number): void;
+    /** Replace a range; selection defaults to a caret after the inserted text. */
+    replaceRange(from: number, to: number, text: string, selectionStart?: number, selectionEnd?: number): void;
     /** Viewport coordinates of the caret, for positioning popups. */
     caretCoords(position?: number): { top: number; bottom: number; left: number } | null;
     /** The scrollable element, for measuring and scroll compensation. */
@@ -89,8 +91,11 @@ export interface ComposerEditorProps {
     placeholder?: string;
     editable?: boolean;
     spellCheck?: boolean;
-    /** Mobile keyboards; ignored on desktop. */
-    autoCorrect?: boolean;
+    /**
+     * The content element's autocorrect keyword. See `autocorrect.ts` for the
+     * case-sensitive CodeMirror workaround.
+     */
+    autoCorrect?: ComposerAutoCorrect;
     autoCapitalize?: 'none' | 'sentences';
     /** Fill the available height instead of growing with the content. */
     fillContainer?: boolean;
@@ -131,6 +136,16 @@ function insertedTextOf(transaction: { changes: { iterChanges: (fn: (fromA: numb
 }
 
 /**
+ * True for keydown events CodeMirror re-dispatches after deferring the real
+ * one (iOS Enter/Backspace/Delete, Chrome Android Enter): `dispatchKey`
+ * stamps the replacement event with a `synthetic` expando. These events are
+ * built from the key name alone, so they carry no modifier keys.
+ */
+function isDeferredSyntheticEvent(event: KeyboardEvent): boolean {
+    return Boolean((event as unknown as { synthetic?: boolean }).synthetic);
+}
+
+/**
  * Compartments are configuration keys, not per-view state, so one set can serve
  * every editor. They live at module scope because a kept-alive view outlives
  * the component that created it: per-instance compartments would be unknown to
@@ -147,7 +162,7 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
             placeholder,
             editable = true,
             spellCheck = false,
-            autoCorrect = false,
+            autoCorrect = 'off',
             autoCapitalize = 'none',
             fillContainer = false,
             maxLines = 8,
@@ -159,6 +174,14 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
 
         const hostRef = React.useRef<HTMLDivElement | null>(null);
         const viewRef = React.useRef<EditorView | null>(null);
+
+        // The real keydown's shift state for the LAST Enter that reached the
+        // editor. CodeMirror defers Enter on iOS (and Chrome Android) and
+        // re-dispatches it as a synthetic keydown built from the key name
+        // alone, dropping every modifier (see `trackRealEnterShift` and the
+        // `interceptKeys` handler below); this ref is what lets the deferred
+        // event still tell Shift+Enter from Enter.
+        const lastRealEnterShiftRef = React.useRef(false);
 
         // Callbacks reach the CodeMirror extensions through a ref: the view is
         // built once and must not be torn down when a handler identity changes,
@@ -200,7 +223,15 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
             }
 
             const interceptKeys: KeyBinding[] = [{
-                any: (_view, event) => handlersRef.current.onKeyDown?.(event) ?? false,
+                any: (_view, event) => {
+                    // A deferred Enter lost its modifiers in the re-dispatch;
+                    // give the caller's policy (Enter vs Shift+Enter) back the
+                    // shift state it saw on the real keydown.
+                    if (event.key === 'Enter' && isDeferredSyntheticEvent(event) && lastRealEnterShiftRef.current) {
+                        Object.defineProperty(event, 'shiftKey', { value: true });
+                    }
+                    return handlersRef.current.onKeyDown?.(event) ?? false;
+                },
             }];
 
             const view = new EditorView({
@@ -208,14 +239,13 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                     doc: handlersRef.current.value,
                     extensions: [
                         history(),
-                        // `drawSelection()` must stay even though the native
-                        // selection is what actually shows (see the theme's
-                        // comment on `composerNativeSelectionExtension`):
-                        // removing it makes CodeMirror enforce cursor
-                        // association on the native selection, which iOS
-                        // answers with severe input lag.
+                        // `drawSelection()` must stay on every platform.
+                        // `composerSelectionExtension()` changes only who
+                        // paints the selection; removing `drawSelection()`
+                        // makes CodeMirror enforce cursor association on the
+                        // native selection, which iOS answers with severe lag.
                         drawSelection(),
-                        composerNativeSelectionExtension,
+                        composerSelectionExtension(),
                         EditorView.lineWrapping,
                         // Highest precedence: the composer's own keys must win
                         // over CodeMirror's defaults (Enter sends, ArrowUp
@@ -262,7 +292,7 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                         }),
                         EditorView.contentAttributes.of({
                             spellcheck: String(handlersRef.current.spellCheck ?? false),
-                            autocorrect: handlersRef.current.autoCorrect ? 'on' : 'off',
+                            autocorrect: handlersRef.current.autoCorrect ?? 'off',
                             autocapitalize: handlersRef.current.autoCapitalize ?? 'none',
                             ...(handlersRef.current['aria-label']
                                 ? { 'aria-label': handlersRef.current['aria-label'] }
@@ -275,6 +305,25 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
 
             viewRef.current = view;
             if (store) store.view = view;
+
+            // CodeMirror defers Enter on iOS (and Chrome Android): the real
+            // keydown is captured without running the keymaps, the browser's
+            // native newline goes through, and the keymaps then run against a
+            // synthetic keydown `dispatchKey` builds from the key name alone —
+            // which has NO modifiers. Recording the real shift state here (a
+            // plain listener, registered after CodeMirror's own, so it runs
+            // after the deferral decision but before the deferred dispatch)
+            // lets the deferred Enter be re-presented with Shift+Enter intact
+            // instead of arriving as a plain Enter that "sends" where Enter
+            // sends. Without it, Shift+Enter on iOS/Android submits the
+            // message instead of inserting a newline. The listener lives on
+            // the kept-alive view's contentDOM, so it stays across mounts and
+            // keeps feeding the same ref the `interceptKeys` closure reads.
+            const trackRealEnterShift = (event: KeyboardEvent) => {
+                if (event.key !== 'Enter' || isDeferredSyntheticEvent(event)) return;
+                lastRealEnterShiftRef.current = event.shiftKey;
+            };
+            view.contentDOM.addEventListener('keydown', trackRealEnterShift);
 
             return () => {
                 viewRef.current = null;
@@ -299,17 +348,18 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
             if (!view) return;
             const current = view.state.doc.toString();
             if (current === value) return;
-            view.dispatch({
-                changes: { from: 0, to: current.length, insert: value },
-                // An external rewrite (draft restore, history navigation,
-                // "add to chat", dictation insert) lands the caret at the END,
-                // matching what a plain textarea did when its value was
-                // replaced. Every rewrite that reaches here appends or
-                // replaces wholesale; keeping the old caret instead left it
-                // stranded before the inserted text, and the next insertion
-                // or keystroke landed inside the previous one.
-                selection: { anchor: value.length },
-            });
+            // Skip every controlled writeback while the browser is composing.
+            // A stale value echo can differ from CodeMirror's newer document,
+            // and replacing it would interrupt the IME session and move the caret.
+            if (view.compositionStarted) return;
+            // An external rewrite (draft restore, history navigation,
+            // "add to chat", dictation insert) lands the caret at the END,
+            // matching what a plain textarea did when its value was replaced.
+            // Every rewrite that reaches here appends or replaces wholesale;
+            // keeping the old caret instead left it stranded before the
+            // inserted text, and the next insertion or keystroke landed inside
+            // the previous one.
+            view.dispatch(replaceWithCaret(view.state, 0, current.length, value));
             // A large insert can push the caret below the fold, and a
             // transaction-time `scrollIntoView` cannot reach it: wrapped-line
             // heights are still estimates during the update, and the
@@ -406,7 +456,7 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
             if (!view) return;
             const content = view.contentDOM;
             content.setAttribute('spellcheck', String(spellCheck));
-            content.setAttribute('autocorrect', autoCorrect ? 'on' : 'off');
+            content.setAttribute('autocorrect', autoCorrect);
             content.setAttribute('autocapitalize', autoCapitalize);
         }, [autoCapitalize, autoCorrect, spellCheck]);
 
@@ -463,17 +513,18 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
                 if (!view || !text) return;
                 const { from, to } = view.state.selection.main;
                 view.dispatch({
-                    changes: { from, to, insert: text },
-                    selection: { anchor: from + text.length },
+                    ...replaceWithCaret(view.state, from, to, text),
                     userEvent: 'input.type',
                 });
             },
-            replaceRange(from, to, text, caret) {
+            replaceRange(from, to, text, selectionStart, selectionEnd = selectionStart) {
                 const view = viewRef.current;
                 if (!view) return;
+                const caret = selectionStart === undefined
+                    ? undefined
+                    : { anchor: selectionStart, head: selectionEnd ?? selectionStart };
                 view.dispatch({
-                    changes: { from, to, insert: text },
-                    selection: { anchor: caret ?? from + text.length },
+                    ...replaceWithCaret(view.state, from, to, text, caret),
                     userEvent: 'input.type',
                 });
             },

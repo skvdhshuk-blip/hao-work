@@ -17,7 +17,9 @@ export type QuotaProviderId =
   | 'wafer'
   | 'opencode-go'
   | 'crof'
-  | 'neuralwatt';
+  | 'deepseek'
+  | 'neuralwatt'
+  | 'xai';
 
 export interface UsageWindow {
   usedPercent: number | null;
@@ -44,6 +46,8 @@ export interface ProviderResult {
   ok: boolean;
   configured: boolean;
   error?: string;
+  /** Subscription tier reported by the provider, when it exposes one. */
+  planLabel?: string | null;
   usage: ProviderUsage | null;
   fetchedAt: number;
 }

@@ -34,13 +34,16 @@ import {
   discoverRunningInstances,
   discoverUnconfirmedRegistryInstanceOnPort,
   ensureTunnelProfilesMigrated,
+  generateUiPassword,
   getInstanceFilePath,
   getPidFilePath,
   isOpenchamberCmdline,
   isOpenchamberProcessRunning,
   parseArgs,
   resolveServeHost,
+  resolveServeUiPassword,
 } from './cli.js';
+import { buildWindowsStartupTaskCommand } from './lib/cli-startup.js';
 
 async function withTempOpenChamberDataDir(fn) {
   const previous = process.env.OPENCHAMBER_DATA_DIR;
@@ -689,6 +692,43 @@ describe('network-exposed auth validation', () => {
         delete process.env.OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN;
       }
     }
+  });
+});
+
+describe('serve UI password resolution', () => {
+  it('keeps a configured password untouched', () => {
+    expect(resolveServeUiPassword({ uiPassword: 'secret', explicitUiPassword: true }))
+      .toEqual({ password: 'secret', generated: false });
+  });
+
+  it('generates a password for an explicit --ui-password flag without a value', () => {
+    const resolved = resolveServeUiPassword({ uiPassword: '', explicitUiPassword: true });
+    expect(resolved.generated).toBe(true);
+    expect(typeof resolved.password).toBe('string');
+    expect(resolved.password.length).toBe(16);
+  });
+
+  it('does not generate a password when the flag is absent', () => {
+    expect(resolveServeUiPassword({ uiPassword: undefined, explicitUiPassword: false }))
+      .toEqual({ password: undefined, generated: false });
+  });
+
+  it('generates passwords from an ambiguity-free charset', () => {
+    const resolved = resolveServeUiPassword({ uiPassword: '', explicitUiPassword: true });
+    expect(resolved.password).toMatch(/^[A-HJ-NP-Za-km-z2-9]{16}$/);
+    expect(resolved.password).not.toMatch(/[0O1Il]/);
+  });
+
+  it('generates distinct passwords on repeated calls', () => {
+    const a = generateUiPassword();
+    const b = generateUiPassword();
+    expect(a).not.toBe(b);
+  });
+
+  it('parses --ui-password without a value as explicit but empty', () => {
+    const parsed = parseArgs(['serve', '--ui-password']);
+    expect(parsed.options.explicitUiPassword).toBe(true);
+    expect(parsed.options.uiPassword).toBe('');
   });
 });
 
@@ -1380,5 +1420,39 @@ describe('lifecycle commands with unmanaged explicit ports', () => {
         await server.close();
       }
     });
+  });
+});
+
+describe('Windows startup task command builder', () => {
+  it('default-path length stays under 200 chars', () => {
+    const cmd = buildWindowsStartupTaskCommand(
+      'C:\\Users\\test\\.config\\openchamber\\bin\\OpenChamber.ps1'
+    );
+    expect(cmd).toMatch(/^powershell\.exe -NoProfile -ExecutionPolicy Bypass -File /);
+    expect(cmd.length).toBeLessThan(200);
+  });
+
+  it('worst-case long path stays under 261-char Task Scheduler ceiling', () => {
+    // Build a wrapper path >= 180 chars (simulates long OPENCHAMBER_DATA_DIR)
+    // Overhead = 57 chars (prefix + closing quote), so max wrapper for <261 total is 203
+    const longPath =
+      'C:\\Users\\' +
+      'a'.repeat(139) +
+      '\\.config\\openchamber\\bin\\OpenChamber.ps1';
+    expect(longPath.length).toBeGreaterThanOrEqual(180);
+
+    const cmd = buildWindowsStartupTaskCommand(longPath);
+    expect(cmd.length).toBeLessThan(261);
+  });
+
+  it('does NOT inline SetEnvironmentVariable (externalization invariant)', () => {
+    const cmd = buildWindowsStartupTaskCommand('C:\\wrapper.ps1');
+    expect(cmd).not.toContain('SetEnvironmentVariable');
+  });
+
+  it('uses -File form, not -Command', () => {
+    const cmd = buildWindowsStartupTaskCommand('C:\\wrapper.ps1');
+    expect(cmd).toContain('-File ');
+    expect(cmd).not.toContain('-Command ');
   });
 });

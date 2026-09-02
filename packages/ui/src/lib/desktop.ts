@@ -1,9 +1,11 @@
-import type { ProjectEntry, TerminalShell } from '@/lib/api/types';
+import { z } from 'zod';
+import type { ProjectEntry, RuntimeAPIs, TerminalShell } from '@/lib/api/types';
 import { getInjectedBootOutcome } from '@/lib/desktopBoot';
 import type { DraftStarterRef } from '@/lib/draftStarters';
 import type { MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
+import { isVSCodeBootstrapPresent } from '@/lib/vscodeBootstrap';
 
 type ManagedRemoteTunnelPreset = {
   id: string;
@@ -65,9 +67,17 @@ export type DesktopSettings = {
   desktopUiPassword?: string;
   projects?: ProjectEntry[];
   activeProjectId?: string;
+  sidebarProjectDisplayMode?: 'all' | 'single';
+  sidebarSessionGroupingMode?: 'by-worktree' | 'flat';
+  sidebarProjectSortOrder?: 'manual' | 'a-z' | 'z-a' | 'date-added' | 'recent';
+  sidebarShowRecentSection?: boolean;
   securityScopedBookmarks?: string[];
   pinnedDirectories?: string[];
   showReasoningTraces?: boolean;
+  /** Whether the in-chat work-status panel may render. */
+  workStatusPanelEnabled?: boolean;
+  /** Work-status panel sections the user switched off. */
+  workStatusHiddenSections?: string[];
   collapsibleThinkingBlocks?: boolean;
   showDeletionDialog?: boolean;
   nativeNotificationsEnabled?: boolean;
@@ -93,10 +103,7 @@ export type DesktopSettings = {
   summaryLength?: number;
   maxLastMessageLength?: number;
 
-  usageAutoRefresh?: boolean;
-  usageRefreshIntervalMs?: number;
   usageDisplayMode?: 'usage' | 'remaining';
-  usageShowPredValues?: boolean;
   usageDropdownProviders?: string[];
   usageSelectedModels?: Record<string, string[]>;  // Map of providerId -> selected model names
   usageCollapsedFamilies?: Record<string, string[]>;  // Map of providerId -> collapsed family IDs (UsagePage)
@@ -125,12 +132,17 @@ export type DesktopSettings = {
   defaultVariant?: string;
   defaultAgent?: string;
   smallModelUseDefault?: boolean;
+  streamingAutoFollowEnabled?: boolean;
   sessionRecapEnabled?: boolean;
   sessionSuggestionEnabled?: boolean;
   sessionGoalEnabled?: boolean;
   sessionGoalDefaultBudgetEnabled?: boolean;
   sessionGoalDefaultBudget?: number;
   smallModelOverride?: string; // format: "provider/model"
+  // The walkthrough needs structured output and a roomy context, which the
+  // small model is often deliberately not chosen for. Unset means "use the
+  // small model"; a value replaces it for this feature only.
+  walkthroughModelOverride?: string; // format: "provider/model"
   defaultGitIdentityId?: string; // ''/undefined = unset, 'global' or profile id
   openInAppId?: string;
   autoCreateWorktree?: boolean;
@@ -149,6 +161,9 @@ export type DesktopSettings = {
   inputSpellcheckEnabled?: boolean;
   showOpenCodeUpdateNotifications?: boolean;
   agentControlToolEnabled?: boolean;
+  agentWebToolEnabled?: boolean;
+  agentMemoryToolEnabled?: boolean;
+  agentMemoryFeatureAvailable?: boolean;
   optimizeSystemPrompt?: boolean;
   openCodeUpdateToastDismissedVersion?: string;
   showToolFileIcons?: boolean;
@@ -166,7 +181,6 @@ export type DesktopSettings = {
   collapsibleUserMessages?: boolean;
   stickyUserHeader?: boolean;
   promptNavigatorEnabled?: boolean;
-  expandedEditorToolbar?: boolean;
   wideChatLayoutEnabled?: boolean;
   showSplitAssistantMessageActions?: boolean;
   fontSize?: number;
@@ -233,8 +247,6 @@ type DesktopBridgeGlobal = {
 type ElectronRuntimeGlobal = {
   runtime?: string;
   arch?: string;
-  macVibrancy?: boolean;
-  macVibrancySupported?: boolean;
   trayEnabled?: boolean;
 };
 
@@ -250,7 +262,7 @@ const getDesktopBridge = (): DesktopBridgeGlobal | null => {
 
 export const isElectronShell = (): boolean => getElectronRuntime()?.runtime === 'electron';
 
-export const getElectronPlatform = (): string | null => {
+const getElectronPlatform = (): string | null => {
   if (typeof window === 'undefined') return null;
   const platform = (window as unknown as { __OPENCHAMBER_PLATFORM__?: string }).__OPENCHAMBER_PLATFORM__;
   return typeof platform === 'string' ? platform : null;
@@ -527,6 +539,27 @@ export const isDesktopShell = (): boolean => {
   return isElectronShell();
 };
 
+/**
+ * Raises the desktop window.
+ *
+ * Used when work finishes somewhere the app cannot be reached from — an MCP
+ * authorization completing in the system browser, for instance. Browsers will
+ * not follow a custom-protocol link back without a user gesture, so the app
+ * brings itself forward instead of asking the page to do it.
+ */
+export const focusDesktopWindow = async (): Promise<boolean> => {
+  if (!isDesktopShell()) return false;
+  try {
+    return Boolean(await invokeDesktop('desktop_focus_window'));
+  } catch {
+    return false;
+  }
+};
+
+export const canRequestNativeDirectoryAccess = (): boolean => (
+  isDesktopShell() && hasDesktopInvoke() && isDesktopLocalOriginActive()
+);
+
 export const startDesktopWindowDrag = async (): Promise<boolean> => {
   if (!isDesktopShell()) {
     return false;
@@ -541,6 +574,12 @@ export const startDesktopWindowDrag = async (): Promise<boolean> => {
 };
 
 export const isVSCodeRuntime = (): boolean => {
+  // Prefer extension-host bootstrap config: it is injected in webview HTML
+  // before any store module evaluates, so startup does not depend on
+  // RuntimeAPIs registration order (see #2359).
+  if (isVSCodeBootstrapPresent()) {
+    return true;
+  }
   const apis = getRegisteredRuntimeAPIs();
   return apis?.runtime?.isVSCode === true;
 };
@@ -558,6 +597,15 @@ export const isWebRuntime = (): boolean => {
   return !isVSCodeRuntime();
 };
 
+/**
+ * Electron reuses the web RuntimeAPIs implementation, so distinguish a browser
+ * client from an Electron renderer with both the runtime descriptor and shell.
+ */
+export const isBrowserClientRuntime = (
+  platform: RuntimeAPIs['runtime']['platform'],
+  desktopShell = isDesktopShell(),
+): boolean => platform === 'web' && !desktopShell;
+
 export const getDesktopHomeDirectory = async (): Promise<string | null> => {
   if (typeof window !== 'undefined') {
     const embedded = window.__OPENCHAMBER_HOME__;
@@ -573,12 +621,13 @@ export const requestDirectoryAccess = async (
   directoryPath: string
 ): Promise<{ success: boolean; path?: string; projectId?: string; error?: string }> => {
   // Desktop shell on local instance: use native folder picker.
-  if (hasDesktopInvoke() && isDesktopLocalOriginActive()) {
+  if (canRequestNativeDirectoryAccess()) {
     try {
       const selected = await getDesktopBridge()?.openDialog?.({
         directory: true,
         multiple: false,
         title: 'Select Working Directory',
+        ...(directoryPath ? { defaultPath: directoryPath } : {}),
       });
       if (!selected || typeof selected !== 'string') {
         return { success: false, error: 'Directory selection cancelled' };
@@ -590,7 +639,7 @@ export const requestDirectoryAccess = async (
     }
   }
 
-  return { success: true, path: directoryPath };
+  return { success: false, error: 'Native directory picker not available' };
 };
 
 const isDesktopFileGrantResult = (
@@ -598,6 +647,12 @@ const isDesktopFileGrantResult = (
 ): value is { path?: unknown; outsideFileGrant?: unknown } => (
   value !== null && typeof value === 'object' && !Array.isArray(value)
 );
+
+const desktopExistingFileGrantSchema = z.object({
+  path: z.string().min(1),
+  outsideFileGrant: z.string().min(1),
+  expiresAt: z.number().finite(),
+});
 
 export const requestFileAccess = async (
   options?: { filters?: Array<{ name: string; extensions: string[] }>; defaultPath?: string }
@@ -641,7 +696,10 @@ export const requestFileAccess = async (
 
 export const requestExistingFileAccess = async (
   path: string
-): Promise<{ success: boolean; path?: string; outsideFileGrant?: string; error?: string }> => {
+): Promise<
+  | { success: true; path: string; outsideFileGrant: string; expiresAt: number }
+  | { success: false; error: string }
+> => {
   const targetPath = typeof path === 'string' ? path.trim() : '';
   if (!targetPath) {
     return { success: false, error: 'Path is required' };
@@ -652,15 +710,14 @@ export const requestExistingFileAccess = async (
 
   try {
     const selected = await getDesktopBridge()?.grantFileAccess?.(targetPath);
-    if (!isDesktopFileGrantResult(selected)) {
+    const parsed = desktopExistingFileGrantSchema.safeParse(selected);
+    if (!parsed.success) {
       return { success: false, error: 'File access was not granted' };
     }
-    const grantedPath = typeof selected.path === 'string' ? selected.path : '';
-    const outsideFileGrant = typeof selected.outsideFileGrant === 'string' ? selected.outsideFileGrant : '';
-    if (!grantedPath || !outsideFileGrant) {
-      return { success: false, error: 'File access was not granted' };
-    }
-    return { success: true, path: grantedPath, outsideFileGrant };
+    return {
+      success: true,
+      ...parsed.data,
+    };
   } catch (error) {
     console.warn('Failed to request existing file access', error);
     return { success: false, error: error instanceof Error ? error.message : String(error) };

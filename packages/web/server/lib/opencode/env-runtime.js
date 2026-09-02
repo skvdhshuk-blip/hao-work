@@ -2,7 +2,14 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { clearAppImageArgv0FromProcessEnv } from '../inherited-env.js';
 import { mergePathValues } from './path-utils.js';
+
+// Login-shell probes source the user's rc files. A slow or interactive rc
+// (nvm, pyenv, a prompt waiting for input) must not hold server startup
+// hostage: a probe that overruns is abandoned and resolution falls through
+// to the next candidate. Electron's own login-shell probe uses the same bound.
+const SHELL_PROBE_TIMEOUT_MS = 5_000;
 
 export const createOpenCodeEnvRuntime = (deps) => {
   const {
@@ -208,6 +215,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
           stdio: ['ignore', 'pipe', 'pipe'],
           maxBuffer: 10 * 1024 * 1024,
           windowsHide: true,
+          timeout: SHELL_PROBE_TIMEOUT_MS,
         });
 
         if (result.status !== 0) {
@@ -228,12 +236,16 @@ export const createOpenCodeEnvRuntime = (deps) => {
   };
 
   const applyLoginShellEnvSnapshot = () => {
+    // Always clear AppImage ARGV0, even when no login-shell snapshot is available.
+    // Otherwise a leaked process.env.ARGV0 survives into later child spawns (#2588).
+    clearAppImageArgv0FromProcessEnv();
+
     const snapshot = getLoginShellEnvSnapshot();
     if (!snapshot) {
       return;
     }
 
-    const skipKeys = new Set(['PWD', 'OLDPWD', 'SHLVL', '_']);
+    const skipKeys = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'ARGV0']);
     for (const [key, value] of Object.entries(snapshot)) {
       if (skipKeys.has(key)) {
         continue;
@@ -456,6 +468,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
+          timeout: SHELL_PROBE_TIMEOUT_MS,
         });
         if (result.status === 0) {
           const found = (result.stdout || '').trim().split(/\s+/).pop() || '';
@@ -523,6 +536,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
+          timeout: SHELL_PROBE_TIMEOUT_MS,
         });
         if (result.status === 0) {
           const found = (result.stdout || '').trim().split(/\s+/).pop() || '';
@@ -604,6 +618,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
+          timeout: SHELL_PROBE_TIMEOUT_MS,
         });
         if (result.status === 0) {
           const found = (result.stdout || '').trim().split(/\s+/).pop() || '';
@@ -1007,7 +1022,13 @@ export const createOpenCodeEnvRuntime = (deps) => {
       const normalized = normalizeOpencodeBinarySetting(settings.opencodeBinary);
 
       if (normalized === '') {
-        delete process.env.OPENCODE_BINARY;
+        // The empty-string sentinel drops a previously APPLIED settings
+        // override (source === 'settings'). An OPENCODE_BINARY provided by
+        // the user's own environment is explicit configuration and must not
+        // be destroyed by an empty setting.
+        if (state.resolvedOpencodeBinarySource === 'settings') {
+          delete process.env.OPENCODE_BINARY;
+        }
         state.resolvedOpencodeBinary = null;
         state.resolvedOpencodeBinarySource = null;
         clearWslOpencodeResolution();

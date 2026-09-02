@@ -127,6 +127,7 @@ mock.module('./useGlobalSessionsStore', () => ({
 }));
 
 mock.module('@/sync/sync-refs', () => ({
+  getSyncSessionDirectory: () => null,
   registerSessionDirectory: (sessionID: string, directory: string) => {
     registeredDirectories.push({ sessionID, directory });
   },
@@ -224,5 +225,40 @@ describe('useMultiRunStore', () => {
       'wait:/repo-worktrees/fix-thing',
       'createSession:/repo-worktrees/fix-thing',
     ]);
+  });
+
+  test('accepts more than 5 models per group without a "maximum 5 models" error', async () => {
+    const models = Array.from({ length: 6 }, (_, i) => ({
+      providerID: 'anthropic',
+      modelID: `claude-sonnet-4-5-${i}`,
+    }));
+
+    const result = await useMultiRunStore.getState().createMultiRun({
+      name: 'Many models',
+      isolateRuns: false,
+      groups: [{ prompt: 'Fix it', models }],
+    });
+
+    expect(useMultiRunStore.getState().error).toBeNull();
+    expect(result?.sessionIds).toHaveLength(6);
+  });
+
+  test('accepts more than 5 models on the isolated (per-worktree) dispatch path', async () => {
+    isGitRepository = true;
+
+    const models = Array.from({ length: 6 }, (_, i) => ({
+      providerID: 'anthropic',
+      modelID: `claude-sonnet-4-5-${i}`,
+    }));
+
+    const result = await useMultiRunStore.getState().createMultiRun({
+      name: 'Many models',
+      isolateRuns: true,
+      groups: [{ prompt: 'Fix it', models }],
+    });
+
+    expect(useMultiRunStore.getState().error).toBeNull();
+    expect(result?.sessionIds).toHaveLength(6);
+    expect(worktreeCreateCalls.length).toBe(6);
   });
 });
