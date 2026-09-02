@@ -237,6 +237,13 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
           error: 'HaoCode is bundled with Hao Work and is upgraded with the application.',
         });
       }
+      if (openCodeUpgradePromise) {
+        return res.status(409).json({
+          success: false,
+          code: 'OPENCODE_UPGRADE_IN_PROGRESS',
+          error: 'An OpenCode upgrade is already in progress.',
+        });
+      }
 
       const requestedTarget = req.body?.target;
       // The target lookup reaches the network, so it runs inside the operation:
@@ -547,7 +554,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     if (!context?.name) {
       return finish(400, {
         title: 'Authorization Failed',
-        message: 'This authorization session has expired or is unknown to the running app. Return to OpenChamber and click Authorize again.',
+        message: 'This authorization session has expired or is unknown to the running app. Return to Hao Work and click Authorize again.',
       });
     }
 
@@ -568,7 +575,7 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
       }
       return finish(200, {
         title: 'Authorization Complete',
-        message: 'You can close this tab and return to OpenChamber.',
+        message: 'You can close this tab and return to Hao Work.',
       });
     } catch (error) {
       return finish(502, {

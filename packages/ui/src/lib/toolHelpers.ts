@@ -188,21 +188,21 @@ const TOOL_METADATA: Record<string, ToolMetadata> = {
     },
 
     openchamber: {
-      displayName: 'OpenChamber',
+      displayName: 'Hao Work',
       category: 'system',
       outputLanguage: 'json',
       inputFields: []
     },
 
     openchamber_web: {
-      displayName: 'OpenChamber Web',
+      displayName: 'Hao Work Web',
       category: 'system',
       outputLanguage: 'json',
       inputFields: []
     },
 
     openchamber_memory: {
-      displayName: 'OpenChamber Memory',
+      displayName: 'Hao Work Memory',
       category: 'system',
       outputLanguage: 'json',
       inputFields: []

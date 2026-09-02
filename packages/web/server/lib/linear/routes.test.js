@@ -76,7 +76,7 @@ describe('Linear auth routes', () => {
               email: 'ada@example.com',
               avatarUrl: 'https://example.com/a.png',
             },
-            organization: { id: 'org-1', name: 'OpenChamber', urlKey: 'openchamber' },
+            organization: { id: 'org-1', name: 'Hao Work', urlKey: 'openchamber' },
           },
         });
       }
@@ -100,11 +100,11 @@ describe('Linear auth routes', () => {
       email: 'ada@example.com',
       avatarUrl: 'https://example.com/a.png',
     });
-    expect(status.body.organization).toEqual({ id: 'org-1', name: 'OpenChamber', urlKey: 'openchamber' });
+    expect(status.body.organization).toEqual({ id: 'org-1', name: 'Hao Work', urlKey: 'openchamber' });
     expect(status.body.scope).toBe('read,write,comments:create');
     expect(status.body.workspaces).toEqual([{
       id: 'org-1',
-      name: 'OpenChamber',
+      name: 'Hao Work',
       urlKey: 'openchamber',
       current: true,
       user: {

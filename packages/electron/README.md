@@ -112,13 +112,13 @@ macOS packaging needs Xcode/build tools for notarized builds and icon asset comp
 
 Windows packaging needs NSIS support through `electron-builder`. If no Windows signing env is set, `package.mjs` disables code signing and builds an unsigned installer. Windows updates use `latest.yml` for x64 and the `latest-arm64.yml` channel for ARM64 so each installation resolves an architecture-matching installer.
 
-Linux AppImages must be built natively. Set `OPENCHAMBER_TARGET_ARCH=x64` or `OPENCHAMBER_TARGET_ARCH=arm64` when packaging; the build rejects a target that does not match the Linux host. The same target selects the bundled OpenCode CLI, native Electron rebuild, and Electron Builder architecture. Linux identity is stable across architectures: executable `hao-work`, desktop file `hao-work.desktop`, icon `hao-work`, and `StartupWMClass=hao-work`. The autostart helper reads and removes the legacy `openchamber.desktop` entry during migration.
+Linux AppImages must be built natively. Set `OPENCHAMBER_TARGET_ARCH=x64` or `OPENCHAMBER_TARGET_ARCH=arm64` when packaging; the build rejects a target that does not match the Linux host. The same target selects the bundled HaoCode PHP runtime, native Electron rebuild, and Electron Builder architecture. Linux identity is stable across architectures: executable `hao-work`, desktop file `hao-work.desktop`, icon `hao-work`, and `StartupWMClass=hao-work`. The autostart helper reads and removes the legacy `openchamber.desktop` entry during migration.
 
-After packaging, run `bun run --cwd packages/electron verify:linux-appimage`. The verifier extracts the final AppImage and checks its ELF architecture, desktop identity, Electron executable, pinned OpenCode CLI version and architecture, and all packaged native `.node` modules.
+After packaging, run `bun run --cwd packages/electron verify:linux-appimage`. The verifier extracts the final AppImage and checks its ELF architecture, desktop identity, Electron executable, bundled HaoCode PHP/bridge manifest and architecture, and all packaged native `.node` modules.
 
 Running a packaged Linux AppImage requires FUSE (`libfuse.so.2`, typically `libfuse2` / `libfuse2t64` on Debian/Ubuntu). Without FUSE, start with `APPIMAGE_EXTRACT_AND_RUN=1`. Keep the AppImage on a writable path so in-app updates can replace it.
 
-Desktop clears AppImage `ARGV0` from `process.env` before probing the login shell and starting the in-process server. Leaving it set makes zsh rewrite argv[0] for integrated-terminal and managed-OpenCode child commands to the AppImage path.
+Desktop clears AppImage `ARGV0` from `process.env` before probing the login shell and starting the in-process server. Leaving it set makes zsh rewrite argv[0] for integrated-terminal and backend child commands to the AppImage path.
 
 Linux updates are supported only when the packaged app is running from a writable AppImage. Update checks, downloads, and installation report an actionable error when `APPIMAGE` is missing, invalid, or read-only; a missing release feed (`latest-linux.yml` 404 before the first Linux publish) is treated as “no update available”. macOS and Windows updater behavior is unchanged. Release builds keep `latest-linux.yml` (x64) and `latest-linux-arm64.yml` separate and validate each manifest against its AppImage before upload. Linux AppImages download full updates (no `.blockmap` differential channel yet).
 
@@ -134,20 +134,9 @@ On Windows and Linux, the General setting persisted as `desktopMinimizeToTrayEna
 
 The macOS menu bar item is enabled by default and can be disabled in General settings. The setting applies after restart; while disabled, Desktop does not create the native tray controller or start the renderer subscriptions, polling, quota refresh, or IPC updates that feed it.
 
-## Bundled OpenCode CLI
+## Bundled HaoCode Runtime
 
-Packaged Desktop builds include the official OpenCode CLI that matches the pinned `@opencode-ai/sdk` version in the root `package.json`. `prepare:opencode-cli` downloads the platform-specific release artifact, caches it under `packages/electron/.cache/opencode-cli`, stages `opencode` or `opencode.exe` into `resources/opencode-cli`, and verifies `opencode --version` before packaging. Re-running the step is fast when the staged binary already matches the pinned version.
-
-Managed local Desktop startup prefers OpenCode binaries in this order:
-
-1. `settings.opencodeBinary`.
-2. Environment overrides: `OPENCODE_BINARY`, `OPENCODE_PATH`, `OPENCHAMBER_OPENCODE_PATH`, or `OPENCHAMBER_OPENCODE_BIN`.
-3. The bundled Desktop CLI in `process.resourcesPath/opencode-cli`.
-4. System installs discovered from PATH.
-5. Known npm/Bun/Homebrew/Scoop/Chocolatey and other standard install locations.
-6. Platform discovery through `where opencode` on Windows or a login shell on macOS/Linux.
-
-Use an explicit override when testing a different OpenCode CLI build or when a user needs to point Desktop at a custom binary. The configured path must point to the standalone CLI, not the OpenCode Desktop app executable.
+Packaged Desktop builds include a self-contained PHP runtime, the Composer-installed `packages/haocode-bridge` worker, and the platform sandbox runner when supported. `prepare:haocode-runtime` verifies and stages those assets under `resources/haocode-runtime`; Electron starts the OpenChamber-compatible backend in-process and points it at that manifest. External OpenCode remains an explicit compatibility mode and is never substituted for a missing packaged HaoCode runtime.
 
 ## Common Env Vars
 
@@ -159,7 +148,8 @@ Use an explicit override when testing a different OpenCode CLI build or when a u
 | `OPENCHAMBER_HMR_UI_PORT` | Preferred Vite UI port for desktop dev, default `5173` |
 | `OPENCHAMBER_HMR_API_PORT` | Preferred API port for desktop dev, default `3901` |
 | `OPENCHAMBER_RUNTIME=desktop` | Set by Electron before starting the web server |
-| `OPENCHAMBER_OPENCODE_CLI_VERSION` | Optional packaging override for the bundled OpenCode CLI version; defaults to the pinned root `@opencode-ai/sdk` version |
+| `HAOWORK_PHP_VERSION` | Optional packaging override for the bundled PHP runtime version; defaults to `8.4` |
+| `HAOWORK_SANDBOX_RELEASE_TAG` | Optional HaoCode sandbox runner release tag used while staging the packaged runtime |
 | `OPENCHAMBER_TARGET_ARCH` | Explicit desktop package architecture (`x64` or `arm64`); Linux requires it to match the native host |
 | `OPENCHAMBER_DESKTOP_NOTIFY=true` | Enables desktop notification flow in the web server |
 | `OPENCHAMBER_SKIP_API_COMPRESSION=true` | Defaulted by Desktop to reduce local CPU overhead |

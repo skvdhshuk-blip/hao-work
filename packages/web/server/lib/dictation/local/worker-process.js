@@ -24,7 +24,7 @@ import { getLocalSttModelDir, getLocalSttModelSpec } from './model-catalog.js';
 import { pcm16ToWav } from '../audio.js';
 import path from 'path';
 
-process.title = 'OpenChamber Dictation';
+process.title = 'Hao Work Dictation';
 
 const engines = new Map();
 const ttsEngines = new Map();

@@ -122,7 +122,7 @@ export const createRelayService = ({
 
   const standbyStatus = (holderPid) => ({
     state: 'standby',
-    lastError: `relay host is owned by another local OpenChamber process (pid ${holderPid})`,
+    lastError: `relay host is owned by another local Hao Work process (pid ${holderPid})`,
     connectedClients: 0,
   });
 

@@ -30,6 +30,7 @@ const result = await Bun.build({
     '@openchamber/web/*',
     'bun-pty',
     'node-pty',
+    'better-sqlite3',
   ],
   minify: false,
   sourcemap: 'none',

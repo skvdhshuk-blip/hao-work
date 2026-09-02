@@ -47,7 +47,7 @@ const createService = (overrides = {}) => {
   return { service, client, sessionService, scheduledTaskService };
 };
 
-describe('OpenChamber control service', () => {
+describe('Hao Work control service', () => {
   it('serves project and model projections without an HTTP or CLI round trip', async () => {
     const { service } = createService();
     await expect(service.execute('projects.list')).resolves.toEqual({
@@ -262,7 +262,7 @@ describe('OpenChamber control service', () => {
 
   it('rejects actions outside the fixed contract', async () => {
     const { service } = createService();
-    await expect(service.execute('session.delete')).rejects.toThrow('Unsupported OpenChamber action');
+    await expect(service.execute('session.delete')).rejects.toThrow('Unsupported Hao Work action');
   });
 });
 

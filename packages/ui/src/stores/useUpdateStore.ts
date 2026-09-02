@@ -11,7 +11,6 @@ import {
   isVSCodeRuntime,
   isWebRuntime,
 } from '@/lib/desktop';
-import { formatMessage, useI18nStore } from '@/lib/i18n/store';
 import { getUpdateInstallErrorMessage } from '@/lib/updateInstallError';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getClientPlatform, isCapacitorApp } from '@/lib/platform';

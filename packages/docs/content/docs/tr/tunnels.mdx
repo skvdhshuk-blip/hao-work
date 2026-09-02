@@ -1,17 +1,17 @@
 ---
 title: Tüneller
-description: Uzak ve mobil erişim için OpenChamber'ı güvenli biçimde açığa çıkarın.
+description: Uzak ve mobil erişim için Hao Work'ı güvenli biçimde açığa çıkarın.
 ---
 
 # Tüneller
 
-Bir tünel, OpenChamber'ınıza giden genel bir bağlantıdır. Böylece başka bir ağdaki normal bir tarayıcıdan erişebilirsiniz. Çalışan bir örnek için bir tane oluşturmak üzere `openchamber tunnel` kullanın.
+Bir tünel, Hao Work'ınıza giden genel bir bağlantıdır. Böylece başka bir ağdaki normal bir tarayıcıdan erişebilirsiniz. Çalışan bir örnek için bir tane oluşturmak üzere `openchamber tunnel` kullanın.
 
 > **Kendi cihazlarınızı** bağlamak, yani mobil uygulama ya da başka bir masaüstü, genelde tünel gerektirmez. Bunun yerine [eşleştirin](/connect-devices/) ve ev dışı erişimi sıfır kurulumla uçtan uca şifreli [Private Relay](/private-relay/) üzerinden bırakın.
 
 ## Ön koşullar
 
-OpenChamber, tünel sağlayıcısının CLI'sını sizin makinenizde başlatır. Önce kullanmak istediğiniz sağlayıcıyı kurun:
+Hao Work, tünel sağlayıcısının CLI'sını sizin makinenizde başlatır. Önce kullanmak istediğiniz sağlayıcıyı kurun:
 
 ```bash
 brew install cloudflared
@@ -26,7 +26,7 @@ ngrok config add-authtoken <your-ngrok-token>
 
 ## Hızlı başlangıç
 
-1. OpenChamber'ı başlatın:
+1. Hao Work'ı başlatın:
 
 ```bash
 openchamber
@@ -52,9 +52,9 @@ openchamber tunnel start --provider ngrok --mode quick
 openchamber tunnel status
 ```
 
-Tünel ayaktayken `status` bir genel URL gösterir. Onu açın ya da QR kodunu tarayın, OpenChamber'a her yerden ulaşın.
+Tünel ayaktayken `status` bir genel URL gösterir. Onu açın ya da QR kodunu tarayın, Hao Work'a her yerden ulaşın.
 
-Varsayılan olarak OpenChamber, etkileşimli TTY oturumlarında bir QR kodu basar. QR çıktısını zorlamak için `--qr`, kapatmak için `--no-qr` kullanın.
+Varsayılan olarak Hao Work, etkileşimli TTY oturumlarında bir QR kodu basar. QR çıktısını zorlamak için `--qr`, kapatmak için `--no-qr` kullanın.
 
 ## Sağlayıcılar
 
@@ -106,7 +106,7 @@ openchamber tunnel stop --port 3000
 
 ## Davranış notları
 
-- OpenChamber örneği başına bir aktif tünel, yani port
+- Hao Work örneği başına bir aktif tünel, yani port
 - Aynı örnekte yeni bir mod ya da sağlayıcı başlatmak önceki tüneli değiştirir
 - Yeni bir bağlantı bağlantısı oluşturmak, kullanılmamış önceki bağlantıyı iptal eder
 - Tünel otomatik başlatma, `--ui-password` ve `--api-only` gibi sunucu bayraklarını yeniden başlatma/güncelleme akışlarında kullanılan örnek ayarlarında korur
@@ -116,5 +116,5 @@ openchamber tunnel stop --port 3000
 - [Cihaz bağlama](/connect-devices/) — kendi cihazlarınızı genel URL olmadan eşleştirin
 - [Güvenlik](/security/) — açığa çıkarmadan önce arayüzü koruyun
 - [Desktop Tunnels](/desktop-tunnels/) — CLI başlatmadan masaüstü uygulaması tünel kurulumu
-- [PWA & Mobile](/mobile/) — telefonunuzdan OpenChamber'a ulaşın
+- [PWA & Mobile](/mobile/) — telefonunuzdan Hao Work'a ulaşın
 - [Sorun giderme](/troubleshooting/) — tünel bağlantısı çalışmıyorsa

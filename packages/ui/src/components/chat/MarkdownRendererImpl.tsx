@@ -845,6 +845,7 @@ const useMorphdomMarkdown = ({
     key: DetachedMarkdownDomKey;
     copiedLabel: string;
   } | null>(null);
+  const containsMermaidSourceRef = React.useRef(false);
   const refreshMermaidViewers = React.useCallback(() => {
     const container = containerRef.current;
     if (!container) {
@@ -863,6 +864,7 @@ const useMorphdomMarkdown = ({
   React.useLayoutEffect(() => {
     renderRevisionRef.current += 1;
     mountedDomRef.current = null;
+    containsMermaidSourceRef.current = /(?:^|\n)\s*```mermaid(?:\s|$)/i.test(text);
   }, [ctx, imageMode, streaming, text]);
 
   React.useLayoutEffect(() => {
@@ -900,6 +902,7 @@ const useMorphdomMarkdown = ({
       if (!mountedDom) return;
       // Viewer controllers and transient interaction state belong to the
       // current renderer instance and must not cross the cache boundary.
+      if (containsMermaidSourceRef.current) return;
       if (target.childNodes.length === 0 || shouldRefreshMermaidViewers(target)) return;
       if (Array.from(target.children).some((block) => !block.hasAttribute('data-md-id'))) return;
       if (target.querySelector('[data-md-copy-pending]')) return;
@@ -980,7 +983,7 @@ const useMorphdomMarkdown = ({
     if (!streaming) {
       const cachedBlocks = getCachedMarkdownBlocks(text, imageMode);
       if (cachedBlocks && domMatchesRenderedBlocks(target, cachedBlocks, decorationId)) {
-        mountedDomRef.current = domCacheKey
+        mountedDomRef.current = domCacheKey && !shouldRefreshMermaidViewers(target)
           ? { key: domCacheKey, copiedLabel: ctx.labels.copied }
           : null;
         streamPerfCount('ui.markdown_renderer.settled_paint.reused');
@@ -1075,7 +1078,7 @@ const useMorphdomMarkdown = ({
       if (removedMermaidBlock || (existing.length > blocks.length && hadMermaidBeforeTrailingCleanup)) {
         refreshMermaidViewers();
       }
-      mountedDomRef.current = domCacheKey
+      mountedDomRef.current = domCacheKey && !shouldRefreshMermaidViewers(target)
         ? { key: domCacheKey, copiedLabel: ctx.labels.copied }
         : null;
       releaseRevealHold();

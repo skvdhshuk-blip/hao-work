@@ -45,7 +45,7 @@ describe('OpenCode upgrade routes', () => {
       .expect(409, {
         success: false,
         code: 'OPENCODE_UPGRADE_MANAGED_BY_OPENCHAMBER',
-        error: 'OpenCode is bundled with OpenChamber Desktop and updates with the app.',
+        error: 'HaoCode is bundled with Hao Work and is upgraded with the application.',
       });
 
     expect(globalThis.fetch).not.toHaveBeenCalled();

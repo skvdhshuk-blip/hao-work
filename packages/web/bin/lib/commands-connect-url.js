@@ -223,7 +223,7 @@ async function displayTunnelQrCode(url) {
 
 function createConnectUrlCommand({ serveCommand }) {
   return async function connectUrlCommand(options = {}) {
-    assertSafeBrowserPort(options.port, { context: 'OpenChamber connect-url' });
+    assertSafeBrowserPort(options.port, { context: 'Hao Work connect-url' });
     const explicitServerUrl = options.server ? normalizeServerUrlForConnection(options.server) : null;
     if (options.server && !explicitServerUrl) {
       throw new TunnelCliError('Invalid --server URL. Use an http:// or https:// URL.', EXIT_CODE.USAGE_ERROR);
@@ -288,9 +288,9 @@ function createConnectUrlCommand({ serveCommand }) {
       return;
     }
 
-    clackIntro('OpenChamber pairing link');
+    clackIntro('Hao Work pairing link');
     if (serverState.autoStarted) {
-      logStatus('success', `started OpenChamber on port ${options.port}`);
+      logStatus('success', `started Hao Work on port ${options.port}`);
     }
     logStatus('success', connectUrl);
     clackLog.info(`Server URL: ${serverUrl}`);
@@ -304,20 +304,20 @@ function createConnectUrlCommand({ serveCommand }) {
       clackLog.info(`Fingerprint: ${pairing.fingerprint}`);
     }
     if (resolvedServerUrl.source === 'lan-detected') {
-      clackLog.info('Detected a LAN address because OpenChamber is bound to all interfaces. Use --server to override it.');
+      clackLog.info('Detected a LAN address because Hao Work is bound to all interfaces. Use --server to override it.');
     } else if (resolvedServerUrl.source === 'loopback-fallback') {
-      clackLog.warn('OpenChamber is bound to all interfaces, but no LAN address was detected. Use --server to provide a reachable URL.');
+      clackLog.warn('Hao Work is bound to all interfaces, but no LAN address was detected. Use --server to provide a reachable URL.');
     } else if (isLoopbackServerUrl(serverUrl)) {
       // The direct candidate points at this machine only — other devices cannot
       // use it. Say so instead of letting a "LAN" link silently not work (or a
       // --relay link silently go relay-only).
       if (options.relay) {
-        logStatus('warn', '[LAN_UNREACHABLE]', 'OpenChamber only listens on this machine, so devices will always connect through the relay. Restart with --lan to allow direct home-network connections.');
+        logStatus('warn', '[LAN_UNREACHABLE]', 'Hao Work only listens on this machine, so devices will always connect through the relay. Restart with --lan to allow direct home-network connections.');
       } else {
-        logStatus('warn', '[LAN_UNREACHABLE]', 'OpenChamber only listens on this machine, so other devices cannot use this link. Restart with --lan, or use --server to provide a reachable URL.');
+        logStatus('warn', '[LAN_UNREACHABLE]', 'Hao Work only listens on this machine, so other devices cannot use this link. Restart with --lan, or use --server to provide a reachable URL.');
       }
     }
-    clackLog.info('Scan or paste this link into another OpenChamber client. It is single-use and expires.');
+    clackLog.info('Scan or paste this link into another Hao Work client. It is single-use and expires.');
     if (options.qr === true) {
       await displayTunnelQrCode(connectUrl);
     }

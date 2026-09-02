@@ -336,7 +336,7 @@ describe('Linear issue list/get', () => {
       expect(body.query).toContain('mutation CommentCreate');
       expect(body.variables.input).toEqual({
         issueId: 'issue-uuid-1',
-        body: 'OpenChamber session started.',
+        body: 'Hao Work session started.',
       });
       expect(options.headers.Authorization).toBe('Bearer access-1');
       return jsonResponse({
@@ -351,7 +351,7 @@ describe('Linear issue list/get', () => {
 
     const result = await createLinearIssueComment({
       issueId: 'ENG-12',
-      body: 'OpenChamber session started.',
+      body: 'Hao Work session started.',
     });
     expect(result).toEqual({ connected: true, comment: { id: 'comment-9' } });
     expect(JSON.stringify(result)).not.toContain('access-1');

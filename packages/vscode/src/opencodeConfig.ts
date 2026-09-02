@@ -371,7 +371,7 @@ const loadSnippetRegistry = (workingDirectory?: string): Map<string, Snippet> =>
         const snippet = loadSnippetFile(dir, filename, source);
         if (snippet) registerSnippet(registry, snippet);
       } catch (error) {
-        console.warn(`[OpenChamber][VSCode] Failed to load snippet ${path.join(dir, filename)}:`, error);
+        console.warn(`[Hao Work][VSCode] Failed to load snippet ${path.join(dir, filename)}:`, error);
       }
     }
   }
@@ -1614,7 +1614,7 @@ const parseMdFile = (filePath: string): { frontmatter: Record<string, unknown>; 
   try {
     frontmatter = (yaml.parse(match[1]) || {}) as Record<string, unknown>;
   } catch (error) {
-    console.warn(`[OpenChamber][VSCode] Failed to parse frontmatter for ${filePath}, treating as empty:`, error);
+    console.warn(`[Hao Work][VSCode] Failed to parse frontmatter for ${filePath}, treating as empty:`, error);
     frontmatter = {};
   }
   return { frontmatter, body: (match[2] || '').trim() };

@@ -1957,7 +1957,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         sourceWorktreeMetadata?.projectDirectory ?? null,
       )
       if (!project?.path) {
-        throw new Error("Project is not registered in OpenChamber")
+        throw new Error("Project is not registered in Hao Work")
       }
 
       const [branchNameModule, configModule, createModule] = await Promise.all([

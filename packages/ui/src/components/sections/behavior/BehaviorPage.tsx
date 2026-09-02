@@ -22,7 +22,6 @@ import type { DesktopSettings } from '@/lib/desktop';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { ToolApprovalSection } from './ToolApprovalSection';
 import { SandboxSection } from './SandboxSection';
-import { reloadOpenCodeConfiguration } from '@/stores/useAgentsStore';
 import { noteDeferredRestartFromPayload, recordDeferredOpenCodeRestart } from '@/lib/opencode/deferredRestart';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import {

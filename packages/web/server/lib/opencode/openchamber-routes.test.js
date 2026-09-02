@@ -69,7 +69,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('OpenChamber foreground update route', () => {
+describe('Hao Work foreground update route', () => {
   it('rejects a foreground update when the server is not owned by systemd', async () => {
     const { app } = createApp();
 
@@ -114,7 +114,7 @@ describe('OpenChamber foreground update route', () => {
       .post('/api/openchamber/update-install')
       .expect(200, {
         success: true,
-        message: 'Update queued; OpenChamber will restart after installation completes',
+        message: 'Update queued; Hao Work will restart after installation completes',
         version: '1.17.1',
         packageManager: 'npm',
         autoRestart: true,

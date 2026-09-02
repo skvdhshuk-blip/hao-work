@@ -18,7 +18,7 @@ export const registerOpenChamberControlRoutes = (app, { controlService }) => {
       const data = await controlService.execute(action, input, req.body?.contextDirectory, { signal: controller.signal });
       return res.json(data);
     } catch (error) {
-      const controlError = asControlError(error, 'OpenChamber control action failed');
+      const controlError = asControlError(error, 'Hao Work control action failed');
       return res.status(controlError.statusCode).json({
         error: controlError.message,
         ...(controlError.partial === true ? {

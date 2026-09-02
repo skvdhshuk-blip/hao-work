@@ -162,7 +162,7 @@ describe('readTaskTagSessionIdFromOutput', () => {
     });
 });
 
-describe('OpenChamber tool output', () => {
+describe('Hao Work tool output', () => {
     test('keeps the result envelope in the generic JSON rendering pipeline', () => {
         const result = {
             schemaVersion: 1,

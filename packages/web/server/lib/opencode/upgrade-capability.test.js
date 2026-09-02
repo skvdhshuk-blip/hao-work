@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { resolveOpenCodeUpgradeCapability } from './upgrade-capability.js';
 
 describe('OpenCode upgrade capability', () => {
-  it('assigns bundled binaries to the OpenChamber updater', () => {
+  it('assigns bundled binaries to the Hao Work updater', () => {
     const isBundledBinary = vi.fn(() => true);
 
     expect(resolveOpenCodeUpgradeCapability({

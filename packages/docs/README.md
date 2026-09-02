@@ -1,6 +1,6 @@
-# OpenChamber Docs Source
+# Hao Work Docs Source
 
-This package is the source-of-truth for OpenChamber public docs content.
+This package is the source-of-truth for Hao Work public docs content.
 
 ## Layout
 

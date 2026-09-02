@@ -164,15 +164,15 @@ describe('Linear session status comments', () => {
     expect(buildLinearSessionStatusComment({
       kind: 'started',
       sessionUrl: 'https://app.example.com/?session=ses_1',
-    })).toBe('[OpenChamber session started](https://app.example.com/?session=ses_1)');
+    })).toBe('[Hao Work session started](https://app.example.com/?session=ses_1)');
     expect(buildLinearSessionStatusComment({
       kind: 'completed',
       sessionUrl: 'https://app.example.com/?session=ses_1',
-    })).toBe('[OpenChamber session completed](https://app.example.com/?session=ses_1)');
+    })).toBe('[Hao Work session completed](https://app.example.com/?session=ses_1)');
     expect(buildLinearSessionStatusComment({
       kind: 'failure',
       sessionUrl: 'https://app.example.com/?session=ses_1',
-    })).toBe('[OpenChamber session failed](https://app.example.com/?session=ses_1)');
+    })).toBe('[Hao Work session failed](https://app.example.com/?session=ses_1)');
   });
 
   it('cannot be broken by brackets in the issue title', async () => {
@@ -231,7 +231,7 @@ describe('Linear session status comments', () => {
     });
     expect(commentCalls).toHaveLength(1);
     const body = JSON.parse(commentCalls[0][1].body).variables.input.body;
-    expect(body).toBe('[OpenChamber session started](https://app.example.com/?session=ses_1)');
+    expect(body).toBe('[Hao Work session started](https://app.example.com/?session=ses_1)');
     expect(JSON.stringify(first)).not.toContain('access-1');
   });
 
@@ -266,6 +266,6 @@ describe('Linear session status comments', () => {
     });
     expect(commentCalls).toHaveLength(1);
     const body = JSON.parse(commentCalls[0][1].body).variables.input.body;
-    expect(body).toBe('[OpenChamber session completed](https://app.example.com/?session=ses_1)');
+    expect(body).toBe('[Hao Work session completed](https://app.example.com/?session=ses_1)');
   });
 });

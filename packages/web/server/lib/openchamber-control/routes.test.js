@@ -11,7 +11,7 @@ const createApp = (execute) => {
   return app;
 };
 
-describe('OpenChamber control route', () => {
+describe('Hao Work control route', () => {
   it('is a thin adapter over the control service', async () => {
     const execute = vi.fn(async () => ({ projects: [] }));
     const response = await request(createApp(execute))

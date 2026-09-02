@@ -4,7 +4,7 @@ import { CHAT_DRAFT_PROJECT_ID } from '@/lib/chatDirectories';
 import { resolveProjectContextOwner } from './useProjectContextOwner';
 
 const projects = [
-  { id: 'openchamber', path: '/workspace/openchamber', label: 'OpenChamber' },
+  { id: 'openchamber', path: '/workspace/openchamber', label: 'Hao Work' },
 ];
 
 describe('resolveProjectContextOwner', () => {

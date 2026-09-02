@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { resolveProjectForSessionDirectory } from './projectResolution';
 
 const projects = [
-  { id: 'openchamber', path: '/workspace/openchamber', label: 'OpenChamber' },
+  { id: 'openchamber', path: '/workspace/openchamber', label: 'Hao Work' },
 ];
 
 describe('resolveProjectForSessionDirectory', () => {

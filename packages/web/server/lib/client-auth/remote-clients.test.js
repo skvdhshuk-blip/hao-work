@@ -86,15 +86,15 @@ describe('remote client auth runtime', () => {
   it('keeps the replaced record label on a dedupe re-mint without an explicit label', async () => {
     const { dir, runtime } = await createRuntime();
     try {
-      await runtime.createClient({ label: 'Iryna iPhone', dedupeKey: 'mobile:device-1', fallbackLabel: 'OpenChamber Mobile' });
-      const remint = await runtime.createClient({ dedupeKey: 'mobile:device-1', fallbackLabel: 'OpenChamber Mobile' });
+      await runtime.createClient({ label: 'Iryna iPhone', dedupeKey: 'mobile:device-1', fallbackLabel: 'Hao Work Mobile' });
+      const remint = await runtime.createClient({ dedupeKey: 'mobile:device-1', fallbackLabel: 'Hao Work Mobile' });
       expect(remint.client.label).toBe('Iryna iPhone');
 
-      const renamed = await runtime.createClient({ label: 'Work phone', dedupeKey: 'mobile:device-1', fallbackLabel: 'OpenChamber Mobile' });
+      const renamed = await runtime.createClient({ label: 'Work phone', dedupeKey: 'mobile:device-1', fallbackLabel: 'Hao Work Mobile' });
       expect(renamed.client.label).toBe('Work phone');
 
-      const fresh = await runtime.createClient({ dedupeKey: 'mobile:device-2', fallbackLabel: 'OpenChamber Mobile' });
-      expect(fresh.client.label).toBe('OpenChamber Mobile');
+      const fresh = await runtime.createClient({ dedupeKey: 'mobile:device-2', fallbackLabel: 'Hao Work Mobile' });
+      expect(fresh.client.label).toBe('Hao Work Mobile');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

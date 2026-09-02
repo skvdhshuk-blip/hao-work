@@ -73,8 +73,8 @@ export const createBrowserControlBroker = ({
         // environment can do, and leave deciding whether it matters to the
         // caller rather than handing it an instruction it cannot carry out.
         return Promise.reject(new BrowserControlError(
-          'No OpenChamber client connected here can control a page. Reading and '
-          + 'interacting with a page works when OpenChamber runs as its desktop '
+          'No Hao Work client connected here can control a page. Reading and '
+          + 'interacting with a page works when Hao Work runs as its desktop '
           + 'application; a web browser tab can display a page but cannot be '
           + 'driven. Nothing was changed. Mention this to the user only if it '
           + 'affects what they asked for.',

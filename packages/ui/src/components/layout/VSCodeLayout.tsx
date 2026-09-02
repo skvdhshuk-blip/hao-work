@@ -398,7 +398,7 @@ export const VSCodeLayout: React.FC = () => {
           }
         })();
 
-        if (debugEnabled) console.log('[OpenChamber][VSCode][bootstrap] attempt', { configInitialized });
+        if (debugEnabled) console.log('[Hao Work][VSCode][bootstrap] attempt', { configInitialized });
         if (!configInitialized) {
           await initializeConfig();
         }
@@ -420,7 +420,7 @@ export const VSCodeLayout: React.FC = () => {
         if (!configState.isInitialized || !configState.isConnected || configState.providers.length === 0 || configState.agents.length === 0) {
           return;
         }
-        if (debugEnabled) console.log('[OpenChamber][VSCode][bootstrap] post-load', {
+        if (debugEnabled) console.log('[Hao Work][VSCode][bootstrap] post-load', {
           providers: configState.providers.length,
           agents: configState.agents.length,
         });

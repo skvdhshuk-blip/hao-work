@@ -24,8 +24,18 @@ const createPayload = () => {
     '[Desktop Entry]', `Name=${LINUX_IDENTITY.productName}`, `Exec=AppRun --no-sandbox %U`, `Icon=${LINUX_IDENTITY.iconName}`, `StartupWMClass=${LINUX_IDENTITY.startupWMClass}`, '',
   ].join('\n'));
   writeElf(path.join(root, LINUX_IDENTITY.executableName), 'x64');
-  writeElf(path.join(root, 'resources/opencode-cli/opencode'), 'x64');
-  for (const name of ['pty.node', 'sherpa-onnx.node']) {
+  const runtimeRoot = path.join(root, 'resources/haocode-runtime');
+  writeElf(path.join(runtimeRoot, 'php/php'), 'x64');
+  fs.mkdirSync(path.join(runtimeRoot, 'bridge/vendor'), { recursive: true });
+  fs.writeFileSync(path.join(runtimeRoot, 'bridge/worker.php'), '<?php');
+  fs.writeFileSync(path.join(runtimeRoot, 'bridge/vendor/autoload.php'), '<?php');
+  fs.writeFileSync(path.join(runtimeRoot, 'runtime.json'), JSON.stringify({
+    php: 'php/php',
+    worker: 'bridge/worker.php',
+    autoload: 'bridge/vendor/autoload.php',
+    phpVersion: '8.4',
+  }));
+  for (const name of ['pty.node', 'sherpa-onnx.node', 'better_sqlite3.node']) {
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules', name), 'x64');
   }
   for (const asset of [
@@ -64,16 +74,15 @@ test('AppImage artifact names use electron-builder arch suffixes', () => {
   assert.equal(linuxAppImageArchSuffix('arm64'), 'arm64');
 });
 
-test('verifies identity, version, and native payload architecture', () => {
+test('verifies identity, HaoCode runtime, and native payload architecture', () => {
   const root = createPayload();
   try {
     const result = verifyExtractedPayload({
       root,
       targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.18',
+      expectedHaoCodePhpVersion: '8.4',
     });
-    assert.equal(result.nativeModuleCount, 2);
+    assert.equal(result.nativeModuleCount, 3);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -86,8 +95,7 @@ test('fails on a missing native module', () => {
     assert.throws(() => verifyExtractedPayload({
       root,
       targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.18',
+      expectedHaoCodePhpVersion: '8.4',
     }), /Missing packaged native module: pty\.node/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -101,29 +109,26 @@ test('fails when the OCR model asset stays inside the asar', () => {
     assert.throws(() => verifyExtractedPayload({
       root,
       targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.18',
+      expectedHaoCodePhpVersion: '8.4',
     }), /Missing unpacked runtime asset: node_modules\/@gutenye\/ocr-models/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('fails on wrong CLI version or native architecture', () => {
+test('fails on wrong HaoCode PHP version or native architecture', () => {
   const root = createPayload();
   try {
     assert.throws(() => verifyExtractedPayload({
       root,
       targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.17',
-    }), /OpenCode CLI version mismatch/);
+      expectedHaoCodePhpVersion: '8.3',
+    }), /HaoCode PHP version mismatch/);
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules/pty.node'), 'arm64');
     assert.throws(() => verifyExtractedPayload({
       root,
       targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.18',
+      expectedHaoCodePhpVersion: '8.4',
     }), /Native module architecture mismatch/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

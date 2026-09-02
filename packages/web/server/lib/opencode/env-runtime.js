@@ -291,7 +291,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
     const names = process.platform === 'win32' ? ['opencode.exe'] : ['opencode'];
     const roots = [
       process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR,
-      typeof process.resourcesPath === 'string' ? path.join(process.resourcesPath, 'opencode-cli') : null,
     ]
       .map((value) => (typeof value === 'string' ? value.trim() : ''))
       .filter(Boolean);
@@ -682,9 +681,9 @@ export const createOpenCodeEnvRuntime = (deps) => {
   const getWindowsNativeOpencodePackageNames = () => {
     // TEMPORARY WORKAROUND — Windows ARM64: native opencode.exe fails with a Bun
     // FFI/TinyCC dlopen error (https://github.com/anomalyco/opencode/issues/19130).
-    // prepare-opencode-cli.mjs bundles x64-baseline instead; match that here so
-    // the runtime resolver looks for the same x64-baseline package. Restore the
-    // arm64 branch below when the upstream issue is resolved.
+    // Prefer x64-baseline for compatibility when a caller explicitly supplies
+    // a bundled OpenCode CLI. Restore the arm64 branch below when the upstream
+    // issue is resolved.
     if (process.arch === 'arm64') {
       // --- ORIGINAL (restore when ARM64 is fixed) ---
       // return ['opencode-windows-arm64'];
@@ -951,7 +950,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
   const createConfiguredOpencodeBinaryError = (raw, normalized) => {
     const configured = typeof raw === 'string' ? raw.trim() : '';
     const candidate = typeof normalized === 'string' && normalized.trim().length > 0 ? normalized.trim() : configured;
-    const messageSuffix = 'OpenChamber needs the standalone opencode CLI. Install it and set settings.opencodeBinary to the CLI path, for example ~/.opencode/bin/opencode, or leave the setting empty to use PATH lookup.';
+    const messageSuffix = 'Hao Work needs the standalone opencode CLI. Install it and set settings.opencodeBinary to the CLI path, for example ~/.opencode/bin/opencode, or leave the setting empty to use PATH lookup.';
     const error = (() => {
       if (isKnownOpenCodeDesktopAppPath(candidate) || isKnownOpenCodeDesktopAppPath(configured)) {
         const platformName = process.platform === 'win32' ? 'Windows desktop app install' : 'macOS desktop app bundle';
@@ -984,7 +983,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
   };
 
   const createConfiguredWslOpencodeError = (raw) => new Error(
-    `Configured settings.opencodeBinary uses WSL but OpenChamber could not resolve a WSL OpenCode command: ${raw}. Ensure WSL is available and opencode is installed in the configured distro.`
+    `Configured settings.opencodeBinary uses WSL but Hao Work could not resolve a WSL OpenCode command: ${raw}. Ensure WSL is available and opencode is installed in the configured distro.`
   );
 
   const normalizeOpencodeBinarySetting = (raw) => {
@@ -1045,7 +1044,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
         if (strict) {
           throw createConfiguredWslOpencodeError(raw);
         }
-        console.warn(`Configured settings.opencodeBinary uses WSL, which is no longer supported by OpenChamber desktop: ${raw}`);
+        console.warn(`Configured settings.opencodeBinary uses WSL, which is no longer supported by Hao Work desktop: ${raw}`);
         return null;
       }
 
@@ -1054,7 +1053,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
         if (strict) {
           throw createConfiguredWslOpencodeError(raw);
         }
-        console.warn(`Configured settings.opencodeBinary points to WSL, which is no longer supported by OpenChamber desktop: ${raw}`);
+        console.warn(`Configured settings.opencodeBinary points to WSL, which is no longer supported by Hao Work desktop: ${raw}`);
         return null;
       }
 

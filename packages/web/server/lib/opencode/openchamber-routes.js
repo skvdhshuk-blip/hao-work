@@ -168,7 +168,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
 
         return res.json({
           success: true,
-          message: 'Update queued; OpenChamber will restart after installation completes',
+          message: 'Update queued; Hao Work will restart after installation completes',
           version: updateInfo.version,
           packageManager: pm,
           autoRestart: true,
@@ -225,7 +225,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
       const updateLogPath = path.join(openchamberDataDir, 'update-install.log');
       const logPreamble = [
         '',
-        `=== OpenChamber update ${new Date().toISOString()} ===`,
+        `=== Hao Work update ${new Date().toISOString()} ===`,
         `currentVersion=${updateInfo.currentVersion || 'unknown'}`,
         `targetVersion=${updateInfo.version || 'unknown'}`,
         `packageManager=${pm}`,
@@ -262,8 +262,8 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
             timeout /t 2 /nobreak >nul
             ${updateCmd}
             if %ERRORLEVEL% EQU 0 (
-              echo Update successful, restarting OpenChamber...
-              ${restartCmd || 'echo Service manager will restart OpenChamber.'}
+              echo Update successful, restarting Hao Work...
+              ${restartCmd || 'echo Service manager will restart Hao Work.'}
             ) else (
               echo Update failed
               exit /b 1
@@ -274,8 +274,8 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
             sleep 2
             ${updateCmd}
             if [ $? -eq 0 ]; then
-              echo "Update successful, restarting OpenChamber..."
-              ${restartCmd || 'echo "Service manager will restart OpenChamber."'}
+              echo "Update successful, restarting Hao Work..."
+              ${restartCmd || 'echo "Service manager will restart Hao Work."'}
             else
               echo "Update failed"
               exit 1

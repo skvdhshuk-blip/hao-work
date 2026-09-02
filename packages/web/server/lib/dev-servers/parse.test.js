@@ -104,7 +104,7 @@ describe('candidate selection', () => {
     { port: 3000, pid: 13, command: 'node' },
   ];
 
-  test('drops OpenChamber own ports so the app never offers itself', () => {
+  test('drops Hao Work own ports so the app never offers itself', () => {
     const ports = selectDevServerCandidates(listeners, { ownPorts: [4096] }).map((entry) => entry.port);
     expect(ports).toEqual([5173, 3000]);
   });

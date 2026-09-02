@@ -69,7 +69,7 @@ test('writes and removes the XDG autostart file', async () => {
   }
 });
 
-test('migrates the legacy OpenChamber autostart entry', async () => {
+test('migrates the legacy Hao Work autostart entry', async () => {
   const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-autostart-migration-'));
   const env = { XDG_CONFIG_HOME: path.join(homeDir, 'config') };
   const directory = path.join(env.XDG_CONFIG_HOME, 'autostart');

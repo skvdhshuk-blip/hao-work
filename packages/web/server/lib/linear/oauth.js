@@ -269,7 +269,7 @@ export async function consumeAuthorizationCallback({ code, state, error, errorDe
   }
   if (!pending?.codeVerifier) {
     throw failAuthorization(
-      'This authorization session has expired or is unknown to the running app. Return to OpenChamber and click Connect again.',
+      'This authorization session has expired or is unknown to the running app. Return to Hao Work and click Connect again.',
       'UNKNOWN_STATE',
     );
   }

@@ -157,7 +157,7 @@ describe('local SSE routes', () => {
     }
   });
 
-  it('serves OpenChamber SSE with nginx-safe headers', () => {
+  it('serves Hao Work SSE with nginx-safe headers', () => {
     const { app, getRoute } = createRouteRegistry();
     const clients = new Set();
 

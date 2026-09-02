@@ -667,7 +667,7 @@ describe('OpenCode lifecycle', () => {
     }
   });
 
-  it('adds managed OpenChamber tool environment without allowing it to replace launch invariants', async () => {
+  it('adds managed Hao Work tool environment without allowing it to replace launch invariants', async () => {
     const child = createMockChild();
     spawnMock.mockImplementationOnce(() => {
       queueMicrotask(() => {

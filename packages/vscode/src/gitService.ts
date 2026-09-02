@@ -1136,7 +1136,7 @@ const formatWorktreePopulateError = (message: string | null | undefined): string
   return [
     text,
     'The worktree checkout path exceeds this system\'s path-length limit.',
-    'OpenChamber enables Git `core.longpaths` for worktree population; if this still fails on Windows, enable OS long paths (LongPathsEnabled) or open the repository from a shorter absolute path.',
+    'Hao Work enables Git `core.longpaths` for worktree population; if this still fails on Windows, enable OS long paths (LongPathsEnabled) or open the repository from a shorter absolute path.',
   ].join('\n');
 };
 
@@ -2910,7 +2910,7 @@ export async function countGitStashFiles(directory: string, refs: string[]): Pro
 }
 
 export async function stashGitChanges(directory: string, options: { message?: string } = {}): Promise<{ success: boolean; created: boolean; message: string; output: string }> {
-  const message = options.message?.trim() || `OpenChamber stash ${new Date().toISOString()}`;
+  const message = options.message?.trim() || `Hao Work stash ${new Date().toISOString()}`;
   const result = await execGit(['stash', 'push', '--include-untracked', '-m', message], directory);
   if (result.exitCode !== 0) throw new Error(result.stderr.trim() || 'Failed to stash changes');
   const output = result.stdout.trim() || result.stderr.trim();

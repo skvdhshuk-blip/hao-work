@@ -257,7 +257,7 @@ describe('ElectronSshManager', () => {
     }
   });
 
-  test('stores a client token for forwarded OpenChamber hosts when UI password is configured', async () => {
+  test('stores a client token for forwarded Hao Work hosts when UI password is configured', async () => {
     let loginPayload = null;
     const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && req.url === '/auth/session') {
@@ -289,7 +289,7 @@ describe('ElectronSshManager', () => {
     });
     expect(settings.desktopHosts).toEqual([{ id: 'ssh-1', label: 'SSH Host', url: localUrl, apiUrl: localUrl, clientToken: 'ssh-client-token' }]);
   });
-  test('installs OpenChamber into a home-owned npm prefix instead of the root-owned global one', async () => {
+  test('installs Hao Work into a home-owned npm prefix instead of the root-owned global one', async () => {
     const commands = [];
     const manager = new ElectronSshManager({
       settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
@@ -309,7 +309,7 @@ describe('ElectronSshManager', () => {
     expect(commands[0]).not.toMatch(/npm install -g @openchamber/);
   });
 
-  test('lists every remote OpenChamber binary with its reported version', async () => {
+  test('lists every remote Hao Work binary with its reported version', async () => {
     const manager = new ElectronSshManager({
       settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
       appVersion: '1.2.3',
@@ -329,7 +329,7 @@ describe('ElectronSshManager', () => {
     ]);
   });
 
-  test('starts the resolved OpenChamber binary rather than whatever PATH exposes', async () => {
+  test('starts the resolved Hao Work binary rather than whatever PATH exposes', async () => {
     let started = '';
     const manager = new ElectronSshManager({
       settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),

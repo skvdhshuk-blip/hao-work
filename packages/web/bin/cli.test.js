@@ -660,7 +660,7 @@ describe('cli API target resolution', () => {
       discoverDesktopInstance: async () => null,
       discoverLifecycleInstances: async () => [{ port: 3001 }, { port: 3002 }],
       isServerHealthReady: async () => false,
-    })).rejects.toThrow('Multiple OpenChamber instances are running');
+    })).rejects.toThrow('Multiple Hao Work instances are running');
   });
 });
 
@@ -996,7 +996,7 @@ describe('cli entry detection', () => {
 });
 
 describe('isOpenchamberCmdline', () => {
-  it('accepts OpenChamber CLI and daemon cmdlines', () => {
+  it('accepts Hao Work CLI and daemon cmdlines', () => {
     expect(isOpenchamberCmdline('node /x/@openchamber/web/bin/cli.js serve')).toBe(true);
     expect(isOpenchamberCmdline('node /x/@openchamber/web/server/index.js --port 9090')).toBe(true);
     expect(isOpenchamberCmdline('bun /home/u/projects/openchamber/packages/web/server/index.js --port 3001')).toBe(true);
@@ -1019,7 +1019,7 @@ describe('isOpenchamberProcessRunning', () => {
   // platforms a live but unrelated process (a recycled stale PID) must read as
   // not-running so it can't trip the "already running" guard (issue #1721).
   it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
-    'returns false for a live non-OpenChamber PID',
+    'returns false for a live non-Hao Work PID',
     async () => {
       const child = spawn('sleep', ['30'], { stdio: 'ignore' });
       try {
@@ -1158,7 +1158,7 @@ describe('lifecycle instance discovery', () => {
     });
   });
 
-  it('uses the live system-info pid instead of a stale OpenChamber-looking pid-file pid', async () => {
+  it('uses the live system-info pid instead of a stale Hao Work-looking pid-file pid', async () => {
     await withTempOpenChamberDataDir(async () => {
       const port = 45127;
       const stalePid = 12348;
@@ -1265,7 +1265,7 @@ describe('lifecycle instance discovery', () => {
     });
   });
 
-  it('discovers an explicit live OpenChamber port without a pid-file registry entry', async () => {
+  it('discovers an explicit live Hao Work port without a pid-file registry entry', async () => {
     await withTempOpenChamberDataDir(async () => {
       const port = 45125;
       const instances = await discoverLifecycleInstances(
@@ -1304,7 +1304,7 @@ describe('lifecycle instance discovery', () => {
 });
 
 describe('lifecycle commands with unmanaged explicit ports', () => {
-  it('serve refuses to start on a live OpenChamber port without requiring pid files', async () => {
+  it('serve refuses to start on a live Hao Work port without requiring pid files', async () => {
     await withTempOpenChamberDataDir(async () => {
       const server = await startMockOpenChamberServer();
       try {

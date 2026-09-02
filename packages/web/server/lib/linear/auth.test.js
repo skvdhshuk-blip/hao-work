@@ -58,7 +58,7 @@ describe('Linear auth storage', () => {
       expiresAt: Date.now() + 60_000,
       scope: 'read,write',
       user: { id: 'user-1', name: 'Ada', displayName: 'Ada Lovelace', email: 'ada@example.com', avatarUrl: 'https://example.com/a.png' },
-      organization: { id: 'org-1', name: 'OpenChamber', urlKey: 'openchamber' },
+      organization: { id: 'org-1', name: 'Hao Work', urlKey: 'openchamber' },
     });
 
     const stored = getLinearAuth();
@@ -75,11 +75,11 @@ describe('Linear auth storage', () => {
         email: 'ada@example.com',
         avatarUrl: 'https://example.com/a.png',
       },
-      organization: { id: 'org-1', name: 'OpenChamber', urlKey: 'openchamber' },
+      organization: { id: 'org-1', name: 'Hao Work', urlKey: 'openchamber' },
       scope: 'read,write',
       workspaces: [{
         id: 'org-1',
-        name: 'OpenChamber',
+        name: 'Hao Work',
         urlKey: 'openchamber',
         current: true,
         user: {
@@ -161,7 +161,7 @@ describe('Linear auth storage', () => {
       accessToken: 'legacy-access',
       refreshToken: 'legacy-refresh',
       user: { id: 'user-1', name: 'Ada' },
-      organization: { id: 'org-1', name: 'OpenChamber', urlKey: 'openchamber' },
+      organization: { id: 'org-1', name: 'Hao Work', urlKey: 'openchamber' },
     }), 'utf8');
 
     const stored = getLinearAuth();
@@ -216,7 +216,7 @@ describe('Linear auth storage', () => {
     setLinearAuth({
       accessToken: 'access-1',
       user: { id: 'user-1', name: 'Ada' },
-      organization: { id: 'org-1', name: 'OpenChamber', urlKey: 'openchamber' },
+      organization: { id: 'org-1', name: 'Hao Work', urlKey: 'openchamber' },
     });
     const file = JSON.parse(fs.readFileSync(getLinearAuthFilePath(), 'utf8'));
     file.workspaces[0].authorizedAt = 111;
@@ -225,7 +225,7 @@ describe('Linear auth storage', () => {
     setLinearAuth({
       accessToken: 'access-1',
       user: { id: 'user-1', name: 'Ada' },
-      organization: { id: 'org-1', name: 'OpenChamber', urlKey: 'openchamber' },
+      organization: { id: 'org-1', name: 'Hao Work', urlKey: 'openchamber' },
       workspaceId: 'org-1',
     }, { activate: false });
     expect(getLinearAuth().authorizedAt).toBe(111);

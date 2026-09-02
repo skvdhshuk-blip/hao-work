@@ -509,7 +509,7 @@ const createVSCodeWorkspaceProjects = (
   const activeProjectId = activeProject?.id ?? projects[0]?.id ?? null;
 
   if (streamDebugEnabled()) {
-    console.log('[OpenChamber][VSCode][projects] Using workspace projects', projects);
+    console.log('[Hao Work][VSCode][projects] Using workspace projects', projects);
   }
 
   return { projects, activeProjectId, activeProject: activeProject ?? projects[0] ?? null };
