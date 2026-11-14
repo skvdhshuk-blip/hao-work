@@ -10,12 +10,10 @@
 
 import React from 'react';
 
-import { toast } from '@/components/ui';
 import { Icon } from '@/components/icon/Icon';
 import type { IconName } from '@/components/icon/icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { useI18n, type I18nKey } from '@/lib/i18n';
-import { opencodeClient } from '@/lib/opencode/client';
+import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import type { PermissionMode } from '@/stores/utils/permissionAutoAccept';
 import { TooltipLabelWithShortcut } from '@/components/ui/action-toolbar';
@@ -63,7 +61,7 @@ export const PermissionAutoAcceptButton = React.memo(function PermissionAutoAcce
             onClick={handlePermissionModeCycle}
             className={cn(
                 footerIconButtonClass,
-                'relative rounded-md hover:bg-transparent',
+                'rounded-md hover:bg-transparent',
                 !isInteractive && 'opacity-30',
             )}
             onMouseDown={(event) => {
@@ -82,71 +80,14 @@ export const PermissionAutoAcceptButton = React.memo(function PermissionAutoAcce
         </button>
     );
 
-    const menu = (
-        <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-                {button}
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-64">
-                <DropdownMenuLabel>
-                    {t('settings.behavior.page.section.toolApproval')}
-                </DropdownMenuLabel>
-                <DropdownMenuRadioGroup
-                    value={hitlMode}
-                    onValueChange={(value) => {
-                        if (value === 'ask' || value === 'smart' || value === 'auto') {
-                            handleHitlModeChange(value);
-                        }
-                    }}
-                >
-                    {HITL_APPROVAL_MODES.map((option) => (
-                        <DropdownMenuRadioItem
-                            key={option}
-                            value={option}
-                            disabled={hitlLoadState !== 'ready'}
-                        >
-                            <span className="flex min-w-0 flex-col">
-                                <span>{t(HITL_MODE_LABEL_KEYS[option])}</span>
-                                <span className="typography-small text-muted-foreground">
-                                    {t(HITL_MODE_DESCRIPTION_KEYS[option])}
-                                </span>
-                            </span>
-                        </DropdownMenuRadioItem>
-                    ))}
-                </DropdownMenuRadioGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                    className="items-start pr-8"
-                    onSelect={() => {
-                        handlePermissionAutoAcceptToggle();
-                    }}
-                >
-                    <span className="flex min-w-0 flex-col">
-                        <span>{t('chat.chatInput.permissionAutoAccept.directory')}</span>
-                        <span className="typography-small text-muted-foreground">
-                            {t('chat.chatInput.permissionAutoAccept.directory.description')}
-                        </span>
-                    </span>
-                    {permissionAutoAcceptEnabled ? (
-                        <span className="pointer-events-none absolute right-2 top-1/2 flex size-3.5 -translate-y-1/2 items-center justify-center text-primary">
-                            <Icon name="check" className="size-3" />
-                        </span>
-                    ) : null}
-                </DropdownMenuItem>
-            </DropdownMenuContent>
-        </DropdownMenu>
-    );
-
     if (!withTooltip) {
-        return menu;
+        return button;
     }
 
     return (
         <Tooltip>
             <TooltipTrigger asChild>
-                <span className="inline-flex">
-                    {menu}
-                </span>
+                {button}
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={8}>
                 <TooltipLabelWithShortcut label={label} shortcut={formatShortcutForDisplay(getEffectiveShortcutCombo('toggle_permission_auto_accept', shortcutOverrides), '')} />

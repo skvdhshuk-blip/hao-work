@@ -144,7 +144,7 @@ const pageOrder: SettingsPageSlug[] = [
   'tunnel',
   'git',
   'isolated-spaces',
-  // 'opencode' group — OpenCode
+  // 'opencode' group — HaoCode. The slug stays for saved settings links.
   'providers',
   'web-search',
   'agents',

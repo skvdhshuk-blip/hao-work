@@ -40,9 +40,9 @@ export const readProviderApiKeySetting = (provider: Pick<Provider, 'settings'> |
  * plugin matches Vertex by package, so a config alias on that package counts too.
  */
 const vertexProjectSetting = z.string().min(1);
-export const usesMachineCredentials = (provider: Pick<Provider, 'id' | 'package' | 'settings'> | undefined): boolean =>
+export const usesMachineCredentials = (provider: (Pick<Provider, 'id' | 'settings'> & { package?: string }) | undefined): boolean =>
   provider !== undefined
-  && (provider.id === 'google-vertex' || provider.package.startsWith('@opencode/ai/providers/google-vertex'))
+  && (provider.id === 'google-vertex' || (provider.package ?? '').startsWith('@opencode/ai/providers/google-vertex'))
   && vertexProjectSetting.safeParse(provider.settings?.project).success;
 
 /** Integrations are keyed by their own id; a provider matches on the same id. */

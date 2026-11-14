@@ -32,6 +32,8 @@ import {
   SETTINGS_SELECT_ROW_TRIGGER_CLASS,
 } from '@/components/sections/shared/SettingsSection';
 import { resolveBehaviorPrompt, type BehaviorPromptSource } from './behaviorPrompt';
+import { ToolApprovalSection } from './ToolApprovalSection';
+import { SandboxSection } from './SandboxSection';
 
 const agentsMdResponseSchema = z.object({
   content: z.string(),

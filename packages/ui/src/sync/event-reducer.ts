@@ -359,6 +359,7 @@ export function applyDirectoryEvent(
       ...(metadata.input && typeof metadata.input === "object" ? { input: metadata.input } : {}),
       time: Date.now(),
     }
+    draft.autoDecision ??= {}
     const existing = draft.autoDecision[sessionID] ?? []
     const index = existing.findIndex((item) => item.requestID === requestID)
     if (index >= 0) {

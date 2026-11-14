@@ -2422,7 +2422,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                             </span>
                                         </span>
                                     )}
-                                </button>
+                                </div>
                             </DropdownMenuTrigger>
                         </TooltipTrigger>
                         <DropdownMenuContent
@@ -2917,7 +2917,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                                 </span>
                                             </>
                                         )}
-                                    </button>
+                                    </div>
                                 </DropdownMenuTrigger>
                             </TooltipTrigger>
                             <DropdownMenuContent side={agentMenuSide} align="end" alignOffset={-40} constrainToMain collisionAvoidance={{ side: 'none', align: 'shift' }} className="w-[min(280px,calc(100vw-2rem))] p-0 flex flex-col overflow-hidden">

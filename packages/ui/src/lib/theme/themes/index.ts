@@ -15,6 +15,10 @@ const flexokiLightTheme = withPrColors(requireTheme(flexokiLightRaw));
 const flexokiDarkTheme = withPrColors(requireTheme(flexokiDarkRaw));
 const openchamberLightTheme = withPrColors(requireTheme(openchamberLightRaw));
 const openchamberDarkTheme = withPrColors(requireTheme(openchamberDarkRaw));
+const neonGridLightTheme = withPrColors(requireTheme(neonGridLightRaw));
+const neonGridDarkTheme = withPrColors(requireTheme(neonGridDarkRaw));
+const upstreamOpenchamberLightTheme = withPrColors(requireTheme(upstreamOpenchamberLightRaw));
+const upstreamOpenchamberDarkTheme = withPrColors(requireTheme(upstreamOpenchamberDarkRaw));
 
 export const DEFAULT_LIGHT_THEME_ID = 'neon-grid-light' as const;
 export const DEFAULT_DARK_THEME_ID = 'neon-grid-dark' as const;

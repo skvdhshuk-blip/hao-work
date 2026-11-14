@@ -20,6 +20,7 @@ import {
 import { stripSessionDiffSnapshots } from "./sanitize"
 import { getSessionMaterializationStatus } from "./materialization"
 import { captureRuntimeInstance, getRuntimeKey } from "@/lib/runtime-switch"
+import { fetchAutoDecisionRecords, mergeAutoDecisionRecords } from "./auto-decisions"
 
 const sessionReadDirectorySources: SessionReadDirectorySources = {
   knownDirectory: (sessionID) => {
@@ -136,6 +137,20 @@ export function useSync() {
       }
       const shouldLoadMessages = Boolean(!cachedReady || force)
       const shouldFetchSession = shouldFetchSessionForRenderableSync({ hasSession, shouldLoadMessages, force: Boolean(force) })
+      // Failed fetch returns null and must not wipe cards already shown from SSE.
+      const loadAutoDecisions = async (id: string, options: { isStale: () => boolean }) => {
+        try {
+          const incoming = await fetchAutoDecisionRecords(targetDirectory, id)
+          if (incoming === null || options.isStale()) return
+          const merged = mergeAutoDecisionRecords(targetStore.getState().autoDecision?.[id], incoming)
+          if (!merged || options.isStale()) return
+          targetStore.setState((state) => ({
+            autoDecision: { ...(state.autoDecision ?? {}), [id]: merged },
+          }))
+        } catch (error) {
+          console.error("[sync] failed to load auto decisions", id, error)
+        }
+      }
       const promise = (async () => {
         await Promise.all([
           shouldFetchSession

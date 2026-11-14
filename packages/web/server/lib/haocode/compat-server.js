@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { createHaoCodeStore, createId, createMessageId, projectIdForDirectory } from './store.js';
+import { normalizeProviderRoute, pickProviderRoute } from './provider-route.js';
 import { createImageConverters } from './image-converters.js';
 import { createImageConversionWorker } from './image-conversion-worker.js';
 import { createWorkerSupervisor } from './worker-supervisor.js';
@@ -1058,22 +1059,169 @@ export const createHaoCodeCompatibilityServer = ({
   // OpenCode 2.x clients and the OpenChamber proxy call /api/*. The
   // compatibility routes keep their historical paths; this strips the prefix.
   // Directory now travels in x-opencode-directory, not only ?directory=.
-  app.use((request, _response, next) => {
+  const requestPath = (request) => {
+    const url = request.url || '/';
+    const queryIndex = url.indexOf('?');
+    return queryIndex === -1 ? url : url.slice(0, queryIndex);
+  };
+  const locationDirectory = (request) => {
+    const queryDirectory = request.query?.directory;
+    if (typeof queryDirectory === 'string' && queryDirectory.trim()) return normalizeDirectory(queryDirectory);
+    const header = typeof request.get === 'function' ? request.get('x-opencode-directory') : null;
+    if (typeof header === 'string' && header.trim()) {
+      try { return normalizeDirectory(decodeURIComponent(header.trim())); }
+      catch { return normalizeDirectory(header.trim()); }
+    }
+    return normalizeDirectory(undefined);
+  };
+  const locationInfo = (request) => {
+    const directory = locationDirectory(request);
+    return {
+      directory,
+      project: {
+        id: projectIdForDirectory(directory),
+        directory,
+        canonical: directory,
+      },
+    };
+  };
+  // OpenCode 2.x reads envelopes (`{ data, cursor }` or `{ location, data }`).
+  // Older Hao Work callers still use the unprefixed routes and the raw body.
+  const adaptOpenCodeV2 = (request, body) => {
+    if (!request.openCodeV2 || body == null || typeof body !== 'object' || body.error) return body;
+    const route = requestPath(request);
+    const method = request.method;
+    if (method === 'GET' && route === '/session' && Array.isArray(body)) {
+      return {
+        data: body.map((session) => ({
+          ...session,
+          location: session.location?.directory ? session.location : { directory: session.directory },
+        })),
+        cursor: {},
+      };
+    }
+    if (method === 'GET' && route === '/agent' && Array.isArray(body)) {
+      return {
+        location: { directory: locationDirectory(request) },
+        data: body.map((agent) => ({
+          id: agent.id || agent.name,
+          name: agent.name || agent.id,
+          description: agent.description,
+          mode: agent.mode || 'primary',
+          hidden: Boolean(agent.hidden),
+          permissions: Array.isArray(agent.permissions) ? agent.permissions : (agent.permission ?? []),
+        })),
+      };
+    }
+    if (method === 'GET' && route === '/provider' && Array.isArray(body.all)) {
+      return { location: { directory: locationDirectory(request) }, data: body.all };
+    }
+    if (method === 'GET' && route === '/vcs' && typeof body.branch === 'string') {
+      const branch = body.branch || 'main';
+      return { location: { directory: locationDirectory(request) }, data: { branch: { current: branch, default: branch } } };
+    }
+    if (method === 'GET' && route === '/config' && !Array.isArray(body)) {
+      return [{ type: 'document', info: body }];
+    }
+    if (method === 'GET' && ['/form', '/model', '/skill', '/permission/request', '/command', '/integration', '/plugin', '/shell', '/pty', '/reference', '/websearch/provider', '/permission/saved'].includes(route) && Array.isArray(body)) {
+      return { location: { directory: locationDirectory(request) }, data: body };
+    }
+    // HaoCode stores MCP as a name→status map. OpenCode 2 reads { location, data: [{ name, status }] }.
+    if (method === 'GET' && route === '/mcp' && body && typeof body === 'object' && !Array.isArray(body) && !Array.isArray(body.data)) {
+      return {
+        location: { directory: locationDirectory(request) },
+        data: Object.entries(body).map(([name, status]) => ({
+          name,
+          ...(status && typeof status === 'object' ? status : { status: 'failed', error: 'Unknown MCP status.' }),
+        })),
+      };
+    }
+    if (method === 'GET' && route === '/model/default' && body.providerID) {
+      return { location: { directory: locationDirectory(request) }, data: body };
+    }
+    if (method === 'GET' && route === '/project' && Array.isArray(body)) {
+      return body.map((project) => project.canonical ? project : { ...project, canonical: project.worktree || project.directory });
+    }
+    if (method === 'GET' && /^\/session\/(?!status$|active$)[^/]+$/.test(route) && body.id && !body.data) {
+      return { data: withSessionLocation(body) };
+    }
+    // session.create unwraps response.data. Unprefixed callers still get the session object.
+    if (method === 'POST' && route === '/session' && body.id && !body.data) {
+      return { data: withSessionLocation(body) };
+    }
+    if (method === 'GET' && /^\/session\/[^/]+\/message$/.test(route) && Array.isArray(body)) {
+      return { data: body.map(toV2Message), cursor: {} };
+    }
+    return body;
+  };
+  const clientSessionId = (value) => {
+    if (typeof value !== 'string') return '';
+    const id = value.trim();
+    return /^ses_[A-Za-z0-9_-]{8,80}$/.test(id) ? id : '';
+  };
+  const sessionAgent = (value) => (typeof value === 'string' && value.trim() ? value.trim() : '');
+  const sessionModel = (value) => {
+    if (!value || typeof value !== 'object') return null;
+    const providerID = typeof value.providerID === 'string' ? value.providerID.trim() : '';
+    const id = typeof value.id === 'string' && value.id.trim()
+      ? value.id.trim()
+      : (typeof value.modelID === 'string' ? value.modelID.trim() : '');
+    if (!providerID || !id) return null;
+    const variant = typeof value.variant === 'string' && value.variant.trim() ? value.variant.trim() : '';
+    return { providerID, id, ...(variant ? { variant } : {}) };
+  };
+  const withSessionLocation = (session) => {
+    if (!session || typeof session !== 'object' || Array.isArray(session)) return session;
+    const directory = session.location?.directory || session.directory;
+    if (!directory) return session;
+    return { ...session, directory, location: session.location?.directory ? session.location : { directory } };
+  };
+  const toV2Message = (record) => {
+    const info = record?.info ?? record ?? {};
+    const parts = Array.isArray(record?.parts) ? record.parts : [];
+    const text = parts.filter((part) => part?.type === 'text').map((part) => part.text || '').join('');
+    const created = info.time?.created ?? Date.now();
+    if (info.role === 'assistant') {
+      return {
+        id: info.id,
+        type: 'assistant',
+        time: { created, ...(info.time?.completed ? { completed: info.time.completed } : {}) },
+        agent: info.agent || 'build',
+        model: {
+          providerID: info.model?.providerID || info.providerID || 'deepseek',
+          id: info.model?.id || info.model?.modelID || info.modelID || 'deepseek-chat',
+        },
+        ...(info.finish ? { finish: info.finish } : {}),
+        ...(info.error ? { error: info.error } : {}),
+        content: parts
+          .filter((part) => part?.type === 'text' || part?.type === 'reasoning')
+          .map((part) => ({ type: part.type === 'reasoning' ? 'reasoning' : 'text', text: part.text || '' })),
+      };
+    }
+    return { id: info.id, type: 'user', time: { created }, text };
+  };
+
+  app.use((request, response, next) => {
     if (request.url === '/api' || request.url.startsWith('/api/') || request.url.startsWith('/api?')) {
+      request.openCodeV2 = true;
       const queryIndex = request.url.indexOf('?');
       const pathOnly = queryIndex === -1 ? request.url : request.url.slice(0, queryIndex);
       const search = queryIndex === -1 ? '' : request.url.slice(queryIndex);
       request.url = `${pathOnly.slice(4) || '/'}${search}`;
+      const sendJson = response.json.bind(response);
+      response.json = (body) => sendJson(adaptOpenCodeV2(request, body));
     }
-    if (!request.query?.directory) {
-      const header = typeof request.get === 'function' ? request.get('x-opencode-directory') : null;
-      if (typeof header === 'string' && header.trim()) {
-        try {
-          request.query.directory = decodeURIComponent(header.trim());
-        } catch {
-          request.query.directory = header.trim();
-        }
-      }
+    // Express re-reads the query string from the URL. A header-only directory
+    // has to be written into the URL or the next read drops it.
+    let directoryHint = null;
+    const header = typeof request.get === 'function' ? request.get('x-opencode-directory') : null;
+    if (typeof header === 'string' && header.trim()) {
+      try { directoryHint = decodeURIComponent(header.trim()); } catch { directoryHint = header.trim(); }
+    }
+    const bodyDirectory = request.body?.location?.directory;
+    if (!directoryHint && typeof bodyDirectory === 'string' && bodyDirectory.trim()) directoryHint = bodyDirectory.trim();
+    if (directoryHint && !request.url.includes('directory=')) {
+      request.url += `${request.url.includes('?') ? '&' : '?'}directory=${encodeURIComponent(directoryHint)}`;
     }
     next();
   });
@@ -1096,17 +1244,106 @@ export const createHaoCodeCompatibilityServer = ({
     properties,
   });
 
+  const textOf = (value) => {
+    if (typeof value?.text === 'string' && value.text) return value.text;
+    const parts = Array.isArray(value?.parts) ? value.parts : [];
+    return parts.filter((part) => part?.type === 'text').map((part) => part.text || '').join('');
+  };
+  // Desktop and the web hub read OpenCode 2 wire events. Internal callers
+  // still pass the older `{ properties }` frame; this is the only translation.
+  const toWireEvent = (directory, payload) => {
+    const created = Date.now();
+    const props = payload.properties ?? {};
+    const sessionID = props.sessionID || props.info?.sessionID || props.part?.sessionID;
+    const wire = (type, data) => ({
+      id: payload.id,
+      created,
+      type,
+      location: { directory },
+      data,
+    });
+    switch (payload.type) {
+      case 'session.created':
+        return wire('session.created', {
+          sessionID: props.sessionID || props.info?.id,
+          projectID: props.info?.projectID,
+          parentID: props.info?.parentID,
+          title: props.info?.title,
+          agent: props.info?.agent,
+          model: props.info?.model,
+          metadata: props.info?.metadata,
+          location: { directory: props.info?.location?.directory || props.info?.directory || directory },
+        });
+      case 'session.updated':
+        return wire('session.renamed', { sessionID, title: props.info?.title });
+      case 'session.status':
+        if (props.status?.type === 'busy') return wire('session.execution.started', { sessionID });
+        if (props.status?.type === 'idle') return wire('session.execution.succeeded', { sessionID });
+        return wire('session.status', { sessionID, status: props.status });
+      case 'session.idle':
+        return wire('session.execution.succeeded', { sessionID });
+      case 'session.error':
+        return wire('session.execution.failed', { sessionID, error: props.error });
+      case 'message.updated':
+        if (props.info?.role === 'user') {
+          return wire('session.inbox.enqueued', {
+            sessionID,
+            inboxID: props.info.id,
+            item: { type: 'user', payload: { text: textOf(props.info) || textOf(props) } },
+          });
+        }
+        if (props.info?.role === 'assistant') {
+          return wire('session.step.started', {
+            sessionID,
+            assistantMessageID: props.info.id,
+            agent: props.info.agent || 'build',
+            model: { providerID: props.info.providerID || 'deepseek', id: props.info.modelID || 'deepseek-chat' },
+          });
+        }
+        return null;
+      case 'message.part.updated':
+        if (props.part?.type !== 'text') return null;
+        if (props.role === 'user') {
+          return wire('session.inbox.enqueued', {
+            sessionID,
+            inboxID: props.part.messageID,
+            item: { type: 'user', payload: { text: props.part.text || '' } },
+          });
+        }
+        return wire('session.text.ended', {
+          sessionID,
+          assistantMessageID: props.part.messageID,
+          ordinal: 0,
+          text: props.part.text || '',
+        });
+      case 'message.part.delta':
+        return wire('session.text.delta', {
+          sessionID,
+          assistantMessageID: props.messageID,
+          ordinal: 0,
+          delta: props.delta || '',
+        });
+      case 'permission.asked':
+        return wire('permission.asked', props);
+      case 'permission.replied':
+        return wire('permission.replied', props);
+      default:
+        return null;
+    }
+  };
   const publish = (directory, payload) => {
     const normalizedDirectory = normalizeDirectory(directory);
+    const wireEvent = toWireEvent(normalizedDirectory, payload);
+    if (!wireEvent) return;
     for (const response of globalEventClients) {
       writeSse(response, {
         directory: normalizedDirectory,
-        payload,
-        id: payload.id,
+        payload: wireEvent,
+        id: wireEvent.id,
       });
     }
     for (const response of directoryEventClients.get(normalizedDirectory) ?? []) {
-      writeSse(response, payload);
+      writeSse(response, wireEvent);
     }
   };
 
@@ -1208,6 +1445,9 @@ export const createHaoCodeCompatibilityServer = ({
     return {
       id,
       name: definition.name,
+      // The desktop provider grid reads package.startsWith. HaoCode providers
+      // are not OpenCode packages; an empty string is "not Vertex".
+      package: '',
       source: saved.apiKey || saved.oauth?.access || hasEnvCredential(definition) || definition.allowKeyless ? 'api' : 'custom',
       env: definition.env,
       options: {
@@ -1721,6 +1961,34 @@ export const createHaoCodeCompatibilityServer = ({
     };
   };
 
+  const readProviderRoute = () => store.read((state) => normalizeProviderRoute(state.providerRoute));
+  const applyProviderRoute = async (providerID, modelID) => {
+    const route = await readProviderRoute();
+    if (!route.enabled || route.members.length === 0) return { providerID, modelID };
+    const definitions = await providerDefinitions();
+    const available = new Set();
+    for (const [id, definition] of Object.entries(definitions)) {
+      const saved = await store.getProviderSettings(id);
+      const hasKey = Boolean(saved.apiKey || saved.oauth?.access)
+        || definition.allowKeyless
+        || definition.env.some((name) => Boolean(process.env[name]));
+      if (hasKey) available.add(id);
+    }
+    const picked = pickProviderRoute({
+      route,
+      requested: { providerID, modelID },
+      available,
+    });
+    if (picked.advanced) {
+      await store.mutate((state) => {
+        state.providerRoute = picked.route;
+      });
+    }
+    return picked.choice.providerID
+      ? { providerID: picked.choice.providerID, modelID: picked.choice.modelID || modelID }
+      : { providerID, modelID };
+  };
+
   const upsertPart = async (sessionId, messageId, part, broadcast = true) => {
     await store.mutate((state) => {
       const records = state.messages[sessionId] ?? [];
@@ -2113,6 +2381,7 @@ export const createHaoCodeCompatibilityServer = ({
       }
     } catch (error) {
       await eventQueue;
+      if (terminalEvent) return;
       const aborted = /SIGTERM|SIGKILL|aborted/i.test(error.message);
       await updateAssistant(session.id, assistantId, session.directory, (info) => {
         info.time.completed = Date.now();
@@ -2210,6 +2479,12 @@ export const createHaoCodeCompatibilityServer = ({
     return resolution;
   };
 
+  // OpenChamber's readiness probe is GET /api/info. This version is the
+  // OpenCode 2 wire HaoCode speaks, not an upstream OpenCode install.
+  app.get('/info', (_request, response) => response.json({
+    version: '2.3.0',
+    _fe_agentEngine: 'haocode',
+  }));
   app.get('/global/health', async (_request, response) => response.json({
     healthy: true,
     version: 'haocode-1',
@@ -2234,6 +2509,7 @@ export const createHaoCodeCompatibilityServer = ({
   const projectFor = (directory) => ({
     id: projectIdForDirectory(directory),
     worktree: directory,
+    canonical: directory,
     name: path.basename(directory),
     time: { created: Date.now(), updated: Date.now() },
     sandboxes: [],
@@ -2246,6 +2522,50 @@ export const createHaoCodeCompatibilityServer = ({
   });
   app.get('/project/current', (request, response) => response.json(projectFor(normalizeDirectory(request.query.directory))));
 
+  app.get('/location', (request, response) => {
+    const directory = normalizeDirectory(request.query.directory);
+    response.json({
+      directory,
+      project: {
+        id: projectIdForDirectory(directory),
+        directory,
+        canonical: directory,
+      },
+    });
+  });
+  app.get('/model', async (request, response) => {
+    const requested = new Set([].concat(request.query.types ?? []).flat().filter((type) => typeof type === 'string' && type));
+    const { providers } = await listProviders();
+    const models = [];
+    for (const provider of providers) {
+      for (const [modelID, model] of Object.entries(provider.models ?? {})) {
+        const image = Boolean(model.capabilities?.input?.image || model.capabilities?.attachment);
+        const limit = model.limit && typeof model.limit === 'object'
+          ? { context: model.limit.context ?? 128000, output: model.limit.output ?? 4096 }
+          : { context: 128000, output: 4096 };
+        const entry = {
+          id: modelID,
+          modelID,
+          providerID: provider.id,
+          name: model.name || modelID,
+          variants: [],
+          status: 'active',
+          enabled: true,
+          type: 'chat',
+          limit,
+          capabilities: { tools: true, input: image ? ['text', 'image'] : ['text'], output: ['text'] },
+          time: { released: 0 },
+          cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+        };
+        if (requested.size === 0 || requested.has(entry.type)) models.push(entry);
+      }
+    }
+    response.json(models);
+  });
+  app.get('/model/default', (_request, response) => response.json({ providerID: 'deepseek', modelID: 'deepseek-chat' }));
+  app.get('/form', (_request, response) => response.json([]));
+  app.get('/skill', (_request, response) => response.json([]));
+  app.get('/permission/request', (_request, response) => response.json([]));
   app.get('/config', async (_request, response) => response.json({
     ...(await store.getConfig()),
     model: 'deepseek/deepseek-chat',
@@ -2335,6 +2655,20 @@ export const createHaoCodeCompatibilityServer = ({
   app.get('/provider', async (_request, response) => {
     const { providers, connected, defaults } = await listProviders();
     response.json({ all: providers, connected, default: defaults });
+  });
+  app.get('/haocode/provider-route', async (_request, response) => {
+    response.json(await readProviderRoute());
+  });
+  app.put('/haocode/provider-route', async (request, response) => {
+    const current = await readProviderRoute();
+    const next = normalizeProviderRoute(request.body);
+    const sameList = current.strategy === next.strategy
+      && JSON.stringify(current.members) === JSON.stringify(next.members);
+    next.cursor = sameList ? current.cursor : 0;
+    await store.mutate((state) => {
+      state.providerRoute = next;
+    });
+    response.json(next);
   });
   app.put('/provider/custom', async (request, response) => {
     const body = request.body && typeof request.body === 'object' ? request.body : {};
@@ -2732,11 +3066,40 @@ export const createHaoCodeCompatibilityServer = ({
     ]),
   )));
   app.get('/lsp', (_request, response) => response.json([]));
+  // OpenCode catalog routes HaoCode does not own. An empty 200 is "none here",
+  // not a failed read. HTML 404 makes the desktop SDK throw and settings crash.
+  const emptyCatalog = (_request, response) => response.json([]);
+  app.get('/integration', emptyCatalog);
+  app.get('/plugin', emptyCatalog);
+  app.get('/shell', emptyCatalog);
+  app.get('/pty', emptyCatalog);
+  app.get('/reference', emptyCatalog);
+  app.get('/websearch/provider', emptyCatalog);
+  app.get('/permission/saved', emptyCatalog);
+  app.get('/config/shell', emptyCatalog);
+  app.get('/worktree', emptyCatalog);
+  app.post('/plugin/check', (request, response) => response.json({
+    location: { directory: locationDirectory(request) },
+    data: [],
+  }));
+  app.post('/plugin/update', (_request, response) => response.status(204).end());
+  app.get('/experimental/usage/limits', (request, response) => response.json({
+    location: { directory: locationDirectory(request) },
+    data: null,
+  }));
   app.get('/experimental/tool/ids', (_request, response) => response.json([
     'Read', 'Write', 'Edit', 'apply_patch', 'Glob', 'Grep', 'Bash', 'LSP', 'TodoWrite', 'Skill', 'MemoryRead', 'MemoryWrite', 'AskUserQuestion',
   ]));
 
   app.get('/session/status', async (_request, response) => response.json(await store.getStatus()));
+  app.get('/session/active', async (_request, response) => {
+    const status = await store.getStatus();
+    const data = {};
+    for (const [sessionID, entry] of Object.entries(status ?? {})) {
+      if (entry?.type && entry.type !== 'idle') data[sessionID] = { type: 'running' };
+    }
+    response.json({ data });
+  });
   app.get('/experimental/session', async (request, response) => {
     const directory = request.query.directory ? normalizeDirectory(request.query.directory) : null;
     const archived = request.query.archived === true || request.query.archived === 'true';
@@ -2766,24 +3129,44 @@ export const createHaoCodeCompatibilityServer = ({
   });
   app.post('/session', async (request, response) => {
     const directory = normalizeDirectory(request.query.directory);
+    const requestedId = clientSessionId(request.body?.id);
     const now = Date.now();
+    const agent = sessionAgent(request.body?.agent);
+    const model = sessionModel(request.body?.model);
     const session = {
-      id: createId('ses'),
+      id: requestedId || createId('ses'),
       slug: createId('slug'),
       projectID: projectIdForDirectory(directory),
       directory,
       ...(request.body?.parentID ? { parentID: request.body.parentID } : {}),
       title: typeof request.body?.title === 'string' && request.body.title.trim() ? request.body.title.trim() : 'New session',
       version: 'haocode-1',
+      ...(agent ? { agent } : {}),
+      ...(model ? { model } : {}),
       metadata: { ...(request.body?.metadata ?? {}), _fe_agentEngine: 'haocode' },
       time: { created: now, updated: now },
     };
+    let existing = null;
     await store.mutate((state) => {
+      if (requestedId) {
+        const found = state.sessions.find((item) => item.id === requestedId);
+        if (found) {
+          existing = { ...found };
+          return;
+        }
+      }
       state.sessions.push(session);
       state.messages[session.id] = [];
     });
-    publish(directory, event('session.created', { sessionID: session.id, info: session }));
-    response.json(session);
+    if (existing) {
+      return response.json({
+        ...existing,
+        location: existing.location?.directory ? existing.location : { directory: existing.directory },
+      });
+    }
+    const visible = { ...session, location: { directory } };
+    publish(directory, event('session.created', { sessionID: session.id, info: visible }));
+    return response.json(visible);
   });
   app.get('/session/:sessionID', async (request, response) => {
     const session = await store.getSession(request.params.sessionID);
@@ -2806,6 +3189,38 @@ export const createHaoCodeCompatibilityServer = ({
     if (!updated) return response.status(404).json({ error: 'Session not found.' });
     publish(updated.directory, event('session.updated', { sessionID: updated.id, info: updated }));
     return response.json(updated);
+  });
+  // v2 selects the model and agent on the session before prompt. Those calls
+  // require 204 and do not send the model again on the prompt body.
+  app.post('/session/:sessionID/model', async (request, response) => {
+    const model = sessionModel(request.body?.model);
+    if (!model) return response.status(400).json({ error: 'model is required.' });
+    let updated = null;
+    await store.mutate((state) => {
+      const session = state.sessions.find((item) => item.id === request.params.sessionID);
+      if (!session) return;
+      session.model = model;
+      session.time.updated = Date.now();
+      updated = { ...session };
+    });
+    if (!updated) return response.status(404).json({ error: 'Session not found.' });
+    publish(updated.directory, event('session.updated', { sessionID: updated.id, info: updated }));
+    return response.status(204).end();
+  });
+  app.post('/session/:sessionID/agent', async (request, response) => {
+    const agent = sessionAgent(request.body?.agent);
+    if (!agent) return response.status(400).json({ error: 'agent is required.' });
+    let updated = null;
+    await store.mutate((state) => {
+      const session = state.sessions.find((item) => item.id === request.params.sessionID);
+      if (!session) return;
+      session.agent = agent;
+      session.time.updated = Date.now();
+      updated = { ...session };
+    });
+    if (!updated) return response.status(404).json({ error: 'Session not found.' });
+    publish(updated.directory, event('session.updated', { sessionID: updated.id, info: updated }));
+    return response.status(204).end();
   });
   // Session-level revert marker. The UI derives hidden messages from
   // session.revert.messageID, so this only records intent on the session —
@@ -2917,10 +3332,16 @@ export const createHaoCodeCompatibilityServer = ({
     const prompt = extractPrompt(request.body?.parts);
     const attachments = extractImageAttachments(request.body?.parts);
     if (!prompt) return response.status(400).json({ error: 'Message must include text or a file.' });
-    const providerId = request.body?.model?.providerID || 'deepseek';
-    const modelId = request.body?.model?.modelID
+    let providerId = request.body?.model?.providerID || session.model?.providerID || 'deepseek';
+    let modelId = request.body?.model?.modelID
+      || request.body?.model?.id
+      || session.model?.modelID
+      || session.model?.id
       || (await providerDefinitions())[providerId]?.models?.[0]
       || 'deepseek-chat';
+    const routed = await applyProviderRoute(providerId, modelId);
+    providerId = routed.providerID;
+    modelId = routed.modelID;
     const configuredProvider = await providerSettings(providerId, modelId);
     if (!configuredProvider.apiKey) {
       return response.status(401).json({
@@ -2961,7 +3382,7 @@ export const createHaoCodeCompatibilityServer = ({
       sessionID: session.id,
       role: 'user',
       time: { created: now },
-      agent: request.body?.agent || 'build',
+      agent: request.body?.agent || session.agent || 'build',
       model: { providerID: providerId, modelID: modelId, ...(request.body?.variant ? { variant: request.body.variant } : {}) },
     };
     const userParts = (request.body?.parts ?? []).map((part) => ({ ...part, id: part.id || createId('part'), sessionID: session.id, messageID: messageId }));
@@ -2973,13 +3394,13 @@ export const createHaoCodeCompatibilityServer = ({
       if (stored) {
         stored.title = stored.title === 'New session' ? sessionTitleFromPrompt(prompt) : stored.title;
         stored.model = { id: modelId, providerID: providerId, ...(request.body?.variant ? { variant: request.body.variant } : {}) };
-        stored.agent = request.body?.agent || 'build';
+        stored.agent = request.body?.agent || session.agent || 'build';
         stored.time.updated = now;
         updatedSession = { ...stored };
       }
     });
     publish(session.directory, event('message.updated', { sessionID: session.id, info: user }));
-    for (const part of userParts) publish(session.directory, event('message.part.updated', { sessionID: session.id, part, time: now }));
+    for (const part of userParts) publish(session.directory, event('message.part.updated', { sessionID: session.id, part, role: 'user', time: now }));
     publish(session.directory, event('session.updated', { sessionID: session.id, info: updatedSession }));
     response.json(true);
     void startRun({
@@ -2991,7 +3412,7 @@ export const createHaoCodeCompatibilityServer = ({
         action: 'run',
         prompt: runPrompt,
         ...(forwardImages.length > 0 ? { images: forwardImages } : {}),
-        agent: buildAgentPayload(request.body?.agent || 'build', session.directory),
+        agent: buildAgentPayload(request.body?.agent || session.agent || 'build', session.directory),
       },
     });
   };
@@ -3030,7 +3451,7 @@ export const createHaoCodeCompatibilityServer = ({
         state.messages[session.id].push({ info: user, parts: [part] });
       });
       publish(session.directory, event('message.updated', { sessionID: session.id, info: user }));
-      publish(session.directory, event('message.part.updated', { sessionID: session.id, part, time: now }));
+      publish(session.directory, event('message.part.updated', { sessionID: session.id, part, role: 'user', time: now }));
       return response.json({ id: messageId, delivery });
     }
     request.body = {

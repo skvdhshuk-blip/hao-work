@@ -2762,3 +2762,106 @@ test('steers a running session through the OpenCode 2 prompt route', async () =>
   expect(JSON.stringify(body)).toContain('make it blue');
 });
 
+
+test('v2 session.create keeps the client id and wraps data', async () => {
+  const runtime = await createRuntime();
+  const sessionId = 'ses_client0001abcd';
+  const created = await fetch(`${runtime.baseUrl}/api/session`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-opencode-directory': runtime.project,
+    },
+    body: JSON.stringify({
+      id: sessionId,
+      title: 'Hello',
+      agent: 'build',
+      model: { providerID: 'deepseek', id: 'deepseek-v4-flash' },
+    }),
+  });
+  expect(created.status).toBe(200);
+  const payload = await created.json();
+  expect(payload.data.id).toBe(sessionId);
+  expect(payload.data.location.directory).toBe(runtime.project);
+  expect(payload.data.agent).toBe('build');
+  expect(payload.data.model).toEqual({ providerID: 'deepseek', id: 'deepseek-v4-flash' });
+  expect(payload.id).toBeUndefined();
+
+  const retry = await fetch(`${runtime.baseUrl}/api/session`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-opencode-directory': runtime.project,
+    },
+    body: JSON.stringify({ id: sessionId, title: 'Other' }),
+  });
+  expect((await retry.json()).data).toMatchObject({ id: sessionId, title: 'Hello' });
+  const listed = await fetch(`${runtime.baseUrl}/session?directory=${encodeURIComponent(runtime.project)}`).then((response) => response.json());
+  expect(listed.filter((session) => session.id === sessionId)).toHaveLength(1);
+
+  const legacy = await fetch(`${runtime.baseUrl}/session?directory=${encodeURIComponent(runtime.project)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Legacy' }),
+  });
+  const legacyBody = await legacy.json();
+  expect(legacyBody.id).toMatch(/^ses_/);
+  expect(legacyBody.data).toBeUndefined();
+
+  const switched = await fetch(`${runtime.baseUrl}/api/session/${sessionId}/model`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-opencode-directory': runtime.project },
+    body: JSON.stringify({ model: { providerID: 'deepseek', id: 'deepseek-chat' } }),
+  });
+  expect(switched.status).toBe(204);
+  const agent = await fetch(`${runtime.baseUrl}/api/session/${sessionId}/agent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent: 'build' }),
+  });
+  expect(agent.status).toBe(204);
+  const stored = await fetch(`${runtime.baseUrl}/session/${sessionId}`).then((response) => response.json());
+  expect(stored.model).toEqual({ providerID: 'deepseek', id: 'deepseek-chat' });
+  expect(stored.agent).toBe('build');
+
+  const info = await fetch(`${runtime.baseUrl}/api/info`).then((response) => response.json());
+  expect(info.version).toBe('2.3.0');
+});
+
+test('v2 catalog routes HaoCode does not own answer with an empty envelope', async () => {
+  const runtime = await createRuntime();
+  const headers = { 'x-opencode-directory': runtime.project };
+  const listed = async (path) => {
+    const response = await fetch(`${runtime.baseUrl}${path}`, { headers });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    return response.json();
+  };
+  for (const path of ['/api/integration', '/api/plugin', '/api/shell', '/api/pty', '/api/reference', '/api/websearch/provider', '/api/permission/saved']) {
+    const body = await listed(path);
+    expect(body.location.directory).toBe(runtime.project);
+    expect(body.data).toEqual([]);
+  }
+  expect(await listed('/api/config/shell')).toEqual([]);
+  expect(await listed('/api/worktree')).toEqual([]);
+  expect(await listed('/api/experimental/usage/limits')).toEqual({
+    location: { directory: runtime.project },
+    data: null,
+  });
+  const mcp = await listed('/api/mcp');
+  expect(mcp.location.directory).toBe(runtime.project);
+  expect(Array.isArray(mcp.data)).toBe(true);
+  const checked = await fetch(`${runtime.baseUrl}/api/plugin/check`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  expect(checked.status).toBe(200);
+  expect((await checked.json()).data).toEqual([]);
+  const updated = await fetch(`${runtime.baseUrl}/api/plugin/update`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targets: ['nowhere'] }),
+  });
+  expect(updated.status).toBe(204);
+});

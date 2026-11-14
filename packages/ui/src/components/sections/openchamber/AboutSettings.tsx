@@ -775,12 +775,11 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
         <div className="flex items-center gap-4">
           <AboutLogo size={48} />
           <div className="min-w-0 space-y-1">
-            <h2 className={SETTINGS_BRAND_TITLE_CLASS}>OpenChamber</h2>
+            <h2 className={SETTINGS_BRAND_TITLE_CLASS}>Hao Work</h2>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               {[
                 { href: GITHUB_URL, icon: 'github-fill' as const, label: 'GitHub' },
                 { href: DISCORD_URL, icon: 'discord-fill' as const, label: 'Discord' },
-                { href: X_URL, icon: 'twitter-xfill' as const, label: '@openchamber_dev' },
               ].map((link) => (
                 <a
                   key={link.href}

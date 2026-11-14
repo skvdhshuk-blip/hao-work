@@ -272,15 +272,15 @@ try {
     if (! $terminalEmitted) {
         // Terminal-event contract: the run must end with result, error, or interrupt.
         emit(['type' => 'error', 'error' => 'Worker stream ended without a terminal event.']);
-        exit(1);
     }
 } catch (Throwable $exception) {
+    // The error is already on the protocol stream. Exit 0 so the supervisor
+    // does not replace that message with "exited with code 1".
     emit([
         'type' => 'error',
         'error' => $exception->getMessage(),
         '_fe_exception' => $exception::class,
     ]);
-    exit(1);
 }
 
 function createRunSteer(mixed $controlPath)

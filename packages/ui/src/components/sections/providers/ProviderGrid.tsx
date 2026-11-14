@@ -18,6 +18,7 @@ import {
   type SettingsCardTone,
 } from '@/components/sections/shared/SettingsCards';
 import { findIntegrationForProvider, getProviderCardStatus, readProviderApiKeySetting, usesMachineCredentials, type ProviderCardStatus } from './providerAuth';
+import { ProviderRouteSection } from './ProviderRouteSection';
 import { SETTINGS_CALLOUT_TITLE_CLASS, SettingsSection } from '@/components/sections/shared/SettingsSection';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -237,6 +238,7 @@ export const ProviderGrid: React.FC<ProviderGridProps> = ({ providers, integrati
         search={providers.length > 0 ? { value: query, onChange: setQuery, placeholder: t('settings.providers.grid.searchPlaceholder') } : null}
         actions={<SettingsProjectSelector className="min-w-0 w-56" />}
       />
+      {hasQuery ? null : <ProviderRouteSection providers={alphabetical} />}
 
       {providers.length === 0 ? (
         <p className="py-6 typography-meta text-muted-foreground">{t('settings.providers.grid.empty')}</p>

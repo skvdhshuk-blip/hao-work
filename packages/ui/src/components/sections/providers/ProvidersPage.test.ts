@@ -257,6 +257,7 @@ describe('Vertex with Application Default Credentials', () => {
     expect(usesMachineCredentials({ ...vertex, settings: { project: '' } })).toBe(false);
     expect(usesMachineCredentials({ id: 'anthropic', package: '@opencode/ai/providers/anthropic', settings: { project: 'my-project' } })).toBe(false);
     expect(usesMachineCredentials(undefined)).toBe(false);
+    expect(usesMachineCredentials({ id: 'deepseek', settings: {} })).toBe(false);
   });
 
   test('a config alias on the Vertex package counts like Vertex itself', () => {

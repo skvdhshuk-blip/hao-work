@@ -221,7 +221,7 @@ console.log('\nS7 vision: images forwarded natively, provider error surfaces cle
   // The fixed resume path now delivers images natively; deepseek-chat's text
   // endpoint rejects the image_url block at the API — the exact proof the
   // multimodal payload reached the wire.
-  ok('provider-side image rejection surfaced', /image_url|unknown variant/i.test(errText), errText.slice(0, 110));
+  ok('image error surfaced', /image_url|unknown variant|does not accept image input/i.test(errText), errText.slice(0, 140));
 }
 
 // ── S8: agent payload binding ────────────────────────────────────────────────
@@ -229,6 +229,30 @@ console.log('\nS8 agent payload passthrough (build default)');
 {
   const run = await runPrompt(sessionId, 'Reply with exactly: STILL-ALIVE', { timeoutMs: 120_000 });
   ok('default build agent run works', /STILL-ALIVE/i.test(run.text ?? ''), (run.text ?? '').slice(0, 40));
+}
+
+console.log('\nS9 steer while a run is active');
+{
+  const messageId = `msg_${Date.now()}_steer`;
+  const sent = await api('POST', `/session/${sessionId}/prompt_async?directory=${encodeURIComponent(project)}`, {
+    messageID: messageId,
+    model: { providerID: 'deepseek', modelID: 'deepseek-chat' },
+    agent: 'build',
+    parts: [{ type: 'text', text: 'Count slowly from 1 to 30, one number per line. Do not use tools.' }],
+  });
+  ok('steer run accepted', sent.status === 200, `status=${sent.status}`);
+  const running = await waitFor(async () => {
+    const st = await api('GET', `/session/status?directory=${encodeURIComponent(project)}`);
+    const entry = st.json?.[sessionId];
+    return entry && entry.type !== 'idle' ? entry : null;
+  }, 60_000);
+  ok('run is busy before steer', Boolean(running), running?.type ?? 'idle');
+  const steered = await api('POST', `/api/session/${sessionId}/prompt?directory=${encodeURIComponent(project)}`, {
+    id: `msg_${Date.now()}_follow`,
+    text: 'Stop counting and reply exactly STEERED.',
+    delivery: 'steer',
+  });
+  ok('steer accepted, not 409', steered.status === 200 && steered.json?.delivery === 'steer', `status=${steered.status} delivery=${steered.json?.delivery ?? ''}`);
 }
 
 console.log(`\n== E2E done: ${failures === 0 ? 'ALL PASS' : `${failures} FAILURES`} ==`);

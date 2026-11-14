@@ -78,6 +78,11 @@ export type State = {
   /** Archive evicts a session's status; the earlier snapshot no longer covers it. */
   sessionStatusInvalidated?: Record<string, true>
   permission: Record<string, PermissionRequest[]>
+  /**
+   * HaoCode smart-mode auto decisions, keyed by session. A failed backfill
+   * must not replace this; only a successful fetch or a live event writes it.
+   */
+  autoDecision: Record<string, AutoDecisionRecord[]>
   /** Pending forms (the agent asking the user for input), keyed by session. */
   form: Record<string, FormRequest[]>
   vcs: Vcs | undefined
@@ -160,6 +165,7 @@ export const INITIAL_STATE: State = {
   sessionDeletedRevision: {},
   session_status: {},
   permission: {},
+  autoDecision: {},
   form: {},
   vcs: undefined,
   limit: 5,

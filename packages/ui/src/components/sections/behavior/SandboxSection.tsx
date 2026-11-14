@@ -9,6 +9,7 @@ import { Icon } from '@/components/icon/Icon';
 import { useI18n, type I18nKey } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { opencodeClient } from '@/lib/opencode/client';
+import { runtimeFetch } from '@/lib/runtime-fetch';
 import {
   DEFAULT_SANDBOX_CPU_COUNT,
   DEFAULT_SANDBOX_MEMORY_MB,
@@ -45,7 +46,8 @@ type SandboxStatus = {
 };
 
 const fetchSandboxStatus = async (): Promise<SandboxStatus> => {
-  const response = await fetch(`${opencodeClient.getBaseUrl()}/sandbox/status`, {
+  // OpenChamber only forwards /api/* to HaoCode. The unprefixed route 404s as a static file.
+  const response = await runtimeFetch('/api/sandbox/status', {
     headers: { Accept: 'application/json' },
   });
   if (!response.ok) throw new Error(`Sandbox status failed (${response.status}).`);
@@ -97,7 +99,7 @@ export const SandboxSection: React.FC = () => {
     if (prepareState === 'preparing') return;
     setPrepareState('preparing');
     try {
-      const response = await fetch(`${opencodeClient.getBaseUrl()}/sandbox/prepare`, {
+      const response = await runtimeFetch('/api/sandbox/prepare', {
         method: 'POST',
         headers: { Accept: 'application/json' },
       });

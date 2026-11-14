@@ -133,7 +133,7 @@ import { applySessionAssistEvent, subscribeSessionAssistSettled } from "./pendin
 import { useWorkflowRunsStore } from "@/lib/workflows/store"
 import { setWorkflowRunningSessions } from "./workflow-activity"
 import { isChatDirectoryPath } from "@/lib/chatDirectories"
-import type { State } from "./types"
+import type { AutoDecisionRecord, State } from "./types"
 import {
   getSessionMaterializationRequestKey,
   getSessionMaterializationStatus,
@@ -4172,6 +4172,7 @@ export function useSessionStartTimes(directory?: string): ReadonlyMap<string, nu
 
 const selectPermissionRequestsBySession = (state: State) => state.permission
 const selectFormRequestsBySession = (state: State) => state.form
+const selectAutoDecisionsBySession = (state: State) => state.autoDecision
 
 /**
  * Forms for the composer of `sessionID`: the session subtree's own, then the
@@ -4865,3 +4866,4 @@ const EMPTY_MESSAGES: Message[] = []
 const EMPTY_PARTS: Part[] = []
 const EMPTY_PERMISSION_REQUESTS: PermissionRequest[] = []
 const EMPTY_FORM_REQUESTS: FormRequest[] = []
+const EMPTY_AUTO_DECISIONS: AutoDecisionRecord[] = []
