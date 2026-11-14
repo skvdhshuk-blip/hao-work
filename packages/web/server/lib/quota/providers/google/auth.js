@@ -6,27 +6,15 @@
  */
 
 import {
-  ANTIGRAVITY_ACCOUNTS_PATHS,
-  readJsonFile,
   getAuthEntry,
   normalizeAuthEntry,
   asObject,
   asNonEmptyString,
   toTimestamp
 } from '../../utils/index.js';
-import { readAuthFile } from '../../../opencode/auth.js';
 import { parseGoogleRefreshToken } from './transforms.js';
 
 export const DEFAULT_PROJECT_ID = 'rising-fact-p41fc';
-
-export const resolveGoogleOAuthClient = (sourceId) => {
-  const prefix = sourceId === 'gemini' ? 'GEMINI' : 'ANTIGRAVITY';
-
-  return {
-    clientId: process.env[`HAOWORK_${prefix}_GOOGLE_CLIENT_ID`]?.trim() ?? '',
-    clientSecret: process.env[`HAOWORK_${prefix}_GOOGLE_CLIENT_SECRET`]?.trim() ?? ''
-  };
-};
 
 const resolveGeminiCliAuth = (auth) => {
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['google', 'google.oauth']));
@@ -53,44 +41,12 @@ const resolveGeminiCliAuth = (auth) => {
   };
 };
 
-const resolveAntigravityAuth = () => {
-  for (const filePath of ANTIGRAVITY_ACCOUNTS_PATHS) {
-    const data = readJsonFile(filePath);
-    const accounts = data?.accounts;
-    if (Array.isArray(accounts) && accounts.length > 0) {
-      const index = typeof data.activeIndex === 'number' ? data.activeIndex : 0;
-      const account = accounts[index] ?? accounts[0];
-      if (account?.refreshToken) {
-        const refreshParts = parseGoogleRefreshToken(account.refreshToken);
-        return {
-          sourceId: 'antigravity',
-          sourceLabel: 'Antigravity',
-          refreshToken: refreshParts.refreshToken,
-          projectId: asNonEmptyString(account.projectId)
-            ?? asNonEmptyString(account.managedProjectId)
-            ?? refreshParts.projectId
-            ?? refreshParts.managedProjectId,
-          email: account.email
-        };
-      }
-    }
-  }
-
-  return null;
-};
-
-export const resolveGoogleAuthSources = () => {
-  const auth = readAuthFile();
+export const resolveGoogleAuthSources = (auth) => {
   const sources = [];
 
   const geminiAuth = resolveGeminiCliAuth(auth);
   if (geminiAuth) {
     sources.push(geminiAuth);
-  }
-
-  const antigravityAuth = resolveAntigravityAuth();
-  if (antigravityAuth) {
-    sources.push(antigravityAuth);
   }
 
   return sources;

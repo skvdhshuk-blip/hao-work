@@ -1,5 +1,4 @@
-import React from 'react';
-import type { Session } from '@opencode-ai/sdk/v2';
+import type { Session } from '@/lib/opencode/model';
 import { getCurrentIntlLocale } from '@/lib/i18n';
 import { formatMessage, useI18nStore } from '@/lib/i18n/store';
 
@@ -86,10 +85,10 @@ export const formatSessionCompactDateLabel = (updatedMs: number): string => {
   const year = 365 * day;
 
   if (diff < hour) {
-    return `${Math.max(1, Math.floor(diff / minute))}m`;
+    return t('common.relative.minutesAgoCompact', { count: Math.max(1, Math.floor(diff / minute)) });
   }
   if (diff < day) {
-    return `${Math.floor(diff / hour)}h`;
+    return t('common.relative.hoursAgoCompact', { count: Math.floor(diff / hour) });
   }
   if (diff < week) {
     return t('common.relative.daysAgoCompact', { count: Math.floor(diff / day) });
@@ -98,7 +97,7 @@ export const formatSessionCompactDateLabel = (updatedMs: number): string => {
     return t('common.relative.weeksAgoCompact', { count: Math.floor(diff / week) });
   }
   if (diff < year) {
-    return `${Math.floor(diff / month)}mo`;
+    return t('common.relative.monthsAgoCompact', { count: Math.floor(diff / month) });
   }
   return t('common.relative.yearsAgoCompact', { count: Math.floor(diff / year) });
 };
@@ -112,11 +111,11 @@ export const isPathWithinProject = (directory?: string | null, projectPath?: str
 const isNormalizedPathWithinProject = (normalizedDirectory: string | null, normalizedProjectPath: string | null): boolean => {
   if (!normalizedDirectory || !normalizedProjectPath) return false;
   if (normalizedDirectory === normalizedProjectPath) return true;
-  if (normalizedProjectPath === '/') return normalizedDirectory.startsWith('/');
-  return normalizedDirectory.startsWith(`${normalizedProjectPath}/`);
+  const prefix = normalizedProjectPath.endsWith('/') ? normalizedProjectPath : `${normalizedProjectPath}/`;
+  return normalizedDirectory.startsWith(prefix);
 };
 
-export const normalizeForBranchComparison = (value: string): string => {
+const normalizeForBranchComparison = (value: string): string => {
   return value
     .toLowerCase()
     .replace(/^opencode[/-]?/i, '')
@@ -129,6 +128,26 @@ export const isBranchDifferentFromLabel = (branch: string | null, label: string)
   return normalizeForBranchComparison(branch) !== normalizeForBranchComparison(label);
 };
 
+/**
+ * A worktree group is named after its branch as it is now. A listing names a
+ * worktree by the branch it had then, or by its folder when it had none (a
+ * worktree created detached, given a branch later); either follows the live
+ * branch. Only a label that names something else is kept.
+ */
+export const resolveWorktreeGroupLabel = (
+  meta: { label?: string | null; name?: string | null; branch?: string | null },
+  currentBranch: string | null,
+  fallback: string,
+): string => {
+  const label = meta.label || meta.name || fallback;
+  if (!currentBranch) return label;
+  const listedBranch = meta.branch?.trim() || null;
+  const labelIsBranch = listedBranch
+    ? Boolean(meta.label) && normalizeForBranchComparison(meta.label ?? '') === normalizeForBranchComparison(listedBranch)
+    : true;
+  return labelIsBranch ? currentBranch : label;
+};
+
 export const dedupeSessionsById = (sessions: Session[]): Session[] => {
   const byId = new Map<string, Session>();
   sessions.forEach((session) => {
@@ -136,8 +155,6 @@ export const dedupeSessionsById = (sessions: Session[]): Session[] => {
   });
   return Array.from(byId.values());
 };
-
-export const getArchivedScopeKey = (projectRoot: string): string => `__archived__:${projectRoot}`;
 
 export const resolveArchivedFolderName = (session: Session, projectRoot: string | null): string => {
   const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
@@ -156,48 +173,5 @@ export const resolveArchivedFolderName = (session: Session, projectRoot: string 
   return segments[segments.length - 1] ?? 'unassigned';
 };
 
-export const formatProjectLabel = (label: string): string => {
-  return label
-    .replace(/[-_]/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-};
-
-export const renderHighlightedText = (text: string, query: string): React.ReactNode => {
-  if (!query) {
-    return text;
-  }
-
-  const loweredText = text.toLowerCase();
-  const loweredQuery = query.toLowerCase();
-  const queryLength = loweredQuery.length;
-  if (queryLength === 0) {
-    return text;
-  }
-
-  const parts: React.ReactNode[] = [];
-  let cursor = 0;
-  let matchIndex = loweredText.indexOf(loweredQuery, cursor);
-
-  while (matchIndex !== -1) {
-    if (matchIndex > cursor) {
-      parts.push(text.slice(cursor, matchIndex));
-    }
-    const matchText = text.slice(matchIndex, matchIndex + queryLength);
-    parts.push(
-      <mark
-        key={`${matchIndex}-${matchText}`}
-        className="bg-primary text-primary-foreground ring-1 ring-primary/90"
-      >
-        {matchText}
-      </mark>,
-    );
-    cursor = matchIndex + queryLength;
-    matchIndex = loweredText.indexOf(loweredQuery, cursor);
-  }
-
-  if (cursor < text.length) {
-    parts.push(text.slice(cursor));
-  }
-
-  return parts.length > 0 ? parts : text;
-};
+// Folder names are shown exactly as they are on disk — no title-casing.
+export const formatProjectLabel = (label: string): string => label.trim();

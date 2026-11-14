@@ -1,0 +1,95 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import type { GuestStatusControl } from '@openchamber/sdk';
+import React from 'react';
+
+import { Icon } from '@/components/icon/Icon';
+import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { cn } from '@/lib/utils';
+import { TOUCH_CONTROL_CLASS, WorkStatusTouchContext } from './touchContext';
+
+type Props = {
+  controls: GuestStatusControl[];
+  onActivate: (id: string, value?: string) => void;
+  layout: 'inline' | 'below';
+};
+
+export const StatusHeaderControls: React.FC<Props> = ({ controls, onActivate, layout }) => {
+  const touch = React.useContext(WorkStatusTouchContext);
+  return (
+  <div
+    data-work-status-controls
+    className={layout === 'below'
+      ? 'grid grid-cols-2 gap-1 px-1 pb-1'
+      : 'flex shrink-0 items-center gap-1'}
+  >
+    {controls.map((control) => {
+      if (control.kind === 'button') {
+        return (
+          <div key={control.id} data-work-status-control={control.id} className="min-w-0">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex max-w-full">
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    aria-label={control.label}
+                    disabled={control.disabled}
+                    onClick={() => onActivate(control.id)}
+                    className={cn('max-w-[5rem]', touch && TOUCH_CONTROL_CLASS)}
+                  >
+                    <span dir="auto" className="truncate">{control.label}</span>
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={6}>{control.label}</TooltipContent>
+            </Tooltip>
+          </div>
+        );
+      }
+
+      const selectedOption = control.options.find((option) => option.value === control.value);
+      return (
+        <div key={control.id} data-work-status-control={control.id} className="min-w-0">
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex max-w-full">
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      aria-label={`${control.label}: ${selectedOption?.label ?? control.value}`}
+                      disabled={control.disabled}
+                      className={cn('max-w-[5rem] gap-1', touch && TOUCH_CONTROL_CLASS)}
+                    >
+                      <span dir="auto" className="min-w-0 truncate">{selectedOption?.label ?? control.value}</span>
+                      <Icon name="arrow-down-s" className="size-3 shrink-0" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={6}>{control.label}</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent data-work-status-popup align="end" className="min-w-32">
+              <DropdownMenuRadioGroup value={control.value} onValueChange={(value) => onActivate(control.id, value)}>
+                {control.options.map((option) => (
+                  <DropdownMenuRadioItem key={option.value} value={option.value}>
+                    <span dir="auto" className="truncate">{option.label}</span>
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      );
+    })}
+  </div>
+  );
+};

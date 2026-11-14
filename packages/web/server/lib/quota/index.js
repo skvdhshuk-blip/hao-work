@@ -5,14 +5,20 @@
  * @module quota
  */
 
+/** @public */
 export {
+  attachExtensionQuotaProvider,
+  detachExtensionQuotaProvider,
   listConfiguredQuotaProviders,
+  listUsagePageProviders,
   fetchQuotaForProvider,
   fetchClaudeQuota,
   fetchOpenaiQuota,
   fetchGoogleQuota,
   fetchCodexQuota,
   fetchCursorQuota,
+  fetchDeepseekQuota,
+  fetchHyperQuota,
   fetchCopilotQuota,
   fetchCopilotAddonQuota,
   fetchKimiQuota,
@@ -23,5 +29,6 @@ export {
   fetchMinimaxCnCodingPlanQuota,
   fetchOllamaCloudQuota,
   fetchZhipuaiQuota,
-  fetchWaferQuota
+  fetchWaferQuota,
+  fetchOpenCodeQuota
 } from './providers/index.js';

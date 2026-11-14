@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { normalizeTargetArchitecture } from './target-architecture.mjs';
-import { LINUX_IDENTITY } from '../linux-identity.mjs';
+import { parseOpenCodeCliVersion, readPinnedOpenCodeCliVersion } from './opencode-cli-version.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const electronRoot = path.resolve(__dirname, '..');
@@ -14,7 +14,7 @@ const ELF_MACHINE = { x64: 62, arm64: 183 };
 // sherpa-onnx-node loads this Node-API addon from its platform-specific prebuilt
 // package in the separate server worker, so verify its architecture here rather
 // than Electron-rebuilding it with the source-built modules.
-const REQUIRED_NATIVE_MODULES = ['better_sqlite3.node', 'pty.node', 'sherpa-onnx.node'];
+const REQUIRED_NATIVE_MODULES = ['pty.node', 'sherpa-onnx.node'];
 
 // Runtime assets that must live outside app.asar: onnxruntime cannot load
 // .onnx model files (or its own shared libraries) from inside an asar
@@ -74,6 +74,27 @@ const collectFiles = (root, predicate) => {
   return matches;
 };
 
+// Launchers resolve `Icon=openchamber` through the hicolor theme, which only
+// reads `<size>/apps/` directories it declares: `scalable` and square sizes up
+// to 512. A file one level up, or at 1024x1024, is never found (#4766, #2934).
+const isHicolorAppsDirectory = (sizeName) => {
+  if (sizeName === 'scalable') return true;
+  const match = /^(\d+)x\1$/.exec(sizeName);
+  return match !== null && Number(match[1]) <= 512;
+};
+
+const assertThemeIcon = (root) => {
+  const hicolorRoot = path.join(root, 'usr', 'share', 'icons', 'hicolor');
+  const sizeNames = fs.existsSync(hicolorRoot) ? fs.readdirSync(hicolorRoot) : [];
+  const themeIcon = sizeNames.filter(isHicolorAppsDirectory).some((sizeName) => (
+    ['openchamber.png', 'openchamber.svg'].some((fileName) => (
+      fs.existsSync(path.join(hicolorRoot, sizeName, 'apps', fileName))
+    ))
+  ));
+  if (!themeIcon) throw new Error('Missing theme icon: no openchamber icon under usr/share/icons/hicolor/<size>/apps');
+  if (!fs.existsSync(path.join(root, '.DirIcon'))) throw new Error('Missing AppImage icon: .DirIcon does not resolve');
+};
+
 const defaultCliVersion = (binaryPath) => {
   const result = spawnSync(binaryPath, ['--version'], {
     encoding: 'utf8',
@@ -81,7 +102,7 @@ const defaultCliVersion = (binaryPath) => {
     timeout: 15000,
   });
   if (result.status !== 0) throw new Error(`Failed to run packaged OpenCode CLI: ${binaryPath}`);
-  return (result.stdout || '').trim().split(/\s+/)[0] || '';
+  return parseOpenCodeCliVersion(result.stdout);
 };
 
 export const verifyExtractedPayload = ({
@@ -101,6 +122,7 @@ export const verifyExtractedPayload = ({
     if (!desktop.split(/\r?\n/).includes(entry)) throw new Error(`Desktop identity mismatch: missing ${entry}`);
   }
   if (!/^Exec=AppRun(?:\s|$)/m.test(desktop)) throw new Error('Desktop identity mismatch: expected AppImage AppRun entrypoint');
+  assertThemeIcon(root);
 
   assertElfArchitecture(path.join(root, LINUX_IDENTITY.executableName), targetArchitecture, 'Electron executable');
   const cliPath = path.join(root, 'resources', 'opencode-cli', 'opencode');
@@ -109,6 +131,7 @@ export const verifyExtractedPayload = ({
   if (actualVersion !== expectedOpenCodeVersion) {
     throw new Error(`OpenCode CLI version mismatch: expected ${expectedOpenCodeVersion}, got ${actualVersion || '(empty)'}`);
   }
+  assertElfArchitecture(path.join(root, 'resources', 'ripgrep', 'rg'), targetArchitecture, 'ripgrep');
 
   const unpackedModules = path.join(root, 'resources', 'app.asar.unpacked', 'node_modules');
   if (!fs.existsSync(unpackedModules)) throw new Error(`Missing unpacked native modules: ${unpackedModules}`);
@@ -163,7 +186,7 @@ const main = () => {
     const result = verifyExtractedPayload({
       root: extractAppImage(appImagePath, temporaryDirectory),
       targetArchitecture: target,
-      expectedOpenCodeVersion: rootPackage.dependencies?.['@opencode-ai/sdk'],
+      expectedOpenCodeVersion: readPinnedOpenCodeCliVersion(),
     });
     console.log(`[electron] verified Linux ${target} AppImage: ${appImagePath}`);
     console.log(`[electron] verified OpenCode CLI ${result.openCodeVersion} and ${result.nativeModuleCount} native modules`);

@@ -3,30 +3,26 @@ import React from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { useMultiRunTitle } from '@/lib/multirun/useMultiRuns';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { useUIStore } from '@/stores/useUIStore';
+import { useGitStore, useIsGitRepo } from '@/stores/useGitStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSession } from '@/sync/sync-context';
 
+
 import { MobileSessionMetadataButton } from './MobileSessionMetadata';
 import { MobileSessionSwitcher } from './MobileSessionSwitcher';
-
-export type MobileHeaderSurfaceShortcuts = {
-  activePanel: 'files' | 'changes' | null;
-  changesDirty: boolean;
-  onToggleFiles: () => void;
-  onToggleChanges: () => void;
-};
+import { MOBILE_HEADER_BUTTON_CLASS } from '@/components/ui/mobileHeader';
 
 export const MobileHeader: React.FC<{
   onOpenSessions: () => void;
-  /** iPad only for now: the legacy overflow menu. Phones distribute its items
-      across the sessions drawer footer and the workspace drawer tabs. */
-  onOpenMenu?: () => void;
-  /** Phone only: opens the right workspace drawer (Changes / Files / Terminal). */
-  onOpenWorkspace?: () => void;
-  /** iPad only: Files/Changes header shortcuts that toggle the right sidebar. */
-  surfaceShortcuts?: MobileHeaderSurfaceShortcuts;
-}> = ({ onOpenSessions, onOpenMenu, onOpenWorkspace, surfaceShortcuts }) => {
+  /** Opens the right workspace drawer (Changes / Files / Terminal / Notes / MCP). */
+  onOpenWorkspace: () => void;
+  /** Tablet: size the title trigger to its text instead of the free width, so
+      a wide header doesn't turn the switcher into a full-width tap target. */
+  compactTitle?: boolean;
+}> = ({ onOpenSessions, onOpenWorkspace, compactTitle = false }) => {
   const { t } = useI18n();
   const [metadataOpen, setMetadataOpen] = React.useState(false);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
@@ -39,11 +35,25 @@ export const MobileHeader: React.FC<{
   const effectiveDirectory = currentSessionDirectory || currentDirectory;
   const currentSession = useSession(currentSessionId, effectiveDirectory || undefined);
   const isNewSessionDraftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
+  // Uncommitted changes in the active project or worktree: the workspace
+  // button gets a dot instead of a changed-files bar above the composer.
+  const isGitRepo = useIsGitRepo(effectiveDirectory || null);
+  const hasUncommittedChanges = useGitStore((state) => {
+    if (!effectiveDirectory || isGitRepo !== true) return false;
+    const status = state.directories.get(effectiveDirectory)?.status;
+    return Boolean(status && !status.isClean);
+  });
 
+  // An open run overview covers the chat, so the header names the run and
+  // drops the session-only metadata button rather than describe a session
+  // that is not on screen.
+  const runOverviewKey = useUIStore((state) => state.runOverviewKey);
+  const runTitle = useMultiRunTitle(runOverviewKey);
   const sessionTitle = currentSession?.title?.trim();
   // Single-line title, desktop-style: session title, or the "New session"
   // placeholder on the draft screen. No project/branch metadata line.
-  const primaryLabel = sessionTitle
+  const primaryLabel = (runOverviewKey ? runTitle : null)
+    || sessionTitle
     || (currentSessionId ? t('mobile.sessions.untitled') : t('sessions.switcher.draftTitle'));
 
   React.useEffect(() => {
@@ -56,12 +66,6 @@ export const MobileHeader: React.FC<{
     setSwitcherOpen(false);
     onOpenSessions();
   }, [onOpenSessions]);
-
-  const handleOpenMenu = React.useCallback(() => {
-    setMetadataOpen(false);
-    setSwitcherOpen(false);
-    onOpenMenu?.();
-  }, [onOpenMenu]);
 
   // The two header popovers are mutually exclusive.
   const handleMetadataOpenChange = React.useCallback((value: boolean | ((open: boolean) => boolean)) => {
@@ -89,7 +93,7 @@ export const MobileHeader: React.FC<{
         <div className="flex h-[var(--oc-header-height,56px)] w-full items-center gap-1 px-2">
           <button
             type="button"
-            className="flex size-10 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            className={MOBILE_HEADER_BUTTON_CLASS}
             aria-label={t('mobile.sessions.openSheetAria')}
             onClick={handleOpenSessions}
             style={{ touchAction: 'manipulation' }}
@@ -101,7 +105,10 @@ export const MobileHeader: React.FC<{
           <button
             ref={titleRef}
             type="button"
-            className="flex min-w-0 flex-1 items-center rounded-lg px-2 py-1.5 text-left transition-colors active:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            className={cn(
+              'flex min-w-0 items-center rounded-lg px-2 py-1.5 text-start transition-colors active:bg-interactive-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              compactTitle ? 'shrink' : 'flex-1',
+            )}
             aria-label={t('sessions.switcher.openAria')}
             aria-haspopup="dialog"
             aria-expanded={switcherOpen}
@@ -109,7 +116,7 @@ export const MobileHeader: React.FC<{
             style={{ touchAction: 'manipulation' }}
           >
             <span className="flex min-w-0 items-center gap-1">
-              <span className="block min-w-0 truncate typography-ui-label text-foreground">{primaryLabel}</span>
+              <span dir="auto" className="block min-w-0 truncate oc-ui-start-align typography-ui-label font-medium text-foreground">{primaryLabel}</span>
               {/* Discoverability: the chevron marks the title as a disclosure
                   trigger and flips while the switcher is open. */}
               <Icon
@@ -122,79 +129,41 @@ export const MobileHeader: React.FC<{
             </span>
           </button>
 
-          <MobileSessionMetadataButton
-            open={metadataOpen}
-            onOpenChange={handleMetadataOpenChange}
-            currentSessionId={currentSessionId}
-            effectiveDirectory={effectiveDirectory}
-            isNewSessionDraftOpen={isNewSessionDraftOpen}
-          />
+          {/* Compact title: this takes the leftover width so the trailing
+              controls stay pinned to the right edge. */}
+          {compactTitle ? <div className="min-w-0 flex-1" /> : null}
 
-          {surfaceShortcuts ? (
-            <>
-              <button
-                type="button"
-                className={cn(
-                  'flex size-10 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                  surfaceShortcuts.activePanel === 'files'
-                    ? 'bg-[var(--interactive-selection)] text-[var(--interactive-selectionForeground)]'
-                    : 'text-muted-foreground hover:bg-interactive-hover hover:text-foreground',
-                )}
-                aria-label={t('mobile.menu.files')}
-                aria-pressed={surfaceShortcuts.activePanel === 'files'}
-                onClick={surfaceShortcuts.onToggleFiles}
-                style={{ touchAction: 'manipulation' }}
-              >
-                <Icon name="file-text" className="size-5" />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'relative flex size-10 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                  surfaceShortcuts.activePanel === 'changes'
-                    ? 'bg-[var(--interactive-selection)] text-[var(--interactive-selectionForeground)]'
-                    : 'text-muted-foreground hover:bg-interactive-hover hover:text-foreground',
-                )}
-                aria-label={t('mobile.menu.changes')}
-                aria-pressed={surfaceShortcuts.activePanel === 'changes'}
-                onClick={surfaceShortcuts.onToggleChanges}
-                style={{ touchAction: 'manipulation' }}
-              >
-                <Icon name="git-branch" className="size-5" />
-                {surfaceShortcuts.changesDirty ? (
-                  <span className="absolute right-2 top-2 inline-flex size-2 rounded-full bg-primary" aria-hidden />
-                ) : null}
-              </button>
-            </>
-          ) : null}
+          {runOverviewKey ? null : (
+            <MobileSessionMetadataButton
+              open={metadataOpen}
+              onOpenChange={handleMetadataOpenChange}
+              currentSessionId={currentSessionId}
+              effectiveDirectory={effectiveDirectory}
+              isNewSessionDraftOpen={isNewSessionDraftOpen}
+            />
+          )}
 
-          {onOpenMenu ? (
-            <button
-              type="button"
-              className="flex size-10 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              aria-label={t('mobile.header.openMenuAria')}
-              onClick={handleOpenMenu}
-              style={{ touchAction: 'manipulation' }}
-            >
-              <Icon name="more-2" className="size-5" />
-            </button>
-          ) : null}
-
-          {onOpenWorkspace ? (
-            <button
-              type="button"
-              className="flex size-10 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              aria-label={t('mobile.header.openWorkspaceAria')}
-              onClick={() => {
-                setMetadataOpen(false);
-                setSwitcherOpen(false);
-                onOpenWorkspace();
-              }}
-              style={{ touchAction: 'manipulation' }}
-            >
-              <Icon name="pencil-ruler-2" className="size-5" />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className={MOBILE_HEADER_BUTTON_CLASS}
+            aria-label={hasUncommittedChanges
+              ? t('mobile.header.openWorkspaceWithChangesAria')
+              : t('mobile.header.openWorkspaceAria')}
+            onClick={() => {
+              setMetadataOpen(false);
+              setSwitcherOpen(false);
+              onOpenWorkspace();
+            }}
+            style={{ touchAction: 'manipulation' }}
+          >
+            <Icon name="pencil-ruler-2" className="size-5" />
+            {hasUncommittedChanges ? (
+              <span
+                className="absolute inset-e-1.5 top-1.5 size-2.5 rounded-full border-2 border-[var(--background)] bg-[var(--status-warning)]"
+                aria-hidden
+              />
+            ) : null}
+          </button>
         </div>
       </header>
       <MobileSessionSwitcher

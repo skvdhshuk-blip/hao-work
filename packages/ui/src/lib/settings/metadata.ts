@@ -1,4 +1,6 @@
 import type { SidebarSection } from '@/constants/sidebar';
+import type { IconName } from '@/components/icon/icons';
+import { isIsolatedSpacesPageVisible } from '@/lib/spaces/release';
 
 export type SettingsPageSlug =
   | 'home'
@@ -6,6 +8,7 @@ export type SettingsPageSlug =
   | 'projects'
   | 'remote-instances'
   | 'providers'
+  | 'web-search'
   | 'usage'
   | 'agents'
   | 'behavior'
@@ -19,12 +22,16 @@ export type SettingsPageSlug =
   | 'chat'
   | 'shortcuts'
   | 'sessions'
+  | 'routing'
   | 'magic-prompts'
   | 'snippets'
   | 'notifications'
   | 'voice'
   | 'tunnel'
-  | 'about';
+  | 'isolated-spaces'
+  | 'about'
+  | 'integrations'
+  | 'extensions';
 
 type SettingsPageGroup =
   | 'general'
@@ -37,6 +44,12 @@ export interface SettingsRuntimeContext {
   isWeb: boolean;
   isDesktop: boolean;
   isMobile: boolean;
+  /** Whether this runtime has Jev routing, which needs the OpenChamber server. */
+  routingAvailable: boolean;
+  /** The server runs in enterprise mode: pages for what it refuses are hidden. */
+  enterpriseMode: boolean;
+  /** Enterprise mode keeps Jev off (no administrator's endpoint), so pages that only configure Jev are hidden. */
+  jevBlockedByEnterprise: boolean;
 }
 
 export interface SettingsPageMeta {
@@ -84,8 +97,15 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     slug: 'providers',
     title: 'Providers',
     group: 'opencode',
-    kind: 'split',
+    kind: 'single',
     keywords: ['provider', 'providers', 'models', 'model', 'api key', 'api keys', 'openai', 'anthropic', 'ollama', 'credentials'],
+  },
+  {
+    slug: 'web-search',
+    title: 'Web search',
+    group: 'opencode',
+    kind: 'single',
+    keywords: ['web search', 'websearch', 'search', 'internet', 'exa', 'tavily', 'firecrawl', 'parallel', 'tinyfish'],
   },
   {
     slug: 'usage',
@@ -120,7 +140,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     slug: 'mcp',
     title: 'MCP',
     group: 'opencode',
-    kind: 'split',
+    kind: 'single',
     keywords: ['mcp', 'model context protocol', 'servers', 'tools', 'remote', 'stdio'],
     isAvailable: () => false,
   },
@@ -128,9 +148,8 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     slug: 'plugins',
     title: 'Plugins',
     group: 'opencode',
-    kind: 'split',
-    keywords: ['plugin', 'plugins', 'extensions', 'addons', 'npm', 'opencode-wakatime'],
-    isAvailable: () => false,
+    kind: 'single',
+    keywords: ['plugin', 'plugins', 'addons', 'npm', 'opencode-wakatime'],
   },
   {
     slug: 'skills.installed',
@@ -151,7 +170,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     title: 'Git',
     group: 'projects',
     kind: 'single',
-    keywords: ['git', 'github', 'identity', 'identities', 'ssh', 'profiles', 'credentials', 'keys', 'commit', 'gitmoji', 'oauth', 'prs', 'issues'],
+    keywords: ['git', 'github', 'gitlab', 'identity', 'identities', 'ssh', 'profiles', 'credentials', 'keys', 'commit', 'gitmoji', 'oauth', 'prs', 'issues'],
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
@@ -184,6 +203,15 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     keywords: ['defaults', 'default agent', 'default model', 'retention', 'memory', 'limits', 'zen'],
   },
   {
+    slug: 'routing',
+    title: 'Routing',
+    group: 'general',
+    kind: 'single',
+    description: 'Pick the right model for each message automatically, and get asked before risky actions in auto-accepted sessions.',
+    keywords: ['routing', 'auto', 'jev', 'typesafe', 'model routing', 'categories', 'safety net', 'auto-accept', 'fallback'],
+    isAvailable: (ctx) => !ctx.isVSCode && ctx.routingAvailable && !ctx.jevBlockedByEnterprise,
+  },
+  {
     slug: 'magic-prompts',
     title: 'Magic Prompts',
     group: 'content',
@@ -201,8 +229,26 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
 
   { slug: 'notifications', title: 'Notifications', group: 'general', kind: 'single', keywords: ['alerts', 'native', 'summary', 'summarization'], },
   { slug: 'voice', title: 'Voice', group: 'general', kind: 'single', keywords: ['tts', 'speech', 'voice'], isAvailable: (ctx) => !ctx.isVSCode },
-  { slug: 'tunnel', title: 'External Tunnel', group: 'projects', kind: 'single', keywords: ['tunnel', 'external', 'cloudflare', 'qr', 'remote', 'mobile', 'share'], isAvailable: (ctx) => !ctx.isVSCode },
-  { slug: 'about', title: 'About', group: 'general', kind: 'single', keywords: ['about', 'version', 'updates', 'release', 'changelog'], isAvailable: (ctx) => ctx.isMobile && !ctx.isVSCode },
+  { slug: 'tunnel', title: 'External Tunnel', group: 'projects', kind: 'single', keywords: ['tunnel', 'external', 'cloudflare', 'tailscale', 'qr', 'remote', 'mobile', 'share'], isAvailable: (ctx) => !ctx.isVSCode && !ctx.enterpriseMode },
+  {
+    slug: 'isolated-spaces',
+    title: 'Isolated spaces',
+    group: 'projects',
+    kind: 'single',
+    keywords: ['isolated', 'space', 'spaces', 'container', 'docker', 'colima', 'sandbox', 'disk', 'clean up', 'image'],
+    // Never in VS Code (decision 16 of the design); before the feature's first release only with the key on.
+    isAvailable: (ctx) => !ctx.isVSCode && isIsolatedSpacesPageVisible(),
+  },
+  { slug: 'about', title: 'About', group: 'general', kind: 'single', keywords: ['about', 'version', 'updates', 'release', 'changelog', 'canary', 'channel'], isAvailable: (ctx) => !ctx.isVSCode },
+  { slug: 'integrations', title: 'Integrations', group: 'general', kind: 'single', keywords: ['integration', 'connect', 'oauth', 'github', 'linear', 'extension', 'claude', 'plugin'], isAvailable: (ctx) => !ctx.isVSCode },
+  {
+    slug: 'extensions',
+    title: 'Extensions',
+    group: 'general',
+    kind: 'single',
+    keywords: ['extension', 'extensions', 'guest', 'panel', 'rail', 'folder', 'zip', 'git', 'url'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
 ] as const;
 
 const LEGACY_SIDEBAR_SECTION_TO_SETTINGS_SLUG: Record<SidebarSection, SettingsPageSlug> = {
@@ -239,4 +285,77 @@ export function resolveSettingsSlug(value: string | null | undefined): SettingsP
   }
 
   return 'home';
+}
+
+// Lives here (not in SettingsView) so light consumers such as the command
+// palette can render settings entries without statically importing the whole
+// settings surface into the eager startup graph.
+export function getSettingsNavIcon(slug: SettingsPageSlug): IconName | null {
+  switch (slug) {
+    case 'general':
+      return 'settings-3';
+    case 'projects':
+      return 'folders';
+    case 'remote-instances':
+      return 'computer';
+    case 'appearance':
+      return 'palette';
+    case 'chat':
+      return 'chat-ai-3';
+    case 'magic-prompts':
+      return 'ai-generate-2';
+    case 'snippets':
+      return 'chat-thread';
+    case 'notifications':
+      return 'notification-3';
+    case 'shortcuts':
+      return 'command';
+    case 'sessions':
+      return 'chat-history';
+    case 'routing':
+      return 'signpost';
+
+    case 'providers':
+      return 'cloud';
+    case 'web-search':
+      return 'global';
+    case 'agents':
+      return 'ai-agent';
+    case 'behavior':
+      return 'brain';
+    case 'commands':
+      return 'slash-commands-2';
+    case 'mcp':
+      return null;
+    case 'plugins':
+      return 'plug-2';
+
+    case 'skills.installed':
+      return 'book-open';
+    case 'skills.catalog':
+      return 'book';
+
+    case 'git':
+      return 'git-branch';
+
+    case 'integrations':
+      return 'plug';
+    case 'extensions':
+      return 'puzzle';
+
+    case 'usage':
+      return 'bar-chart-2';
+    case 'voice':
+      return 'mic';
+    case 'tunnel':
+      return 'home-office';
+    case 'isolated-spaces':
+      return 'instance';
+    case 'about':
+      return 'information';
+    case 'home':
+      return null;
+    default:
+      return 'robot-2';
+  }
 }

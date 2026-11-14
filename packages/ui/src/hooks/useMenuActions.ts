@@ -1,15 +1,23 @@
 import React from 'react';
 import { toast } from '@/components/ui';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { getSyncSessions } from '@/sync/sync-refs';
+import { readOrderedActiveSessions, stepSession } from '@/lib/sessionListOrder';
+import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { normalizeContextPanelDirectoryKey, useUIStore } from '@/stores/useUIStore';
+import { getZoneView, resolveZoneActiveTabId } from '@/lib/workspace/zones';
+import { toggleExpandedContextZone } from '@/lib/workspace/toggleExpandedZone';
 import { useUpdateStore } from '@/stores/useUpdateStore';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { createWorktreeSession } from '@/lib/worktreeSessionCreator';
 import { showOpenCodeStatus } from '@/lib/openCodeStatus';
+import { useI18n } from '@/lib/i18n';
+import { addSelectionToChat } from '@/lib/addSelectionToChat';
+import { navigateSessionHistory } from '@/lib/sessionNavigationHistory';
+import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
+import { getNativeMenuShortcutCombos } from '@/lib/shortcuts';
 
 const getActiveElementSelectedText = (): string => {
   if (typeof document === 'undefined') {
@@ -56,13 +64,6 @@ const copyCurrentSelectionFallback = async (): Promise<boolean> => {
 const MENU_ACTION_EVENT = 'openchamber:menu-action';
 const CHECK_FOR_UPDATES_EVENT = 'openchamber:check-for-updates';
 
-type DesktopBridgeGlobal = {
-  listen?: (
-    event: string,
-    handler: (evt: { payload?: unknown }) => void
-  ) => Promise<() => void>;
-};
-
 type MenuAction =
   | 'about'
   | 'settings'
@@ -75,8 +76,9 @@ type MenuAction =
   | 'open-right-sidebar-git'
   | 'open-right-sidebar-files'
   | 'toggle-terminal'
-  | 'toggle-terminal-expanded'
+  | 'toggle-context-panel-expanded'
   | 'copy'
+  | 'add-selection-to-chat'
   | 'theme-light'
   | 'theme-dark'
   | 'theme-system'
@@ -94,18 +96,26 @@ type MenuAction =
 export const useMenuActions = (
   onToggleMemoryDebug?: () => void
 ) => {
+  const { t } = useI18n();
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette);
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const toggleHelpDialog = useUIStore((s) => s.toggleHelpDialog);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const setSessionSwitcherOpen = useUIStore((s) => s.setSessionSwitcherOpen);
-  const setActiveMainTab = useUIStore((s) => s.setActiveMainTab);
   const setSettingsDialogOpen = useUIStore((s) => s.setSettingsDialogOpen);
   const setAboutDialogOpen = useUIStore((s) => s.setAboutDialogOpen);
   const checkForUpdates = useUpdateStore((state) => state.checkForUpdates);
   const { setThemeMode } = useThemeSystem();
   const checkUpdatesInFlightRef = React.useRef(false);
+  const shortcutOverrides = useUIStore((s) => s.shortcutOverrides);
+
+  React.useEffect(() => {
+    if (!canUseElectronDesktopIPC()) return;
+    invokeDesktop('desktop_set_menu_shortcuts', { shortcuts: getNativeMenuShortcutCombos(shortcutOverrides) }).catch((error) => {
+      console.warn('[menu-actions] failed to update menu shortcuts', error);
+    });
+  }, [shortcutOverrides]);
 
   const handleCheckForUpdates = React.useCallback(() => {
     if (checkUpdatesInFlightRef.current) {
@@ -137,22 +147,13 @@ export const useMenuActions = (
   }, []);
 
   const navigateSession = React.useCallback((direction: -1 | 1) => {
-    const sessions = getSyncSessions();
-    if (sessions.length === 0) return;
-
     const currentSessionId = useSessionUIStore.getState().currentSessionId;
-    const currentIndex = sessions.findIndex((session) => session.id === currentSessionId);
-    let nextIndex = direction > 0 ? 0 : sessions.length - 1;
-    if (currentIndex >= 0) {
-      nextIndex = (currentIndex + direction + sessions.length) % sessions.length;
-    }
-    const nextSession = sessions[nextIndex];
+    const nextSession = stepSession(readOrderedActiveSessions(), currentSessionId, direction);
     if (!nextSession) return;
 
-    setActiveMainTab('chat');
     setSessionSwitcherOpen(false);
-    useSessionUIStore.getState().setCurrentSession(nextSession.id);
-  }, [setActiveMainTab, setSessionSwitcherOpen]);
+    useSessionUIStore.getState().setCurrentSession(nextSession.id, resolveGlobalSessionDirectory(nextSession));
+  }, [setSessionSwitcherOpen]);
 
   const navigateProject = React.useCallback((direction: -1 | 1) => {
     const { activeProjectId, projects, setActiveProject } = useProjectsStore.getState();
@@ -189,14 +190,18 @@ export const useMenuActions = (
           break;
 
         case 'new-session':
-          setActiveMainTab('chat');
-          setSessionSwitcherOpen(false);
-          openNewSessionDraft();
+                setSessionSwitcherOpen(false);
+          {
+            const sessionState = useSessionUIStore.getState();
+            const directory = useDirectoryStore.getState().currentDirectory;
+            openNewSessionDraft(sessionState.currentSessionId && directory
+              ? { directoryOverride: directory }
+              : undefined);
+          }
           break;
 
         case 'new-worktree-session':
-          setActiveMainTab('chat');
-          setSessionSwitcherOpen(false);
+                setSessionSwitcherOpen(false);
           createWorktreeSession();
           break;
 
@@ -211,11 +216,15 @@ export const useMenuActions = (
           if (!directory) break;
           const uiState = useUIStore.getState();
           const directoryKey = normalizeContextPanelDirectoryKey(directory);
+          // The right zone only: it is the panel this menu item always meant.
           const panelState = uiState.contextPanelByDirectory[directoryKey];
+          const rightTabId = panelState
+            ? resolveZoneActiveTabId(panelState.tabs, uiState.contextSurfaceZones, 'right', getZoneView(panelState, 'right').activeTabId)
+            : null;
           if (panelState?.isOpen) {
             uiState.closeContextPanel(directoryKey);
-          } else if (panelState?.activeTabId) {
-            uiState.setActiveContextPanelTab(directoryKey, panelState.activeTabId);
+          } else if (rightTabId) {
+            uiState.setActiveContextPanelTab(directoryKey, rightTabId);
           } else {
             uiState.openContextSurface(directoryKey, 'git');
           }
@@ -243,19 +252,9 @@ export const useMenuActions = (
           break;
         }
 
-        case 'toggle-terminal-expanded': {
-          const directory = useDirectoryStore.getState().currentDirectory;
-          if (!directory) break;
-          const key = normalizeContextPanelDirectoryKey(directory);
-          const uiState = useUIStore.getState();
-          const panel = uiState.contextPanelByDirectory[key];
-          const activeMode = panel?.isOpen ? panel.tabs.find((tab) => tab.id === panel.activeTabId)?.mode : null;
-          if (activeMode !== 'terminal') {
-            uiState.openContextSurface(key, 'terminal');
-          }
-          uiState.toggleContextPanelExpanded(key);
+        case 'toggle-context-panel-expanded':
+          toggleExpandedContextZone(useDirectoryStore.getState().currentDirectory);
           break;
-        }
 
         case 'copy': {
           const copyEvent = new Event('openchamber:copy', { cancelable: true });
@@ -278,6 +277,10 @@ export const useMenuActions = (
           setThemeMode('system');
           break;
 
+        case 'add-selection-to-chat':
+          addSelectionToChat();
+          break;
+
         case 'toggle-sidebar':
           toggleSidebar();
           break;
@@ -286,12 +289,14 @@ export const useMenuActions = (
           onToggleMemoryDebug?.();
           break;
 
+        // Same history as the Back/Forward shortcuts, which this menu's
+        // accelerators shadow on Windows and Linux.
         case 'go-back':
-          useDirectoryStore.getState().goBack();
+          navigateSessionHistory(-1);
           break;
 
         case 'go-forward':
-          useDirectoryStore.getState().goForward();
+          navigateSessionHistory(1);
           break;
 
         case 'previous-session':
@@ -316,7 +321,7 @@ export const useMenuActions = (
 
         case 'download-logs': {
           void showOpenCodeStatus().catch(() => {
-            toast.error('Failed to collect OpenCode status');
+            toast.error(t('openCodeStatusDialog.toast.collectFailed'));
           });
           break;
         }
@@ -329,11 +334,11 @@ export const useMenuActions = (
       onToggleMemoryDebug,
       openNewSessionDraft,
       setAboutDialogOpen,
-      setActiveMainTab,
       setSessionSwitcherOpen,
       setCommandPaletteOpen,
       setSettingsDialogOpen,
       setThemeMode,
+      t,
       toggleCommandPalette,
       toggleHelpDialog,
       toggleSidebar,
@@ -359,53 +364,4 @@ export const useMenuActions = (
     };
   }, [handleAction, handleCheckForUpdates]);
 
-  React.useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const desktop = (window as unknown as { __OPENCHAMBER_DESKTOP__?: DesktopBridgeGlobal }).__OPENCHAMBER_DESKTOP__;
-    const listen = desktop?.listen;
-    if (typeof listen !== 'function') return;
-
-    let unlistenMenu: null | (() => void | Promise<void>) = null;
-    let unlistenUpdate: null | (() => void | Promise<void>) = null;
-
-    listen('openchamber:menu-action', (evt) => {
-      const action = evt?.payload;
-      if (typeof action !== 'string') return;
-      handleAction(action as MenuAction);
-    })
-      .then((fn) => {
-        unlistenMenu = fn;
-      })
-      .catch(() => {
-        // ignore
-      });
-
-    listen('openchamber:check-for-updates', () => {
-      window.dispatchEvent(new Event(CHECK_FOR_UPDATES_EVENT));
-    })
-      .then((fn) => {
-        unlistenUpdate = fn;
-      })
-      .catch(() => {
-        // ignore
-      });
-
-    return () => {
-      const cleanup = async () => {
-        try {
-          const a = unlistenMenu?.();
-          if (a instanceof Promise) await a;
-        } catch {
-          // ignore
-        }
-        try {
-          const b = unlistenUpdate?.();
-          if (b instanceof Promise) await b;
-        } catch {
-          // ignore
-        }
-      };
-      void cleanup();
-    };
-  }, [handleAction]);
 };

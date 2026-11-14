@@ -206,6 +206,10 @@ $runOptions = new RunOptions(
     cwd: $cwd,
     maxBudgetUsd: $configArguments['maxBudgetUsd'],
 );
+$runSteer = createRunSteer($request['controlPath'] ?? null);
+if ($runSteer !== null && method_exists($runOptions, 'withRunSteer')) {
+    $runOptions = $runOptions->withRunSteer($runSteer);
+}
 
 try {
     // Sandbox runtime: when enabled with a provisioned baseRootfs, the SDK runs
@@ -246,6 +250,8 @@ try {
             // predates Agent.headers, header-carrying runs keep the facade so
             // headers still reach the provider.
             $messages = Runner::stream($agent, $prompt, $runOptions);
+        } elseif ($runSteer !== null && method_exists(HaoCode::class, 'streamSteered')) {
+            $messages = HaoCode::streamSteered($prompt, $runSteer, $config);
         } else {
             // Session continuation ($sessionId redirects to a resumed
             // Conversation) is a HaoCodeConfig-only behavior — keep the facade.
@@ -275,6 +281,52 @@ try {
         '_fe_exception' => $exception::class,
     ]);
     exit(1);
+}
+
+function createRunSteer(mixed $controlPath)
+{
+    if (! class_exists(\HaoCode\Sdk\RunSteer::class) || ! is_string($controlPath) || $controlPath === '') {
+        return null;
+    }
+    $offset = 0;
+
+    return new \HaoCode\Sdk\RunSteer(function (\HaoCode\Sdk\RunSteer $steer) use ($controlPath, &$offset): void {
+        if (! is_file($controlPath)) {
+            return;
+        }
+        $handle = fopen($controlPath, 'rb');
+        if ($handle === false) {
+            return;
+        }
+        try {
+            if ($offset > 0) {
+                fseek($handle, $offset);
+            }
+            $chunk = stream_get_contents($handle);
+            $offset = ftell($handle) ?: $offset;
+        } finally {
+            fclose($handle);
+        }
+        if (! is_string($chunk) || $chunk === '') {
+            return;
+        }
+        foreach (preg_split("/\r?\n/", $chunk) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            $command = json_decode($line, true);
+            if (! is_array($command)) {
+                continue;
+            }
+            $text = is_string($command['text'] ?? null) ? $command['text'] : '';
+            if (($command['type'] ?? '') === 'queue') {
+                $steer->queue($text);
+            } else {
+                $steer->steer($text);
+            }
+        }
+    });
 }
 
 function emitMessage(Message $message): void

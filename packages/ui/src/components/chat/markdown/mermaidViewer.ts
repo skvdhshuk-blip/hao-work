@@ -22,27 +22,22 @@ type MermaidViewerController = {
   cleanup: () => void;
 };
 
+type InternalMermaidViewerController = MermaidViewerController & {
+  viewport: HTMLElement;
+  fitToViewport: (viewport: MermaidViewport) => void;
+};
+
 type MermaidSvgBoundsSource = {
   viewBox?: string | null;
   width?: string | number | null;
   height?: string | number | null;
 };
 
-type MermaidViewerSignatureSource = MermaidSvgBoundsSource & {
-  renderMode?: string | null;
-  svgMarkup?: string | null;
-};
-
 const isPositiveFinite = (value: number): boolean => Number.isFinite(value) && value > 0;
 
 const parseSvgNumber = (value: string | number | null | undefined): number | null => {
-  if (typeof value === 'number') {
-    return isPositiveFinite(value) ? value : null;
-  }
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const match = value.trim().match(/^([+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:[eE][+-]?\d+)?)(?:px)?$/);
+  if (value === null || value === undefined) return null;
+  const match = String(value).trim().match(/^([+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:[eE][+-]?\d+)?)(?:px)?$/);
   if (!match) {
     return null;
   }
@@ -59,11 +54,7 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 12;
 const DRAG_CLICK_SUPPRESSION_THRESHOLD_PX = 3;
 const DRAG_CLICK_SUPPRESSION_CLEAR_MS = 400;
-export const MERMAID_BLOCK_SELECTOR = '[data-markdown="mermaid-block"]';
-
-export const shouldRefreshMermaidViewers = (container: Pick<HTMLElement, 'querySelector'>): boolean => (
-  container.querySelector(MERMAID_BLOCK_SELECTOR) !== null
-);
+export const MERMAID_BLOCK_SELECTOR = '[data-streamdown="mermaid-block"]';
 
 export const formatMermaidViewBox = (box: MermaidViewBox): string => (
   [box.x, box.y, box.width, box.height]
@@ -98,29 +89,6 @@ export const getMermaidSvgContentBox = (source: MermaidSvgBoundsSource): Mermaid
   }
 
   return { x: 0, y: 0, width, height };
-};
-
-const hashMermaidSignaturePart = (value: string): string => {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-};
-
-export const getMermaidViewerSignature = (source: MermaidViewerSignatureSource): string => {
-  const renderMode = source.renderMode || 'unknown';
-  const svgMarkup = source.svgMarkup ?? '';
-  if (!svgMarkup) {
-    const bounds = [source.viewBox ?? '', source.width ?? '', source.height ?? ''];
-    return bounds.some((part) => part !== '') ? `${renderMode}:bounds:${bounds.join(':')}` : `${renderMode}:no-svg`;
-  }
-
-  return [
-    renderMode,
-    hashMermaidSignaturePart(svgMarkup),
-  ].join(':');
 };
 
 export const fitMermaidViewBox = (contentBox: MermaidViewBox, viewport: MermaidViewport): MermaidViewBox => {
@@ -181,6 +149,15 @@ export const hasMermaidPointerDragMoved = (start: MermaidPoint, current: Mermaid
   return (deltaX * deltaX) + (deltaY * deltaY) > (DRAG_CLICK_SUPPRESSION_THRESHOLD_PX * DRAG_CLICK_SUPPRESSION_THRESHOLD_PX);
 };
 
+export const getMermaidPinch = (points: readonly MermaidPoint[]): { distance: number; center: MermaidPoint } | null => {
+  const [first, second] = points;
+  if (!first || !second) return null;
+  return {
+    distance: Math.hypot(second.x - first.x, second.y - first.y),
+    center: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
+  };
+};
+
 export const zoomMermaidViewBoxAtPoint = ({
   currentBox,
   contentBox,
@@ -232,28 +209,41 @@ export const zoomMermaidViewBoxAtPoint = ({
   };
 };
 
-const controllerByBlock = new WeakMap<HTMLElement, MermaidViewerController>();
+const controllerByViewport = new WeakMap<HTMLElement, InternalMermaidViewerController>();
+const activeControllers = new Set<InternalMermaidViewerController>();
+let sharedResizeObserver: ResizeObserver | null = null;
+let pendingResizeFrame: number | null = null;
+const pendingInitialFit = new Set<InternalMermaidViewerController>();
+let initialFitFrame: number | null = null;
 
-export const getMermaidViewerController = (block: Element | null): MermaidViewerController | null => (
-  block instanceof HTMLElement ? controllerByBlock.get(block) ?? null : null
-);
-
-const getSvgViewport = (block: HTMLElement): HTMLElement | null => (
-  block.querySelector<HTMLElement>('[data-markdown="mermaid-viewport"]')
-    ?? block.querySelector<HTMLElement>('[data-markdown="mermaid"]')
-);
-
-const getBlockViewerSignature = (block: HTMLElement): string => {
-  const svg = block.querySelector<SVGSVGElement>('[data-markdown="mermaid"] svg');
-  const svgHost = block.querySelector<HTMLElement>('[data-markdown="mermaid"]');
-  return getMermaidViewerSignature({
-    renderMode: block.getAttribute('data-mermaid-render'),
-    svgMarkup: svgHost?.getAttribute('data-md-original-svg') ?? svg?.outerHTML ?? null,
-    viewBox: svg?.getAttribute('viewBox'),
-    width: svg?.getAttribute('width'),
-    height: svg?.getAttribute('height'),
+const scheduleInitialFit = (controller: InternalMermaidViewerController): void => {
+  pendingInitialFit.add(controller);
+  if (initialFitFrame !== null) return;
+  // Match the original viewer's two-frame settle, then read all sizes before
+  // writing any viewBox. React supplies the controllers without a DOM scan.
+  initialFitFrame = window.requestAnimationFrame(() => {
+    initialFitFrame = window.requestAnimationFrame(() => {
+      initialFitFrame = null;
+      const controllers = Array.from(pendingInitialFit);
+      pendingInitialFit.clear();
+      fitControllers(controllers);
+      for (const entry of controllers) registerController(entry);
+    });
   });
 };
+
+const cancelInitialFit = (controller: InternalMermaidViewerController): void => {
+  pendingInitialFit.delete(controller);
+  if (pendingInitialFit.size === 0 && initialFitFrame !== null) {
+    window.cancelAnimationFrame(initialFitFrame);
+    initialFitFrame = null;
+  }
+};
+
+const getSvgViewport = (block: HTMLElement): HTMLElement | null => (
+  block.querySelector<HTMLElement>('[data-streamdown="mermaid-viewport"]')
+    ?? block.querySelector<HTMLElement>('[data-streamdown="mermaid"]')
+);
 
 const getViewportSize = (viewport: HTMLElement): MermaidViewport => {
   const rect = viewport.getBoundingClientRect();
@@ -272,27 +262,89 @@ const isPanExcludedTarget = (target: EventTarget | null): boolean => (
   target instanceof Element && Boolean(target.closest('button, a, [role="button"]'))
 );
 
-const createMermaidViewerController = (block: HTMLElement): MermaidViewerController | null => {
+const fitControllers = (controllers: readonly InternalMermaidViewerController[]): void => {
+  const viewportSizes = controllers.map((controller) => getViewportSize(controller.viewport));
+  controllers.forEach((controller, index) => {
+    const viewport = viewportSizes[index];
+    if (viewport) controller.fitToViewport(viewport);
+  });
+};
+
+const scheduleActiveControllerFit = (): void => {
+  if (pendingResizeFrame !== null || activeControllers.size === 0) return;
+  pendingResizeFrame = window.requestAnimationFrame(() => {
+    pendingResizeFrame = null;
+    fitControllers(Array.from(activeControllers));
+  });
+};
+
+const ensureSharedResizeObserver = (): ResizeObserver | null => {
+  if (sharedResizeObserver) return sharedResizeObserver;
+  const ResizeObserverConstructor = globalThis.ResizeObserver;
+  if (!ResizeObserverConstructor) return null;
+  sharedResizeObserver = new ResizeObserverConstructor((entries) => {
+    for (const entry of entries) {
+      if (!(entry.target instanceof HTMLElement)) continue;
+      controllerByViewport.get(entry.target)?.fitToViewport({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      });
+    }
+  });
+  return sharedResizeObserver;
+};
+
+const registerController = (controller: InternalMermaidViewerController): void => {
+  if (activeControllers.has(controller)) return;
+  const wasEmpty = activeControllers.size === 0;
+  activeControllers.add(controller);
+  controllerByViewport.set(controller.viewport, controller);
+  ensureSharedResizeObserver()?.observe(controller.viewport);
+  if (wasEmpty) window.addEventListener('resize', scheduleActiveControllerFit);
+};
+
+const unregisterController = (controller: InternalMermaidViewerController): void => {
+  if (!activeControllers.delete(controller)) return;
+  sharedResizeObserver?.unobserve(controller.viewport);
+  controllerByViewport.delete(controller.viewport);
+  if (activeControllers.size > 0) return;
+  sharedResizeObserver?.disconnect();
+  sharedResizeObserver = null;
+  window.removeEventListener('resize', scheduleActiveControllerFit);
+  if (pendingResizeFrame !== null) {
+    window.cancelAnimationFrame(pendingResizeFrame);
+    pendingResizeFrame = null;
+  }
+};
+
+export const createMermaidViewerController = (block: HTMLElement): MermaidViewerController | null => {
   const viewport = getSvgViewport(block);
-  const svg = block.querySelector<SVGSVGElement>('[data-markdown="mermaid"] svg');
+  const svg = block.querySelector<SVGSVGElement>('[data-streamdown="mermaid"] svg');
   if (!viewport || !svg) {
     return null;
   }
 
   const contentBox = getMermaidSvgContentBox({
-    viewBox: svg.getAttribute('viewBox'),
+    viewBox: svg.getAttribute('data-oc-mermaid-original-viewbox') ?? svg.getAttribute('viewBox'),
     width: svg.getAttribute('width'),
     height: svg.getAttribute('height'),
   });
   if (!contentBox) {
+    // Unrecognized bounds leave the renderer's native SVG visible.
+    svg.setAttribute('data-oc-mermaid-fitted', '');
     return null;
   }
+  // Preview sizing must not read the user-controlled viewBox as content bounds.
+  svg.setAttribute('data-oc-mermaid-original-viewbox', formatMermaidViewBox(contentBox));
 
   let currentBox = contentBox;
   let activePointerId: number | null = null;
   let dragStartPointer: MermaidPoint | null = null;
   let lastPointer: MermaidPoint | null = null;
   let clearClickSuppressionTimer: number | null = null;
+  // Every pointer pressed on the diagram; a second one turns the pan into a pinch.
+  const pressedPointers = new Map<number, MermaidPoint>();
+  let lastPinchDistance: number | null = null;
 
   const applyViewBox = (box: MermaidViewBox): void => {
     currentBox = box;
@@ -301,11 +353,26 @@ const createMermaidViewerController = (block: HTMLElement): MermaidViewerControl
     svg.removeAttribute('height');
   };
 
+  const fitToViewport = (size: MermaidViewport): void => {
+    // Hidden/zero-size containers are not ready. ResizeObserver retries when
+    // the viewport acquires geometry; never reveal the unfitted first frame.
+    if (!isPositiveFinite(size.width) || !isPositiveFinite(size.height)) return;
+    applyViewBox(fitMermaidViewBox(contentBox, size));
+    svg.setAttribute('data-oc-mermaid-fitted', '');
+  };
+
   const fit = (): void => {
-    applyViewBox(fitMermaidViewBox(contentBox, getViewportSize(viewport)));
+    cancelInitialFit(controller);
+    fitToViewport(getViewportSize(viewport));
+    registerController(controller);
+  };
+
+  const activate = (): void => {
+    if (pendingInitialFit.has(controller)) fit();
   };
 
   const zoomAt = (pointer: MermaidPoint, zoomFactor: number): void => {
+    activate();
     applyViewBox(zoomMermaidViewBoxAtPoint({
       currentBox,
       contentBox,
@@ -340,6 +407,22 @@ const createMermaidViewerController = (block: HTMLElement): MermaidViewerControl
     if (event.button !== 0 || isPanExcludedTarget(event.target)) {
       return;
     }
+    activate();
+    // A primary pointer starts a new gesture, so a lost pointerup cannot leave
+    // a stale finger behind that would turn the next pan into a pinch.
+    if (event.isPrimary) {
+      pressedPointers.clear();
+      lastPinchDistance = null;
+    }
+    pressedPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pressedPointers.size > 1) {
+      activePointerId = null;
+      lastPinchDistance = getMermaidPinch(Array.from(pressedPointers.values()))?.distance ?? null;
+      viewport.setPointerCapture?.(event.pointerId);
+      block.setAttribute('data-mermaid-suppress-click', 'true');
+      event.preventDefault();
+      return;
+    }
     activePointerId = event.pointerId;
     dragStartPointer = { x: event.clientX, y: event.clientY };
     lastPointer = dragStartPointer;
@@ -354,10 +437,21 @@ const createMermaidViewerController = (block: HTMLElement): MermaidViewerControl
   };
 
   const onPointerMove = (event: PointerEvent): void => {
+    const nextPointer = { x: event.clientX, y: event.clientY };
+    if (lastPinchDistance !== null && pressedPointers.has(event.pointerId)) {
+      pressedPointers.set(event.pointerId, nextPointer);
+      const pinch = getMermaidPinch(Array.from(pressedPointers.values()));
+      if (pinch) {
+        const center = getPointerInViewport({ clientX: pinch.center.x, clientY: pinch.center.y }, viewport);
+        zoomAt(center, pinch.distance / lastPinchDistance);
+        lastPinchDistance = pinch.distance;
+      }
+      event.preventDefault();
+      return;
+    }
     if (activePointerId !== event.pointerId || !lastPointer) {
       return;
     }
-    const nextPointer = { x: event.clientX, y: event.clientY };
     applyViewBox(panMermaidViewBox({
       currentBox,
       viewport: getViewportSize(viewport),
@@ -374,10 +468,20 @@ const createMermaidViewerController = (block: HTMLElement): MermaidViewerControl
   };
 
   const stopPan = (event: PointerEvent): void => {
-    if (activePointerId !== event.pointerId) {
+    if (!pressedPointers.delete(event.pointerId)) {
       return;
     }
     viewport.releasePointerCapture?.(event.pointerId);
+    if (pressedPointers.size > 0) {
+      // A finger left after a pinch does not pan, so the view does not jump
+      // when the other one lifts.
+      activePointerId = null;
+      lastPinchDistance = pressedPointers.size > 1
+        ? getMermaidPinch(Array.from(pressedPointers.values()))?.distance ?? null
+        : null;
+      return;
+    }
+    lastPinchDistance = null;
     activePointerId = null;
     dragStartPointer = null;
     lastPointer = null;
@@ -390,78 +494,33 @@ const createMermaidViewerController = (block: HTMLElement): MermaidViewerControl
     }
   };
 
-  const onResize = (): void => {
-    fit();
-  };
-
   viewport.addEventListener('wheel', onWheel, { passive: false });
   viewport.addEventListener('pointerdown', onPointerDown);
   viewport.addEventListener('pointermove', onPointerMove);
   viewport.addEventListener('pointerup', stopPan);
   viewport.addEventListener('pointercancel', stopPan);
-  window.addEventListener('resize', onResize);
-  const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(onResize);
-  observer?.observe(viewport);
-  fit();
-
-  return {
+  const controller: InternalMermaidViewerController = {
+    viewport,
     zoomIn,
     zoomOut,
     fit,
+    fitToViewport,
     cleanup: () => {
+      cancelInitialFit(controller);
+      unregisterController(controller);
       viewport.removeEventListener('wheel', onWheel);
       viewport.removeEventListener('pointerdown', onPointerDown);
       viewport.removeEventListener('pointermove', onPointerMove);
       viewport.removeEventListener('pointerup', stopPan);
       viewport.removeEventListener('pointercancel', stopPan);
-      window.removeEventListener('resize', onResize);
-      observer?.disconnect();
       if (clearClickSuppressionTimer !== null) {
         window.clearTimeout(clearClickSuppressionTimer);
       }
+      pressedPointers.clear();
       block.removeAttribute('data-mermaid-panning');
       block.removeAttribute('data-mermaid-suppress-click');
-      controllerByBlock.delete(block);
     },
   };
-};
-
-export const createMermaidViewerRegistry = (container: HTMLElement): { refresh: () => void; cleanup: () => void } => {
-  const controllers = new Map<HTMLElement, MermaidViewerController>();
-  const signatures = new Map<HTMLElement, string>();
-
-  const refresh = (): void => {
-    for (const [block, controller] of Array.from(controllers.entries())) {
-      const signature = getBlockViewerSignature(block);
-      if (!container.contains(block) || signature !== signatures.get(block)) {
-        controller.cleanup();
-        controllers.delete(block);
-        signatures.delete(block);
-      }
-    }
-
-    for (const block of Array.from(container.querySelectorAll<HTMLElement>(MERMAID_BLOCK_SELECTOR))) {
-      if (controllers.has(block) || block.querySelector('[data-markdown="mermaid"] svg') === null) {
-        continue;
-      }
-      const controller = createMermaidViewerController(block);
-      if (!controller) {
-        continue;
-      }
-      controllers.set(block, controller);
-      signatures.set(block, getBlockViewerSignature(block));
-      controllerByBlock.set(block, controller);
-    }
-  };
-
-  const cleanup = (): void => {
-    for (const controller of controllers.values()) {
-      controller.cleanup();
-    }
-    controllers.clear();
-    signatures.clear();
-  };
-
-  refresh();
-  return { refresh, cleanup };
+  scheduleInitialFit(controller);
+  return controller;
 };

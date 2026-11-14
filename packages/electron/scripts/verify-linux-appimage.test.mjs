@@ -18,6 +18,13 @@ const writeElf = (filePath, architecture) => {
   fs.writeFileSync(filePath, header, { mode: 0o755 });
 };
 
+const writeIcon = (root, relativePath) => {
+  fs.mkdirSync(path.dirname(path.join(root, relativePath)), { recursive: true });
+  fs.writeFileSync(path.join(root, relativePath), 'icon');
+  fs.rmSync(path.join(root, '.DirIcon'), { force: true });
+  fs.symlinkSync(relativePath, path.join(root, '.DirIcon'));
+};
+
 const createPayload = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-payload-test-'));
   fs.writeFileSync(path.join(root, LINUX_IDENTITY.desktopFileName), [
@@ -25,26 +32,19 @@ const createPayload = () => {
   ].join('\n'));
   writeElf(path.join(root, LINUX_IDENTITY.executableName), 'x64');
   writeElf(path.join(root, 'resources/opencode-cli/opencode'), 'x64');
-  for (const name of ['better_sqlite3.node', 'pty.node', 'sherpa-onnx.node']) {
+  writeElf(path.join(root, 'resources/ripgrep/rg'), 'x64');
+  for (const name of ['pty.node', 'sherpa-onnx.node']) {
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules', name), 'x64');
   }
-  for (const asset of [
-    'node_modules/@gutenye/ocr-models/assets/ch_PP-OCRv4_det_infer.onnx',
-    'node_modules/onnxruntime-node/package.json',
-  ]) {
-    const assetPath = path.join(root, 'resources/app.asar.unpacked', asset);
-    fs.mkdirSync(path.dirname(assetPath), { recursive: true });
-    fs.writeFileSync(assetPath, 'fixture');
-  }
+  writeIcon(root, 'usr/share/icons/hicolor/512x512/apps/openchamber.png');
   return root;
 };
 
-test('Linux verifier identity matches electron-builder configuration', () => {
-  const electronPackage = JSON.parse(fs.readFileSync(path.join(electronRoot, 'package.json'), 'utf8'));
-  assert.equal(electronPackage.build.productName, LINUX_IDENTITY.productName);
-  assert.equal(electronPackage.build.linux.executableName, LINUX_IDENTITY.executableName);
-  assert.equal(electronPackage.build.linux.desktop.entry.Icon, LINUX_IDENTITY.iconName);
-  assert.equal(electronPackage.build.linux.desktop.entry.StartupWMClass, LINUX_IDENTITY.startupWMClass);
+const verify = (root) => verifyExtractedPayload({
+  root,
+  targetArchitecture: 'x64',
+  expectedOpenCodeVersion: '1.17.18',
+  runCliVersion: () => '1.17.18',
 });
 
 test('reads supported ELF architectures', () => {
@@ -73,7 +73,7 @@ test('verifies identity, version, and native payload architecture', () => {
       expectedOpenCodeVersion: '1.17.18',
       runCliVersion: () => '1.17.18',
     });
-    assert.equal(result.nativeModuleCount, 3);
+    assert.equal(result.nativeModuleCount, 2);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -125,6 +125,44 @@ test('fails on wrong CLI version or native architecture', () => {
       expectedOpenCodeVersion: '1.17.18',
       runCliVersion: () => '1.17.18',
     }), /Native module architecture mismatch/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('accepts a scalable theme icon', () => {
+  const root = createPayload();
+  try {
+    fs.rmSync(path.join(root, 'usr/share/icons/hicolor/512x512'), { recursive: true });
+    writeIcon(root, 'usr/share/icons/hicolor/scalable/apps/openchamber.svg');
+    assert.equal(verify(root).nativeModuleCount, 2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('fails when the theme cannot resolve Icon=openchamber', () => {
+  for (const relativePath of [
+    'usr/share/icons/hicolor/scalable/openchamber.svg',
+    'usr/share/icons/hicolor/1024x1024/apps/openchamber.png',
+  ]) {
+    const root = createPayload();
+    try {
+      fs.rmSync(path.join(root, 'usr/share/icons/hicolor/512x512'), { recursive: true });
+      writeIcon(root, relativePath);
+      assert.throws(() => verify(root), /Missing theme icon/, relativePath);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('fails when .DirIcon is dangling', () => {
+  const root = createPayload();
+  try {
+    fs.rmSync(path.join(root, '.DirIcon'));
+    fs.symlinkSync('usr/share/icons/hicolor/scalable/openchamber.svg', path.join(root, '.DirIcon'));
+    assert.throws(() => verify(root), /\.DirIcon does not resolve/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

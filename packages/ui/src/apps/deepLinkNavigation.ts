@@ -1,16 +1,23 @@
 import React from 'react';
+import { Capacitor } from '@capacitor/core';
 
 import { isCapacitorApp } from '@/lib/platform';
+import { subscribeToNativeShortcutRequests } from '@/lib/nativeShortcutRequests';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useQuotaStore } from '@/stores/useQuotaStore';
+import type { QuotaProviderId } from '@/types';
+import { useInputStore } from '@/sync/input-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { openSession } from '@/lib/router/openSessionFromRoute';
 
-import { buildDeepLink, parseDeepLink, type DeepLinkIntent, type SessionsFilter, type ViewTarget } from './deepLinks';
+import { parseDeepLink, type DeepLinkIntent, type SessionsFilter, type ViewTarget } from './deepLinks';
 
 /**
  * Navigation layer for {@link DeepLinkIntent}s — the only place that knows how to *apply* a
  * deep link. Producers (notification taps, widget `widgetURL`, Live Activities) feed intents
  * in via {@link useDeepLinkSource}; the surfaces that can satisfy them register imperative
- * handlers via {@link useDeepLinkHandlers}. Session/new-session navigation goes straight to
- * the session store (always available), so those resolve even before the shell has mounted.
+ * handlers via {@link useDeepLinkHandlers}. Session opens use the shared opener; new-session
+ * navigation uses the session store. Both are available before the shell has mounted.
  *
  * Intents that arrive before the app is ready (cold launch from a tap/widget) or before their
  * handler is registered are stashed in a module-level holder that survives the connect flow
@@ -18,7 +25,7 @@ import { buildDeepLink, parseDeepLink, type DeepLinkIntent, type SessionsFilter,
  * appears. Only the most recent intent is kept (newest wins) — a burst of taps shouldn't queue.
  */
 
-export interface DeepLinkHandlers {
+interface DeepLinkHandlers {
   /** Open the sessions sheet, optionally pre-filtered (filter support is best-effort for now). */
   openSessions?: (filter?: SessionsFilter) => void;
   /** Open a non-session surface (files / mcp / instances / update). */
@@ -29,14 +36,51 @@ export interface DeepLinkHandlers {
   openSettings?: (section?: string) => void;
 }
 
+/**
+ * A new session asked for by the iOS Shortcuts app or Siri (see nativeShortcutRequests).
+ * Unlike a deep link it may carry a first message to send, which is why it never comes
+ * from a URL.
+ */
+type ShortcutNewSessionIntent = { type: 'shortcut-new-session'; projectId?: string; text?: string };
+
+type NavigationIntent = DeepLinkIntent | ShortcutNewSessionIntent;
+
 let handlers: DeepLinkHandlers = {};
 let ready = false;
-let pending: DeepLinkIntent | null = null;
+let pending: NavigationIntent | null = null;
+let launchUrlConsumed = false;
 
-const execute = (intent: DeepLinkIntent): boolean => {
+/**
+ * Opens a draft in the requested project, or where the user last was when none is named,
+ * and leaves the message for the draft's composer to send. A project the app no longer
+ * knows (the Shortcuts picker lists the projects of the last time the app was open) opens
+ * the default draft with the message added to its composer, unsent: the user picks the place.
+ */
+const openShortcutSession = (intent: ShortcutNewSessionIntent): void => {
+  const store = useSessionUIStore.getState();
+  const project = intent.projectId
+    ? useProjectsStore.getState().projects.find((entry) => entry.id === intent.projectId) ?? null
+    : null;
+  store.openNewSessionDraft(project ? { selectedProjectId: project.id } : undefined);
+  const text = intent.text?.trim();
+  if (!text) return;
+  if (intent.projectId && !project) {
+    useInputStore.getState().setPendingInputText(text, 'append');
+    return;
+  }
+  useInputStore.getState().requestDraftSubmit(useSessionUIStore.getState().newSessionDraft.draftId, text);
+};
+
+const execute = (intent: NavigationIntent): boolean => {
   switch (intent.type) {
+    case 'shortcut-new-session':
+      openShortcutSession(intent);
+      return true;
+
     case 'session':
-      void useSessionUIStore.getState().setCurrentSession(intent.sessionId, intent.directory ?? null);
+      // The opener resolves a directory the link omits and opens a `/btw` fork
+      // as the parent session that holds its panel.
+      void openSession(intent.sessionId, { directory: intent.directory ?? null, messageId: intent.messageId ?? null });
       return true;
 
     case 'new-session': {
@@ -64,6 +108,7 @@ const execute = (intent: DeepLinkIntent): boolean => {
       handlers.openSessions();
       return true;
 
+
     case 'view':
       if (!handlers.openView) return false;
       handlers.openView(intent.target);
@@ -76,6 +121,13 @@ const execute = (intent: DeepLinkIntent): boolean => {
 
     case 'settings':
       if (!handlers.openSettings) return false;
+      // Use the same selector as the built-in Usage page rather than routing to
+      // a separate per-provider screen. The intent is deferred until connected.
+      if (intent.section === 'usage' && intent.providerId) {
+        // SAFETY: parseDeepLink admits only well-formed provider ids, and the widgets send ids
+        // taken from the quota store's own results.
+        useQuotaStore.getState().setSelectedProvider(intent.providerId as QuotaProviderId);
+      }
       handlers.openSettings(intent.section);
       return true;
   }
@@ -93,13 +145,13 @@ const flush = (): void => {
 };
 
 /** Apply an intent now if possible, otherwise stash it until the app is ready / a handler appears. */
-export const applyDeepLinkIntent = (intent: DeepLinkIntent): void => {
+const applyDeepLinkIntent = (intent: NavigationIntent): void => {
   pending = intent;
   flush();
 };
 
 /** Convenience: parse a raw `openchamber://…` URL and apply it. No-op for unrecognised URLs. */
-export const applyDeepLinkUrl = (raw: string | null | undefined): void => {
+const applyDeepLinkUrl = (raw: string | null | undefined): void => {
   const intent = parseDeepLink(raw);
   if (intent) {
     applyDeepLinkIntent(intent);
@@ -129,11 +181,11 @@ export const useDeepLinkHandlers = (next: DeepLinkHandlers): void => {
 };
 
 /**
- * Single native entry point for deep links. Subscribes to both the custom URL scheme
- * (`App.appUrlOpen` — widgets, Live Activities, external links) and notification taps
- * (`pushNotificationActionPerformed`), normalising each into a {@link DeepLinkIntent}.
- * Both listeners are registered UNCONDITIONALLY so a cold-launch tap/open isn't lost while
- * the app is still connecting; intents stash until `ready` (connected + initialized).
+ * Single native entry point for deep links. Subscribes to the custom URL scheme
+ * (`App.appUrlOpen` — widgets, Live Activities, external links), notification taps
+ * (`pushNotificationActionPerformed`) and iOS Shortcuts requests, normalising each into an
+ * intent. The listeners are registered UNCONDITIONALLY so a cold-launch tap/open isn't lost
+ * while the app is still connecting; intents stash until `ready` (connected + initialized).
  */
 export const useDeepLinkSource = (options: { ready: boolean }): void => {
   const { ready: isReady } = options;
@@ -158,8 +210,20 @@ export const useDeepLinkSource = (options: { ready: boolean }): void => {
           return;
         }
         cleanup.push(() => void handle.remove());
+        // Android delivers the URL that cold-started the app (a home-screen widget tap) only
+        // through getLaunchUrl, never as appUrlOpen; iOS delivers it as appUrlOpen. The launch
+        // URL stays the same for the whole process, so it is applied once, not on every mount.
+        if (!launchUrlConsumed && Capacitor.getPlatform() === 'android') {
+          launchUrlConsumed = true;
+          const initial = await App.getLaunchUrl().catch(() => null);
+          if (!disposed && initial?.url) applyDeepLinkUrl(initial.url);
+        }
       })
       .catch(() => undefined);
+
+    cleanup.push(subscribeToNativeShortcutRequests((request) => {
+      applyDeepLinkIntent({ type: 'shortcut-new-session', projectId: request.projectId, text: request.text });
+    }));
 
     void import('@capacitor/push-notifications')
       .then(async ({ PushNotifications }) => {
@@ -192,7 +256,3 @@ export const useDeepLinkSource = (options: { ready: boolean }): void => {
     };
   }, []);
 };
-
-// Re-export so producers (notifications, future widgets) have one import for the whole vocabulary.
-export { buildDeepLink, parseDeepLink };
-export type { DeepLinkIntent, SessionsFilter, ViewTarget };

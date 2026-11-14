@@ -1,93 +1,145 @@
+import { flushSync } from 'react-dom';
+import { OpenCodeCompatibilityGate } from '@/components/update/OpenCodeCompatibilityGate';
 import React from 'react';
 
-import { McpIcon } from '@/components/icons/McpIcon';
-import { McpDropdownContent } from '@/components/mcp/McpDropdown';
 import { AboutSettings } from '@/components/sections/openchamber/AboutSettings';
 import { OpenCodeUpdateToast } from '@/components/update/OpenCodeUpdateToast';
 import { MobileAppUpdateToast } from '@/components/update/MobileAppUpdateToast';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { Button } from '@/components/ui/button';
-import { Icon } from '@/components/icon/Icon';
 import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
+import { AppStartupOverlay } from '@/components/ui/AppStartupOverlay';
 import { ChatView } from '@/components/views/ChatView';
 import { PlanView } from '@/components/views/PlanView';
 import { SettingsView } from '@/components/views/SettingsView';
-import { TerminalView } from '@/components/views/TerminalView';
+import { AppLinkConfirmDialog } from '@/components/chat/AppLinkConfirmDialog';
+import { SnippetQuickCreateDialog } from '@/components/snippets/SnippetQuickCreateDialog';
+import { SharedTrustConfirmDialog } from '@/components/projects/SharedTrustConfirmDialog';
+import { OpenCodeTrustDialog } from '@/components/projects/OpenCodeTrustDialog';
+import { SpaceAccessDialog } from '@/components/session/spaces/SpaceAccessDialog';
+import { SpaceActionsSheet, SpaceDeleteDialog } from '@/components/session/spaces/SpaceActions';
+import { SpaceApplyDialog } from '@/components/session/spaces/SpaceApplyDialog';
+import { SpaceSetupOutputDialog } from '@/components/session/spaces/SpaceSetupOutput';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { RunOverview } from '@/components/multirun/RunOverview';
 import { RuntimeAPIProvider } from '@/contexts/RuntimeAPIProvider';
+import { useAuthSessionStore } from '@/lib/runtime-auth-expiry';
 import { registerRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { Toaster } from '@/components/ui/sonner';
+import { MobileToaster } from './MobileToaster';
 import { usePushVisibilityBeacon } from '@/hooks/usePushVisibilityBeacon';
 import { useRouter } from '@/hooks/useRouter';
+import { useTerminalSessionKeepalive } from '@/hooks/useTerminalSessionKeepalive';
 import { useUpdatePolling } from '@/hooks/useUpdatePolling';
 import { useWindowTitle } from '@/hooks/useWindowTitle';
+import { useEnterprisePolicySync } from '@/hooks/useEnterprisePolicySync';
+import { useRoutingSync } from '@/hooks/useRoutingSync';
+import { useSourceControlProviderSync } from '@/hooks/useSourceControlProviderSync';
+import { useTrackerProviderSync } from '@/hooks/useTrackerProviderSync';
+import { useQuotaProviderSync } from '@/hooks/useQuotaProviderSync';
+import { useAgentMemorySync } from '@/hooks/useAgentMemorySync';
+import { useBrowserProviderSync } from '@/hooks/useBrowserProviderSync';
+import { useGuestCatalogSync } from '@/hooks/useGuestCatalogSync';
+import { useGuestMarksSync } from '@/hooks/useGuestMarksSync';
+import { resolvePlanRequestOwner } from '@/hooks/useProjectContextOwner';
 import { opencodeClient } from '@/lib/opencode/client';
 import type { RuntimeAPIs } from '@/lib/api/types';
-import { useOrientation } from '@/lib/device';
+import type { ProjectRef } from '@/lib/projectContextApi';
+import { readTabletLayout, useOrientation, useTabletLayout } from '@/lib/device';
+import { useHardwareKeyboard } from '@/lib/hardwareKeyboard';
 import { useI18n } from '@/lib/i18n';
-import { isIPadApp } from '@/lib/platform';
-import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged, switchRuntimeEndpoint } from '@/lib/runtime-switch';
-import { refreshGlobalSessions, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
-import { clearLastActiveSession, readLastActiveSession } from '@/sync/last-session-cache';
+import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
+import { getRuntimeApiBaseUrl, subscribeRuntimeEndpointChanged, switchRuntimeEndpoint, MOBILE_DISCONNECTED_RUNTIME_KEY } from '@/lib/runtime-switch';
+import { subscribeActiveRelayTunnelStatus } from '@/lib/relay/runtime-tunnel';
+import { isRelayLimitReached } from '@/lib/relay/tunnel-client';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { useAuthoritativeSessionCleanup } from '@/components/session/sidebar/list/useAuthoritativeSessionCleanup';
+import { restoreLastActiveSession } from '@/sync/last-session-restore';
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
-import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
-import { useGitStatus, useGitStore } from '@/stores/useGitStore';
-import { useMcpConfigStore, type McpDraft } from '@/stores/useMcpConfigStore';
-import { useMcpStore } from '@/stores/useMcpStore';
-import { useProjectsStore } from '@/stores/useProjectsStore';
-import { listProjectWorktrees, worktreeMapsEqual } from '@/lib/worktrees/worktreeManager';
+import { useSourceControlAuthStore } from '@/stores/useSourceControlAuthStore';
+import { useSourceControlProviderRegistry } from '@/lib/source-control/providers/registry';
+import { refreshTrackers } from '@/stores/useTrackerAuthStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { closeTopmostBackLayer } from '@/lib/mobileBackLayers';
 import { useUpdateStore } from '@/stores/useUpdateStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { openSessionFromToast } from '@/sync/session-navigation';
 import { SyncProvider } from '@/sync/sync-context';
+import { toast } from '@/components/ui';
 
 import { SyncAppEffects } from './AppEffects';
-import { ProjectContextPanel } from '@/components/layout/RightSidebarTabs';
-import { MobileChangesSurface } from './MobileChangesSurface';
-import { MobileFilesSurface } from './MobileFilesSurface';
-import { BusyDots } from '@/components/chat/message/parts/BusyDots';
+import { BusyDots } from '@/components/ui/busy-dots';
 import { MobileConnectionWelcome, type MobileConnectionNotice } from './MobileConnectionWelcome';
 import { MobileHeader } from './MobileHeader';
 import { MobileInstancesSurface } from './MobileInstancesSurface';
-import { MobileOverflowMenu, type OverflowItem } from './MobileOverflowMenu';
 import { MobileSessionsSheet } from './MobileSessionsSheet';
 import { MobileFullscreenSurface } from './MobileFullscreenSurface';
-import { MobileWorkspaceDrawer, type MobileWorkspaceTab } from './MobileWorkspaceDrawer';
+import { fileNameOf, sessionLineage } from './mobileFileRequest';
+import { connectMobileSettingsNavigation } from './mobileSettingsNavigation';
+import { UsageStatsView } from '@/components/views/usage/UsageStatsView';
+import { ArchiveSessionsView } from '@/components/views/ArchiveView';
+import { MobileSourceBoard } from '@/components/sourceBoard/SourceBoardView';
+import { OverviewPage } from '@/components/overview/OverviewView';
+import { ScheduledTasksView, type ScheduledTasksLeaveReason } from '@/components/session/ScheduledTasksDialog';
+import { MobileWorkspaceDrawer } from './MobileWorkspaceDrawer';
+import type { MobileChangesCommitRequest } from './mobileChangesCommitRequest';
+import { connectMobileWorkspaceOpener, shownMobileWorkspaceTabs, type MobileWorkspaceTab } from '@/lib/mobileWorkspaceTabs';
+import { GuestHosts } from '@/components/layout/GuestHosts';
+import { useGuestPages, usePhoneGuestPanelModes } from '@/hooks/useGuestSurfaces';
+import { phoneGuestPanelModes } from '@/lib/guests/phone';
+import { useGuestsStore } from '@/lib/guests/store';
+import { isPluginContextPanelMode, pluginModeFromId } from '@/lib/surfaces/modes';
 import { DedicatedMobileAppProvider, type MobileAppActions } from './mobileAppContext';
-import { autoConnectLastInstance, getAutoConnectTargetLabel, reprobeActiveConnection, type AutoConnectOutcome } from './mobileConnections';
-import { isCapacitorMobileApp, useNativeAndroidBackButton, useNativeMobileChrome, useNativeMobileLifecycle } from './mobileNativeChrome';
-import { normalizePath } from './mobilePaths';
+import { autoConnectLastInstance, getAutoConnectTargetLabel, logMobileConnectEvent, reprobeActiveConnection, suppressAutoConnectUntilManualConnect, type AutoConnectOutcome } from './mobileConnections';
+import { isCapacitorMobileApp, useMobileWebBackButton, useNativeAndroidBackButton, useNativeMobileChrome, useNativeMobileLifecycle } from './mobileNativeChrome';
 import { reconnectAppForTransportSwitch, resetAppForRuntimeEndpointChange } from './runtimeEndpointReset';
 import { useAppFontEffects } from './useAppFontEffects';
 import { useFontsReady } from './useFontsReady';
 import { useDeepLinkHandlers, useDeepLinkSource } from './deepLinkNavigation';
 import { useEdgeSwipe } from './useEdgeSwipe';
+import { useMobileChatInsets } from '@/lib/mobileChatInsets';
 import { useNativePushRegistration } from './useNativePushRegistration';
+import { useNativeWidgetSync } from './useNativeWidgetSync';
 import { IpadSidebarResizeHandle } from './IpadSidebarResizeHandle';
+import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import {
   IPAD_LEFT_SIDEBAR_WIDTH,
   IPAD_RIGHT_SIDEBAR_WIDTH,
+  IPAD_WORKSPACE_SIDEBAR_MAX_WIDTH,
+  useIpadPanelSlide,
   useIpadSidebarResize,
 } from './ipadSidebarResize';
+import { ReceivedPagePanel } from '@/components/chat/sharePages/received/ReceivedPagePanel';
+import { focusChatInput } from '@/components/chat/composer/editor/dom';
+import { hasReceivedPages, useReceivedPagesStore } from '@/components/chat/sharePages/received/receivedPagesStore';
 
 const MOBILE_SETTINGS_PAGES = [
   'general',
+  'isolated-spaces',
   'appearance',
   'chat',
   'notifications',
   'sessions',
+  'routing',
+  'projects',
   'git',
   'magic-prompts',
+  'snippets',
   'behavior',
+  'agents',
+  'commands',
   'mcp',
+  'plugins',
+  'skills.installed',
+  'skills.catalog',
   'providers',
+  'web-search',
   'usage',
   'voice',
+  'integrations',
+  'extensions',
   'about',
 ] as const;
 
@@ -97,41 +149,90 @@ type MobileAppProps = {
 
 const NATIVE_RESUME_SYNC_EVENT_THROTTLE_MS = 1_000;
 
-/** The fullscreen overlay surfaces reachable from the overflow menu. Exactly
-    one can be open at a time — opening another replaces it, closing returns
-    to the chat. The sessions drawer, the workspace drawer (Changes / Files /
-    Terminal tabs on phones), and the overflow menu are separate layers.
-    'terminal' is iPad-only here — phones get it as a workspace tab. */
-type MobileSurface = 'terminal' | 'mcp' | 'notes' | 'instances' | 'settings' | 'update';
+/** The fullscreen app-level surfaces, reachable from the sessions drawer
+    footer. Exactly one can be open at a time — opening another replaces it,
+    closing returns to the chat. The sessions drawer and the workspace drawer
+    (Status / Changes / Files / Terminal / Notes) are separate layers. */
+// An extension's full-screen page loads with the first one the user opens.
+const PluginPane = React.lazy(() => import('@/components/layout/PluginPane').then((module) => ({ default: module.PluginPane })));
+
+type MobileSurface = 'archive' | 'board' | 'overview' | 'instances' | 'scheduled' | 'settings' | 'update' | 'usage';
 
 const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onActiveConnectionDeleted }) => {
-  const { t } = useI18n();
+  const { t, direction } = useI18n();
+  // The mobile root does not mount MainLayout, so it owns its own terminal
+  // keepalive: without it, background PTYs (running project actions included)
+  // are idle-reaped by the server while the workspace drawer is closed.
+  useTerminalSessionKeepalive();
   const [sessionsSheetOpen, setSessionsSheetOpen] = React.useState(false);
+  // The run overview covers the chat; selecting any session returns to it.
+  React.useEffect(() => useSessionUIStore.subscribe((state, prev) => {
+    if (state.currentSessionId && state.currentSessionId !== prev.currentSessionId) {
+      useUIStore.getState().setRunOverviewKey(null);
+    }
+  }), []);
+  const runOverviewOpen = useUIStore((state) => state.runOverviewKey !== null);
+  React.useEffect(() => {
+    if (runOverviewOpen) setSessionsSheetOpen(false);
+  }, [runOverviewOpen]);
   const [activeSurface, setActiveSurface] = React.useState<MobileSurface | null>(null);
   // Phone right drawer with the workspace tabs; the tab persists across
   // open/close so the right-edge swipe reopens where the user left off.
   const [workspaceOpen, setWorkspaceOpen] = React.useState(false);
-  const [workspaceTab, setWorkspaceTab] = React.useState<MobileWorkspaceTab>('changes');
-  const [isMcpRefreshing, setIsMcpRefreshing] = React.useState(false);
-  // A plan opened from the Project notes surface, shown as a second fullscreen
+  const [workspaceTab, setWorkspaceTab] = React.useState<MobileWorkspaceTab>(() => {
+    const { mobileWorkspaceTabOrder, mobileWorkspaceHiddenTabs } = useUIStore.getState();
+    return shownMobileWorkspaceTabs(mobileWorkspaceTabOrder, mobileWorkspaceHiddenTabs)[0];
+  });
+  // Opening the drawer itself lands on the last tab, unless the user has since
+  // hidden it in Settings; then on their first tab. A trigger that asks for a
+  // tab (a changed file in the chat) sets it on its own and opens it hidden or not.
+  const openWorkspace = React.useCallback(() => {
+    const { mobileWorkspaceTabOrder, mobileWorkspaceHiddenTabs } = useUIStore.getState();
+    const extensions = phoneGuestPanelModes(useGuestsStore.getState().guests);
+    const shown = shownMobileWorkspaceTabs(mobileWorkspaceTabOrder, mobileWorkspaceHiddenTabs, extensions);
+    const pagesShown = hasReceivedPages(useReceivedPagesStore.getState());
+    setWorkspaceTab((current) => (shown.some((id) => id === current) || (current === 'pages' && pagesShown) ? current : shown[0]));
+    setWorkspaceOpen(true);
+  }, []);
+  // A plan opened from the workspace drawer's Notes tab, shown as a fullscreen
   // layer on top of it (back returns to the notes).
-  const [openPlan, setOpenPlan] = React.useState<{ path: string; title: string } | null>(null);
+  const [openPlan, setOpenPlan] = React.useState<{ id: string; title: string; projectRef: ProjectRef } | null>(null);
+  const [openReceivedPage, setOpenReceivedPage] = React.useState<{ receivedId: string; title: string } | null>(null);
+
   const [settingsInitialMobileStage, setSettingsInitialMobileStage] = React.useState<'nav' | 'page-content'>('nav');
-  const [overflowOpen, setOverflowOpen] = React.useState(false);
-  // When set, the Changes surface opens directly into the per-file diff for this path.
-  const [pendingChangesDiff, setPendingChangesDiff] = React.useState<{ path: string; staged: boolean } | null>(null);
-  const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
+  // What Changes is asked to open: a per-file diff, or the commit an extension
+  // named (`host.openCommit`). One request at a time, so a later file tap
+  // never meets a commit request still waiting beside it.
+  const [changesRequest, setChangesRequest] = React.useState<
+    | { diff: { path: string; staged: boolean; scope?: 'turn' } }
+    | { commit: MobileChangesCommitRequest }
+    | null
+  >(null);
+  const pendingChangesDiff = changesRequest && 'diff' in changesRequest ? changesRequest.diff : null;
+  const pendingChangesCommit = changesRequest && 'commit' in changesRequest ? changesRequest.commit : null;
+  // An extension tab whose extension left the catalog (turned off, removed,
+  // another server) is gone from the strip; the drawer falls back to the
+  // user's first tab.
+  const extensionTabs = usePhoneGuestPanelModes();
+  React.useEffect(() => {
+    if (!isPluginContextPanelMode(workspaceTab) || extensionTabs.includes(workspaceTab)) return;
+    const { mobileWorkspaceTabOrder, mobileWorkspaceHiddenTabs } = useUIStore.getState();
+    setWorkspaceTab(shownMobileWorkspaceTabs(mobileWorkspaceTabOrder, mobileWorkspaceHiddenTabs, extensionTabs)[0]);
+  }, [extensionTabs, workspaceTab]);
+  // The full-screen page of an extension that opted it into the phone, opened
+  // from the sessions list's More menu.
+  const openGuestPageId = useUIStore((state) => state.openGuestPageId);
+  const guestPages = useGuestPages();
+  const guestPage = guestPages.find((guest) => guest.id === openGuestPageId) ?? null;
+  React.useEffect(() => {
+    if (openGuestPageId && !guestPage) useUIStore.getState().setOpenGuestPage(null);
+  }, [guestPage, openGuestPageId]);
+  const closeGuestPage = React.useCallback(() => useUIStore.getState().setOpenGuestPage(null), []);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
+  const wideChatLayoutEnabled = useUIStore((state) => state.wideChatLayoutEnabled);
   const updateAvailable = useUpdateStore((state) => state.available);
   const updateRuntimeType = useUpdateStore((state) => state.runtimeType);
   const showCapacitorOnlyFeatures = React.useMemo(() => isCapacitorMobileApp(), []);
-  const mcpServers = useMcpConfigStore((state) => state.mcpServers);
-  const setMcpDraft = useMcpConfigStore((state) => state.setMcpDraft);
-  const setSelectedMcp = useMcpConfigStore((state) => state.setSelectedMcp);
-  const refreshMcpStatus = useMcpStore((state) => state.refresh);
-  const loadMcpConfigs = useMcpConfigStore((state) => state.loadMcpConfigs);
-  const gitStatus = useGitStatus(normalizePath(currentDirectory) || null);
-  const dirtyChangeCount = gitStatus?.files?.length ?? 0;
 
   // NOTE: pendingChangesDiff is intentionally NOT cleared on close — it keys
   // the persistent Changes pane in the workspace drawer, and clearing it would
@@ -154,86 +255,241 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
     openSurface('settings');
   }, [openSurface]);
 
-  // iPad (Capacitor): sessions live in a persistent full-height left sidebar
-  // and Changes/Files in a right sidebar, instead of phone sheets/surfaces.
-  const isIPad = React.useMemo(() => isIPadApp(), []);
+  React.useEffect(
+    () => connectMobileSettingsNavigation(MOBILE_SETTINGS_PAGES, openSettingsSurface),
+    [openSettingsSurface],
+  );
+
+  // Tablet: sessions live in a persistent full-height left sidebar instead of
+  // the phone's drawer. Everything else — the workspace drawer, the header, the
+  // app-level surfaces — is shared with phones.
+  //
+  // A SIZE class, not a device check: an unfolded book foldable is a tablet
+  // until it is folded shut, and the shell keeps running across that change.
+  const { enabled: isTabletLayout, roomyForPanels, roomyForOnePanel } = useTabletLayout();
+  // Where the sidebar has its own room it stays put: picking a session or
+  // opening a page does not put it away. Elsewhere on a tablet it is a guest.
+  const persistentSidebar = roomyForPanels || roomyForOnePanel;
   const orientation = useOrientation();
   const isPortrait = orientation === 'portrait';
-  const [ipadSidebarOpen, setIpadSidebarOpen] = React.useState(isIPad && !isPortrait);
-  const [ipadRightPanel, setIpadRightPanel] = React.useState<'files' | 'changes' | null>(null);
+  const hasHardwareKeyboard = useHardwareKeyboard();
+  const [sidebarOpen, setSidebarOpen] = React.useState(() => {
+    const layout = readTabletLayout();
+    return layout.roomyForPanels || layout.roomyForOnePanel;
+  });
 
-  const toggleIpadSidebar = React.useCallback(() => {
-    const willOpen = !ipadSidebarOpen;
-    // Portrait doesn't fit both side panels next to a usable chat column:
-    // opening one closes the other (iPadOS behaves the same way).
-    if (willOpen && isPortrait) setIpadRightPanel(null);
-    setIpadSidebarOpen(willOpen);
-  }, [ipadSidebarOpen, isPortrait]);
-
-  const openFilesSurface = React.useCallback(() => {
-    if (isIPad) {
-      setPendingChangesDiff(null);
-      setIpadRightPanel('files');
-      if (isPortrait) setIpadSidebarOpen(false);
-      return;
-    }
-    setWorkspaceTab('files');
-    setWorkspaceOpen(true);
-  }, [isIPad, isPortrait]);
-
-  const openChangesSurface = React.useCallback((diff: { path: string; staged: boolean } | null = null) => {
-    setPendingChangesDiff(diff);
-    if (isIPad) {
-      setIpadRightPanel('changes');
-      if (isPortrait) setIpadSidebarOpen(false);
-      return;
-    }
-    setWorkspaceTab('changes');
-    setWorkspaceOpen(true);
-  }, [isIPad, isPortrait]);
-
-  const closeIpadRightPanel = React.useCallback(() => {
-    setIpadRightPanel(null);
-    setPendingChangesDiff(null);
+  const toggleSidebar = React.useCallback(() => {
+    setSidebarOpen((current: boolean) => !current);
   }, []);
 
-  const toggleIpadRightPanel = React.useCallback((panel: 'files' | 'changes') => {
-    if (ipadRightPanel === panel) {
-      closeIpadRightPanel();
-      return;
-    }
-    if (panel === 'files') openFilesSurface();
-    else openChangesSurface();
-  }, [closeIpadRightPanel, ipadRightPanel, openChangesSurface, openFilesSurface]);
-
-  // Keep the right panel's content mounted through the width-collapse
-  // animation; drop it once the panel is fully closed.
-  const lastIpadRightPanelRef = React.useRef<'files' | 'changes'>('changes');
-  if (ipadRightPanel) lastIpadRightPanelRef.current = ipadRightPanel;
-  const [ipadRightContentMounted, setIpadRightContentMounted] = React.useState(false);
+  // Folding shut (or losing the room for a side-by-side layout) must not leave
+  // a sidebar open over a phone-width screen. Unfolding opens it: the room is
+  // what the user unfolded for, and a closed sidebar left the screen looking
+  // like the same phone, only wider. A workspace open across the unfold keeps
+  // its place where only one panel fits.
+  const wasTabletLayoutRef = React.useRef(isTabletLayout);
   React.useEffect(() => {
-    if (!isIPad) return;
-    if (ipadRightPanel) {
-      setIpadRightContentMounted(true);
+    if (!isTabletLayout) setSidebarOpen(false);
+    else if (!wasTabletLayoutRef.current && !workspaceOpen) setSidebarOpen(true);
+    wasTabletLayoutRef.current = isTabletLayout;
+  }, [isTabletLayout, workspaceOpen]);
+
+  const openFilesSurface = React.useCallback(() => {
+    setChangesRequest(null);
+    setWorkspaceTab('files');
+    setWorkspaceOpen(true);
+  }, []);
+
+  // The agent asked for a file to be shown: open the files drawer and stage
+  // the path the way a chat file link does, so the surface routes to it. A
+  // session the user is not looking at only announces the file, and staging
+  // waits for the tap: a stored path would send the files drawer of the session
+  // on screen to that file the next time it opens.
+  React.useEffect(() => subscribeOpenchamberEvents((event) => {
+    if (event.type !== 'file-open-request') return;
+    const directory = event.directory ?? useDirectoryStore.getState().currentDirectory;
+    if (!directory) return;
+    const showFile = () => {
+      useUIStore.getState().openContextFile(directory, event.path);
+      openFilesSurface();
+    };
+    const { sessionId } = event;
+    if (!sessionId) {
+      showFile();
       return;
     }
-    const id = window.setTimeout(() => setIpadRightContentMounted(false), 240);
-    return () => window.clearTimeout(id);
-  }, [ipadRightPanel, isIPad]);
-  const renderedIpadRightPanel = ipadRightPanel ?? lastIpadRightPanelRef.current;
+    // A subagent can ask before its session reaches the global list, so a
+    // session the list does not know is read from the server.
+    const readSession = async (id: string) => useGlobalSessionsStore.getState().entityById.get(id)
+      ?? await opencodeClient.getSession(id).catch(() => null);
+    void sessionLineage(sessionId, readSession).then((lineage) => {
+      const isViewed = () => {
+        const { currentSessionId } = useSessionUIStore.getState();
+        return currentSessionId === sessionId || lineage.some((session) => session.id === currentSessionId);
+      };
+      if (isViewed()) {
+        showFile();
+        return;
+      }
+      const title = lineage[0]?.title;
+      toast.info(fileNameOf(event.path), {
+        id: `file-open-${sessionId}:${event.path}`,
+        description: title
+          ? t('chat.fileOpenRequest.toast.description', { session: title })
+          : t('chat.fileOpenRequest.toast.descriptionUntitled'),
+        action: {
+          label: t('chat.fileOpenRequest.toast.openSession'),
+          onClick: () => {
+            openSessionFromToast(sessionId, directory);
+            closeSurface();
+            setSessionsSheetOpen(false);
+            // A folder waiting for the user's trust switches later or never, and
+            // the drawer of the session still on screen must not get the file.
+            if (isViewed()) showFile();
+          },
+        },
+      });
+    });
+  }), [closeSurface, openFilesSurface, t]);
+
+  // The agent asked for a saved plan to be shown: the plan opens the way a tap
+  // on it in the Project knowledge drawer opens it.
+  React.useEffect(() => subscribeOpenchamberEvents((event) => {
+    if (event.type !== 'plan-open-request') return;
+    const projectRef = resolvePlanRequestOwner(event.directory ?? useDirectoryStore.getState().currentDirectory, event.projectId);
+    if (!projectRef) return;
+    setOpenPlan({ id: event.planId, title: event.title, projectRef });
+  }), []);
+
+  const openChangesSurface = React.useCallback((diff: { path: string; staged: boolean; scope?: 'turn' } | null = null) => {
+    setChangesRequest(diff ? { diff } : null);
+    setWorkspaceTab('changes');
+    setWorkspaceOpen(true);
+  }, []);
+
+  // An extension frame or an item handed to an extension asks for a tab:
+  // its panel (`openSurface`, a chip, an `open` link, attach) or Changes on
+  // a commit (`openCommit`). A full-screen extension page steps aside so the
+  // tab it asked for is what the user sees.
+  React.useEffect(() => connectMobileWorkspaceOpener((request) => {
+    useUIStore.getState().setOpenGuestPage(null);
+    if (request.tab === 'changes' && request.commit) {
+      setChangesRequest({ commit: { scope: 'commit', directory: request.commit.directory } });
+    }
+    setWorkspaceTab(request.tab);
+    setWorkspaceOpen(true);
+  }), []);
 
   const leftResize = useIpadSidebarResize('left', 'openchamber.ipad.leftSidebarWidth', IPAD_LEFT_SIDEBAR_WIDTH);
-  const rightResize = useIpadSidebarResize('right', 'openchamber.ipad.rightSidebarWidth', IPAD_RIGHT_SIDEBAR_WIDTH);
+  const rightResize = useIpadSidebarResize(
+    'right',
+    'openchamber.ipad.rightSidebarWidth',
+    IPAD_RIGHT_SIDEBAR_WIDTH,
+    IPAD_WORKSPACE_SIDEBAR_MAX_WIDTH,
+  );
+  // The workspace becomes a real side panel where a readable chat is left
+  // beside it: with the sidebar at once where both fit, one at a time where
+  // only one does (below). Narrower tablets and near-square foldables keep the
+  // full-cover drawer, the layout that works at that width.
+  const workspaceAsPanel = roomyForPanels || roomyForOnePanel;
+
+  // One panel at a time: opening one puts the other away, and closing it
+  // brings back the one it displaced. Runs before paint, so the two never
+  // share a frame.
+  const displacedPanelRef = React.useRef<'sidebar' | 'workspace' | null>(null);
+  const previousPanelsRef = React.useRef({ sidebarOpen, workspaceOpen });
+  React.useLayoutEffect(() => {
+    const previous = previousPanelsRef.current;
+    previousPanelsRef.current = { sidebarOpen, workspaceOpen };
+    if (!roomyForOnePanel) {
+      // Room for both now (a 13-inch iPad turned to landscape): the panel the
+      // rule put away comes back. A phone drops it.
+      const displaced = displacedPanelRef.current;
+      displacedPanelRef.current = null;
+      if (roomyForPanels && displaced === 'sidebar') setSidebarOpen(true);
+      else if (roomyForPanels && displaced === 'workspace') setWorkspaceOpen(true);
+      return;
+    }
+    const sidebarOpened = sidebarOpen && !previous.sidebarOpen;
+    const workspaceOpened = workspaceOpen && !previous.workspaceOpen;
+    if (sidebarOpen && workspaceOpen) {
+      // The newer one stays. Both at once with neither just opened is a
+      // layout that just gained the rule (a wider one shrank): the chat wins.
+      if (sidebarOpened && !workspaceOpened) {
+        displacedPanelRef.current = 'workspace';
+        setWorkspaceOpen(false);
+      } else {
+        displacedPanelRef.current = 'sidebar';
+        setSidebarOpen(false);
+      }
+      return;
+    }
+    if (!workspaceOpen && previous.workspaceOpen && displacedPanelRef.current === 'sidebar') {
+      displacedPanelRef.current = null;
+      setSidebarOpen(true);
+    } else if (!sidebarOpen && previous.sidebarOpen && displacedPanelRef.current === 'workspace') {
+      displacedPanelRef.current = null;
+      setWorkspaceOpen(true);
+    }
+  }, [roomyForOnePanel, roomyForPanels, sidebarOpen, workspaceOpen]);
+  const leftSlide = useIpadPanelSlide(isTabletLayout && sidebarOpen);
+  const workspaceSlide = useIpadPanelSlide(workspaceAsPanel && workspaceOpen);
+  // A layout that loses the panel (a tablet folded to a phone, a panel turned
+  // into the drawer) drops its width at once; only a close slides it out. So
+  // does a panel the other one displaced where only one fits: holding its
+  // width through its slide squeezed the chat between both for that time.
+  const workspaceDisplaced = roomyForOnePanel && sidebarOpen;
+  const sidebarDisplaced = roomyForOnePanel && workspaceOpen;
+  const workspacePanelWidth = workspaceAsPanel && workspaceSlide.placed && !workspaceDisplaced ? rightResize.width : 0;
+  const sidebarWidth = isTabletLayout && leftSlide.placed && !sidebarDisplaced ? leftResize.width : 0;
+  // Where a side panel waits while it is off its edge: the start one beyond
+  // the start edge, the end one beyond the end edge.
+  const offStart = direction === 'rtl' ? '100%' : '-100%';
+  const offEnd = direction === 'rtl' ? '-100%' : '100%';
+
+  // Publish the chat column's insets so overlays portaled to <body> (model
+  // picker, directory picker, every MobileOverlayPanel) can center on the CHAT
+  // rather than on the window. Zero on phones, where the two are the same.
+  React.useEffect(() => {
+    useMobileChatInsets.setState({ left: sidebarWidth, right: workspacePanelWidth });
+    return () => useMobileChatInsets.setState({ left: 0, right: 0 });
+  }, [sidebarWidth, workspacePanelWidth]);
+
+  // Wide chat layout: the shared chat columns key off this root class, but only
+  // the desktop App set it — so on a tablet, where the chat column is finally
+  // wide enough for the setting to mean something, it did nothing. Applied for
+  // every mobile surface; on a phone the viewport is narrower than even the
+  // normal clamp, so it is a no-op there.
+  React.useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.classList.toggle('wide-chat-layout', wideChatLayoutEnabled);
+    return () => root.classList.remove('wide-chat-layout');
+  }, [wideChatLayoutEnabled]);
+
+  // The draft screen keeps its starter chips while the keyboard is up when
+  // there is room for both: a tablet in portrait, or any tablet orientation
+  // with a hardware keyboard (then no software keyboard eats the screen at
+  // all). Landscape on the software keyboard still hides them — see mobile.css.
+  React.useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const keep = isTabletLayout && (isPortrait || hasHardwareKeyboard);
+    const root = document.documentElement;
+    root.classList.toggle('oc-keep-draft-starters', keep);
+    return () => root.classList.remove('oc-keep-draft-starters');
+  }, [hasHardwareKeyboard, isTabletLayout, isPortrait]);
 
   const mobileActions = React.useMemo<MobileAppActions>(
     () => ({
-      openChanges: ({ diffPath, staged } = {}) => {
-        openChangesSurface(diffPath ? { path: diffPath, staged: staged === true } : null);
+      openChanges: ({ diffPath, staged, scope } = {}) => {
+        openChangesSurface(diffPath ? { path: diffPath, staged: staged === true, scope } : null);
       },
       openFiles: () => openFilesSurface(),
-      openSettings: () => openSettingsSurface('nav'),
+      openSourceBoard: () => openSurface('board'),
+      openPlan: setOpenPlan,
+      openReceivedPage: setOpenReceivedPage,
     }),
-    [openChangesSurface, openFilesSurface, openSettingsSurface],
+    [openChangesSurface, openFilesSurface, openSurface],
   );
 
   // Expose the shell's panel-opening actions to the deep-link layer so openchamber:// URLs
@@ -242,7 +498,7 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
   const deepLinkHandlers = React.useMemo(
     () => ({
       openSessions: () => {
-        if (isIPad) setIpadSidebarOpen(true);
+        if (isTabletLayout) setSidebarOpen(true);
         else setSessionsSheetOpen(true);
       },
       openView: (target: 'files' | 'mcp' | 'instances' | 'update') => {
@@ -250,9 +506,9 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
           openFilesSurface();
           return;
         }
-        // Phones host MCP as a workspace tab now; iPad still uses the surface.
-        if (target === 'mcp' && !isIPad) {
-          setWorkspaceTab('mcp');
+        // MCP lives in the Status tab now; old links to it land there.
+        if (target === 'mcp') {
+          setWorkspaceTab('status');
           setWorkspaceOpen(true);
           return;
         }
@@ -266,39 +522,54 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
         openSettingsSurface(section ? 'page-content' : 'nav');
       },
     }),
-    [isIPad, openChangesSurface, openFilesSurface, openSettingsSurface, openSurface, setSettingsPage],
+    [isTabletLayout, openChangesSurface, openFilesSurface, openSettingsSurface, openSurface, setSettingsPage],
   );
   useDeepLinkHandlers(deepLinkHandlers);
 
-  // Edge swipes on the chat: left edge opens the sessions drawer (the iPad
-  // sidebar on iPad), right edge reopens the most recent overflow surface
-  // (the last right panel on iPad).
+  // Edge swipes on the chat: the start edge opens the sessions drawer (the
+  // persistent sidebar on a tablet), the end edge the workspace drawer. Each
+  // drawer slides in from the side of its header button: left and right in
+  // LTR, mirrored in RTL.
   const chatMainRef = React.useRef<HTMLElement>(null);
+  const openSessionsFromEdge = () => {
+    if (isTabletLayout) setSidebarOpen(true);
+    else setSessionsSheetOpen(true);
+  };
+  const openWorkspaceFromEdge = () => openWorkspace();
   useEdgeSwipe(chatMainRef, {
-    onLeftEdgeSwipe: () => {
-      if (isIPad) setIpadSidebarOpen(true);
-      else setSessionsSheetOpen(true);
-    },
-    onRightEdgeSwipe: () => {
-      if (isIPad) {
-        if (lastIpadRightPanelRef.current === 'files') openFilesSurface();
-        else openChangesSurface();
-        return;
-      }
-      setWorkspaceOpen(true);
-    },
+    onLeftEdgeSwipe: direction === 'rtl' ? openWorkspaceFromEdge : openSessionsFromEdge,
+    onRightEdgeSwipe: direction === 'rtl' ? openSessionsFromEdge : openWorkspaceFromEdge,
   });
 
-  // Top-most layer first: a plan or fullscreen surface can now sit ABOVE a
-  // drawer (opened from the drawer footer / workspace tabs), so they close
-  // before the drawers underneath.
+  // Settings owns a drill-down of its own (nav → page list → item), so the
+  // hardware back button asks it to step up before the shell closes it.
+  const settingsBackRef = React.useRef<(() => boolean) | null>(null);
+  const registerSettingsBackHandler = React.useCallback((handler: (() => boolean) | null) => {
+    settingsBackRef.current = handler;
+  }, []);
+
+  // Top-most layer first: a plan or fullscreen surface can sit ABOVE a drawer
+  // (opened from the drawer footer / workspace tabs), so they close before the
+  // drawers underneath.
   const handleNativeBack = React.useCallback(() => {
-    if (overflowOpen) {
-      setOverflowOpen(false);
+    // A sheet, dialog, select or menu open on top of everything goes first,
+    // so back inside a surface's editor does not close the whole surface.
+    if (closeTopmostBackLayer()) {
+      return true;
+    }
+    if (openReceivedPage) {
+      setOpenReceivedPage(null);
       return true;
     }
     if (openPlan) {
       setOpenPlan(null);
+      return true;
+    }
+    if (guestPage) {
+      closeGuestPage();
+      return true;
+    }
+    if (activeSurface === 'settings' && settingsBackRef.current?.()) {
       return true;
     }
     if (activeSurface) {
@@ -314,144 +585,131 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
       return true;
     }
     return false;
-  }, [activeSurface, closeSurface, closeWorkspace, openPlan, overflowOpen, sessionsSheetOpen, workspaceOpen]);
+  }, [activeSurface, closeGuestPage, closeSurface, closeWorkspace, guestPage, openPlan, openReceivedPage, sessionsSheetOpen, workspaceOpen]);
 
   useNativeAndroidBackButton(handleNativeBack);
 
-  // Server updates are actionable from a browser (hosted mobile) but not from
-  // the Capacitor shell — the native app updates through the store, and the
-  // server it CONNECTS to is updated elsewhere.
+  // Mobile web has no back button event: the same ladder runs from the
+  // browser's Back, off a history guard held while a layer is open.
+  useMobileWebBackButton(handleNativeBack, Boolean(openPlan || openReceivedPage || guestPage || activeSurface || workspaceOpen || sessionsSheetOpen));
+
+  // The footer update item follows the shared update store, which in the
+  // Capacitor shell tracks the app build (store updates), not the server. The
+  // native app reaches server updates through Settings → About instead.
   const showUpdateItem = !showCapacitorOnlyFeatures
     && updateAvailable
     && (updateRuntimeType === 'desktop' || updateRuntimeType === 'web');
 
-  const openMcpCreateSettings = React.useCallback(() => {
-    const baseName = 'new-mcp-server';
-    let newName = baseName;
-    let counter = 1;
-    while (mcpServers.some((server) => server.name === newName)) {
-      newName = `${baseName}-${counter}`;
-      counter += 1;
-    }
+  // Tablets pack the app-level pages (settings, instances, a plan) into a
+  // centered dialog instead of covering the whole screen.
+  const surfaceVariant = isTabletLayout ? 'dialog' as const : 'fullscreen' as const;
 
-    const draft: McpDraft = {
-      name: newName,
-      scope: 'user',
-      type: 'local',
-      command: [],
-      url: '',
-      environment: [],
-      headers: [],
-      oauthEnabled: true,
-      oauthClientId: '',
-      oauthClientSecret: '',
-      oauthScope: '',
-      oauthRedirectUri: '',
-      timeout: '',
-      enabled: true,
-    };
-
-    setMcpDraft(draft);
-    setSelectedMcp(newName);
-    setSettingsPage('mcp');
-    openSettingsSurface('page-content');
-  }, [mcpServers, openSettingsSurface, setMcpDraft, setSelectedMcp, setSettingsPage]);
-
-  const refreshMcpOverlay = React.useCallback(() => {
-    if (isMcpRefreshing) return;
-    setIsMcpRefreshing(true);
-    const directory = currentDirectory || null;
-    const minSpinPromise = new Promise((resolve) => window.setTimeout(resolve, 500));
-    void Promise.all([
-      refreshMcpStatus({ directory, silent: true }),
-      loadMcpConfigs({ force: true }),
-      minSpinPromise,
-    ]).finally(() => setIsMcpRefreshing(false));
-  }, [currentDirectory, isMcpRefreshing, loadMcpConfigs, refreshMcpStatus]);
-
-  const overflowItems: OverflowItem[] = React.useMemo(
-    () => {
-      const items: OverflowItem[] = [];
-      // Phones get Files/Changes/Terminal as workspace-drawer tabs; the iPad
-      // exposes Files/Changes as header shortcuts and keeps Terminal here.
-      if (isIPad) {
-        items.push({
-          key: 'terminal',
-          icon: 'terminal',
-          label: t('mobile.menu.terminal'),
-          onSelect: () => openSurface('terminal'),
-        });
-      }
-      items.push({
-        key: 'mcp',
-        iconNode: <McpIcon className="size-5 shrink-0 text-muted-foreground" />,
-        label: t('mobile.menu.mcp'),
-        onSelect: () => openSurface('mcp'),
-      });
-      items.push({
-        key: 'notes',
-        icon: 'sticky-note',
-        label: t('contextRail.surface.notes'),
-        onSelect: () => openSurface('notes'),
-      });
-      if (showCapacitorOnlyFeatures) {
-        items.push({
-          key: 'instances',
-          icon: 'server',
-          label: t('mobile.menu.instances'),
-          onSelect: () => openSurface('instances'),
-        });
-      }
-      if (showUpdateItem) {
-        items.push({
-          key: 'update',
-          icon: 'download',
-          label: t('mobile.menu.update'),
-          onSelect: () => openSurface('update'),
-        });
-      }
-      items.push({
-        key: 'settings',
-        icon: 'settings-3',
-        label: t('mobile.menu.settings'),
-        onSelect: () => openSettingsSurface('nav'),
-      });
-      return items;
-    },
-    [isIPad, openSettingsSurface, openSurface, showCapacitorOnlyFeatures, showUpdateItem, t],
+  // App-level footer of the sessions list — the same on a phone drawer and a
+  // tablet sidebar: connected instance, pending web update, settings.
+  const overviewAvailable = useUIStore((state) => state.overviewFeatureAvailable);
+  const sessionsFooter = React.useMemo(
+    () => ({
+      instanceLabel: showCapacitorOnlyFeatures ? getAutoConnectTargetLabel() : null,
+      onOpenInstances: showCapacitorOnlyFeatures ? () => openSurface('instances') : undefined,
+      onOpenSettings: () => openSettingsSurface('nav'),
+      onOpenUsage: () => openSurface('usage'),
+      onOpenScheduled: () => openSurface('scheduled'),
+      onOpenArchive: () => openSurface('archive'),
+      onOpenOverview: overviewAvailable ? () => openSurface('overview') : undefined,
+      onOpenSourceBoard: () => openSurface('board'),
+      onOpenUpdate: showUpdateItem ? () => openSurface('update') : undefined,
+    }),
+    [openSettingsSurface, openSurface, overviewAvailable, showCapacitorOnlyFeatures, showUpdateItem],
   );
+
+  // A started run or a loop file to edit replaces the page: back to the chat,
+  // with the files drawer on top for a loop file.
+  const leaveScheduledTasks = React.useCallback((reason: ScheduledTasksLeaveReason) => {
+    closeSurface();
+    setSessionsSheetOpen(false);
+    if (reason === 'file') openFilesSurface();
+  }, [closeSurface, openFilesSurface]);
+
+  // A session started from the board replaces the page: back to the chat.
+  const leaveSourceBoard = React.useCallback(() => {
+    closeSurface();
+    setSessionsSheetOpen(false);
+  }, [closeSurface]);
+
+  // A session opened from the overview replaces the page: back to the chat.
+  const leaveOverview = React.useCallback(() => {
+    closeSurface();
+    setSessionsSheetOpen(false);
+    if (isTabletLayout && !persistentSidebar) setSidebarOpen(false);
+  }, [closeSurface, isTabletLayout, persistentSidebar]);
+
+  // An opened archived session replaces the page: back to the chat, the same
+  // way picking a session from the list gives the space back.
+  const leaveArchive = React.useCallback(() => {
+    closeSurface();
+    setSessionsSheetOpen(false);
+    if (isTabletLayout && !persistentSidebar) setSidebarOpen(false);
+  }, [closeSurface, isTabletLayout, persistentSidebar]);
+
 
   return (
     <DedicatedMobileAppProvider actions={mobileActions}>
       <div
-        className="oc-mobile-app-shell main-content-safe-area flex h-[100dvh] flex-row bg-background text-foreground"
+        className="oc-mobile-app-shell main-content-safe-area oc-side-safe-area flex h-[100dvh] flex-row bg-background text-foreground"
         data-page-scroll-lock="true"
       >
         {/* iPad: persistent full-height sessions sidebar; the chat column and
             its header butt against it (iPadOS-style split layout). Always
-            mounted so open/close animates width, same as the desktop Sidebar. */}
-        {isIPad ? (
+            mounted, so it slides in and out (useIpadPanelSlide). */}
+        {isTabletLayout ? (
           <aside
             ref={leftResize.asideRef}
             className={cn(
-              'relative flex h-full shrink-0 flex-col overflow-hidden border-r border-border/70 bg-sidebar will-change-[width] motion-reduce:transition-none',
-              !ipadSidebarOpen && 'border-r-0',
+              // bg-background, not bg-sidebar: the session/worktree/project
+              // rows are opaque bg-background (the swipe actions live under
+              // them), so a tinted sidebar would show through as row-shaped
+              // bands. Same surface as the phone drawer.
+              // The aside only holds the space; the surface and its edge are
+              // on the panel inside, which slides as one piece.
+              'oc-ipad-sidebar relative flex h-full shrink-0 flex-col overflow-hidden',
             )}
             style={{
-              width: ipadSidebarOpen ? leftResize.width : 0,
-              minWidth: ipadSidebarOpen ? leftResize.width : 0,
-              maxWidth: ipadSidebarOpen ? leftResize.width : 0,
+              width: sidebarWidth,
+              minWidth: sidebarWidth,
+              maxWidth: sidebarWidth,
               ['--oc-ipad-sidebar-width' as string]: `${leftResize.width}px`,
               overflowX: 'clip',
-              paddingTop: 'var(--oc-safe-area-top, 0px)',
-              transitionProperty: leftResize.isResizing ? 'none' : 'width, min-width, max-width',
-              transitionDuration: '200ms',
-              transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
             }}
-            aria-hidden={!ipadSidebarOpen}
+            aria-hidden={!sidebarOpen}
             data-page-scroll-lock="true"
           >
-            {ipadSidebarOpen ? (
+            <div
+              className={cn(
+                'flex h-full shrink-0 flex-col border-e border-edge bg-background transition-[translate] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
+                leftResize.isResizing && 'pointer-events-none',
+                !sidebarOpen && 'pointer-events-none select-none',
+              )}
+              style={{ width: 'var(--oc-ipad-sidebar-width)', overflowX: 'hidden', paddingTop: 'var(--oc-safe-area-top, 0px)', translate: leftSlide.inPlace ? undefined : offStart }}
+            >
+              <ErrorBoundary>
+                <MobileSessionsSheet
+                  // Through the closing slide too: the list stays on screen
+                  // until it has slid away.
+                  open={leftSlide.placed}
+                  variant="sidebar"
+                  // The surface asks to close after picking a session/project
+                  // or creating a worktree: give the space back to the chat
+                  // where the sidebar is a guest, keep it put where it is not.
+                  onOpenChange={(value) => {
+                    if (!value && !persistentSidebar) setSidebarOpen(false);
+                  }}
+                  footer={sessionsFooter}
+                />
+              </ErrorBoundary>
+            </div>
+            {/* After the content, not before it: panes stack their own overlays
+                and the handle has to sit above every one of them. */}
+            {sidebarOpen ? (
               <IpadSidebarResizeHandle
                 side="left"
                 isResizing={leftResize.isResizing}
@@ -459,44 +717,14 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
                 handleProps={leftResize.handleProps}
               />
             ) : null}
-            <div
-              className={cn(
-                'flex h-full shrink-0 flex-col transition-opacity duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
-                leftResize.isResizing && 'pointer-events-none',
-                !ipadSidebarOpen && 'pointer-events-none select-none opacity-0',
-              )}
-              style={{ width: 'var(--oc-ipad-sidebar-width)', overflowX: 'hidden' }}
-            >
-              <ErrorBoundary>
-                <MobileSessionsSheet
-                  open
-                  variant="sidebar"
-                  // The surface asks to close after picking a session/project or
-                  // creating a worktree; the persistent landscape sidebar stays
-                  // put, portrait gives the space back to the chat.
-                  onOpenChange={(value) => {
-                    if (!value && isPortrait) setIpadSidebarOpen(false);
-                  }}
-                />
-              </ErrorBoundary>
-            </div>
           </aside>
         ) : null}
 
         <div className="flex h-full min-w-0 flex-1 flex-col" data-page-scroll-lock="true">
           <MobileHeader
-            onOpenSessions={() => (isIPad ? toggleIpadSidebar() : setSessionsSheetOpen(true))}
-            // Phones dropped the overflow menu: its items live in the sessions
-            // drawer footer and the workspace tabs now. iPad keeps it until
-            // the dedicated iPad layout pass.
-            onOpenMenu={isIPad ? () => setOverflowOpen(true) : undefined}
-            onOpenWorkspace={isIPad ? undefined : () => setWorkspaceOpen(true)}
-            surfaceShortcuts={isIPad ? {
-              activePanel: ipadRightPanel,
-              changesDirty: dirtyChangeCount > 0,
-              onToggleFiles: () => toggleIpadRightPanel('files'),
-              onToggleChanges: () => toggleIpadRightPanel('changes'),
-            } : undefined}
+            onOpenSessions={() => (isTabletLayout ? toggleSidebar() : setSessionsSheetOpen(true))}
+            onOpenWorkspace={openWorkspace}
+            compactTitle={isTabletLayout}
           />
           <main ref={chatMainRef} className="relative min-h-0 flex-1 overflow-hidden" data-page-scroll-lock="true">
             <div className="h-full w-full">
@@ -504,193 +732,87 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
                 <ChatView />
               </ErrorBoundary>
             </div>
+            <ErrorBoundary><RunOverview /></ErrorBoundary>
           </main>
         </div>
-
-        {/* iPad: Changes/Files live in a full-height right sidebar instead of
-            the phone's fullscreen surfaces. Width animates like the desktop
-            RightSidebar; content stays mounted through the collapse. */}
-        {isIPad ? (
-          <aside
-            ref={rightResize.asideRef}
-            className={cn(
-              'relative flex h-full shrink-0 flex-col overflow-hidden border-l border-border/70 bg-background will-change-[width] motion-reduce:transition-none',
-              !ipadRightPanel && 'border-l-0',
-            )}
-            style={{
-              width: ipadRightPanel ? rightResize.width : 0,
-              minWidth: ipadRightPanel ? rightResize.width : 0,
-              maxWidth: ipadRightPanel ? rightResize.width : 0,
-              ['--oc-ipad-sidebar-width' as string]: `${rightResize.width}px`,
-              overflowX: 'clip',
-              paddingTop: 'var(--oc-safe-area-top, 0px)',
-              transitionProperty: rightResize.isResizing ? 'none' : 'width, min-width, max-width',
-              transitionDuration: '200ms',
-              transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
-            }}
-            aria-hidden={!ipadRightPanel}
-            data-page-scroll-lock="true"
-          >
-            {ipadRightPanel ? (
-              <IpadSidebarResizeHandle
-                side="right"
-                isResizing={rightResize.isResizing}
-                ariaLabel={t('sidebar.resize.rightPanelAria')}
-                handleProps={rightResize.handleProps}
-              />
-            ) : null}
-            <div
-              className={cn(
-                'flex h-full shrink-0 flex-col transition-opacity duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
-                rightResize.isResizing && 'pointer-events-none',
-                !ipadRightPanel && 'pointer-events-none select-none opacity-0',
-              )}
-              style={{ width: 'var(--oc-ipad-sidebar-width)', overflowX: 'hidden' }}
-            >
-              {ipadRightContentMounted ? (
-                <ErrorBoundary>
-                  {renderedIpadRightPanel === 'files' ? (
-                    <MobileFilesSurface onClose={closeIpadRightPanel} />
-                  ) : (
-                    <MobileChangesSurface
-                      onClose={closeIpadRightPanel}
-                      initialDiffPath={pendingChangesDiff?.path ?? null}
-                      initialDiffStaged={pendingChangesDiff?.staged === true}
-                    />
-                  )}
-                </ErrorBoundary>
-              ) : null}
-            </div>
-          </aside>
-        ) : null}
-
-        {isIPad ? (
-          <MobileOverflowMenu
-            open={overflowOpen}
-            onClose={() => setOverflowOpen(false)}
-            items={overflowItems}
-            rightOffset={ipadRightPanel ? rightResize.width : 0}
-          />
-        ) : null}
 
         {/* Mounted permanently on phones (parked off-screen while closed) so
             the sessions/worktree state stays warm and the drawer opens with
             data already on screen — see MobileSessionsDrawerContainer. */}
-        {!isIPad ? (
+        {!isTabletLayout ? (
           <MobileSessionsSheet
             open={sessionsSheetOpen}
             onOpenChange={setSessionsSheetOpen}
-            footer={{
-              instanceLabel: showCapacitorOnlyFeatures ? getAutoConnectTargetLabel() : null,
-              onOpenInstances: showCapacitorOnlyFeatures ? () => openSurface('instances') : undefined,
-              onOpenSettings: () => openSettingsSurface('nav'),
-              onOpenUpdate: showUpdateItem ? () => openSurface('update') : undefined,
-            }}
+            footer={sessionsFooter}
           />
         ) : null}
 
-        {/* Mounted only while open (like the sessions sheet) so each surface
-            computes its safe-area / fixed-position layout fresh on open. Keeping
-            them always-mounted left a stale startup layout, which made the
-            top-inset dimming appear only intermittently on iOS. */}
-        {!isIPad ? (
-          <MobileWorkspaceDrawer
-            open={workspaceOpen}
-            onClose={closeWorkspace}
-            tab={workspaceTab}
-            onTabChange={setWorkspaceTab}
-            pendingChangesDiff={pendingChangesDiff}
-            onOpenPlan={setOpenPlan}
-            onOpenMcpSettings={openMcpCreateSettings}
-          />
-        ) : null}
-
-        {activeSurface === 'terminal' ? (
-          <MobileFullscreenSurface
-            open
-            onClose={closeSurface}
-            ariaLabel={t('mobile.menu.terminal')}
-            title={t('mobile.menu.terminal')}
-            disableEscapeDismiss
-          >
-            <ErrorBoundary>
-              <TerminalView visible />
-            </ErrorBoundary>
-          </MobileFullscreenSurface>
-        ) : null}
-
-        {activeSurface === 'mcp' ? (
-          <MobileFullscreenSurface
-            open
-            onClose={closeSurface}
-            ariaLabel={t('mcpDropdown.title')}
-            title={t('mcpDropdown.title')}
-            trailing={(
-              <>
-                <button
-                  type="button"
-                  className="flex size-10 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  onClick={openMcpCreateSettings}
-                  aria-label={t('settings.mcp.sidebar.actions.addServerTitle')}
-                  title={t('settings.mcp.sidebar.actions.addServerTitle')}
-                  style={{ touchAction: 'manipulation' }}
-                >
-                  <Icon name="add" className="size-5" />
-                </button>
-                <button
-                  type="button"
-                  className="flex size-10 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  onClick={refreshMcpOverlay}
-                  disabled={isMcpRefreshing}
-                  aria-label={t('mcpDropdown.actions.refreshAria')}
-                  title={t('mcpDropdown.actions.refreshAria')}
-                  style={{ touchAction: 'manipulation' }}
-                >
-                  <Icon name="refresh" className={cn('size-5', isMcpRefreshing && 'animate-spin')} />
-                </button>
-              </>
+        {/* Keep the workspace in the same tree position across size classes.
+            Keyboard resizing and folding can both cross the tablet threshold;
+            neither should discard the open editor, its draft, or its focus.
+            Outside panel mode the drawer portals out and this aside stays at 0. */}
+        <aside
+          ref={rightResize.asideRef}
+          className={cn(
+            'relative flex h-full shrink-0 flex-col overflow-hidden',
+          )}
+          style={{
+            width: workspacePanelWidth,
+            minWidth: workspacePanelWidth,
+            maxWidth: workspacePanelWidth,
+            ['--oc-ipad-sidebar-width' as string]: `${rightResize.width}px`,
+            overflowX: 'clip',
+          }}
+          aria-hidden={!workspacePanelWidth}
+          data-page-scroll-lock="true"
+        >
+          <div
+            className={cn(
+              'flex h-full min-h-0 shrink-0 flex-col transition-[translate] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none',
+              workspaceAsPanel && 'border-s border-edge bg-background',
+              rightResize.isResizing && 'pointer-events-none',
+              !workspaceSlide.inPlace && 'pointer-events-none select-none',
             )}
+            style={{ width: 'var(--oc-ipad-sidebar-width)', overflowX: 'hidden', paddingTop: 'var(--oc-safe-area-top, 0px)', translate: workspaceSlide.inPlace ? undefined : offEnd }}
           >
             <ErrorBoundary>
-              <McpDropdownContent
-                active
-                className="h-full"
-                listClassName="max-h-none"
-                hideHeader
-                mobileListDensity
-              />
-            </ErrorBoundary>
-          </MobileFullscreenSurface>
-        ) : null}
-
-        {activeSurface === 'notes' ? (
-          <MobileFullscreenSurface
-            open
-            onClose={closeSurface}
-            ariaLabel={t('contextRail.surface.notes')}
-            title={t('contextRail.surface.notes')}
-          >
-            <ErrorBoundary>
-              <ProjectContextPanel
-                onActionComplete={closeSurface}
+              <MobileWorkspaceDrawer
+                // As a panel it stays open through its closing slide.
+                open={workspaceAsPanel ? workspaceSlide.placed : workspaceOpen}
+                onClose={closeWorkspace}
+                tab={workspaceTab}
+                onTabChange={setWorkspaceTab}
+                pendingChangesDiff={pendingChangesDiff}
+                pendingChangesCommit={pendingChangesCommit}
                 onOpenPlan={setOpenPlan}
+                onOpenReceivedPage={setOpenReceivedPage}
+                variant={workspaceAsPanel ? 'panel' : 'drawer'}
               />
             </ErrorBoundary>
-          </MobileFullscreenSurface>
-        ) : null}
+          </div>
+          {workspaceAsPanel && workspaceOpen ? (
+            <IpadSidebarResizeHandle
+              side="right"
+              isResizing={rightResize.isResizing}
+              ariaLabel={t('sidebar.resize.rightPanelAria')}
+              handleProps={rightResize.handleProps}
+            />
+          ) : null}
+        </aside>
 
-        {/* Layered above whichever surface opened it — the notes fullscreen
-            surface (iPad) or the workspace drawer's Notes tab (phones). */}
+        {/* Layered above the workspace drawer's Notes tab, which opened it. */}
         {openPlan ? (
           <MobileFullscreenSurface
             open
+            variant={surfaceVariant}
             onClose={() => setOpenPlan(null)}
             ariaLabel={openPlan.title}
             title={openPlan.title}
           >
             <ErrorBoundary>
               <PlanView
-                targetPath={openPlan.path}
+                savedProjectPlan={{ projectRef: openPlan.projectRef, planId: openPlan.id }}
+                onClose={() => setOpenPlan(null)}
                 onNavigatedToChat={() => {
                   closeSurface();
                   closeWorkspace();
@@ -700,9 +822,61 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
           </MobileFullscreenSurface>
         ) : null}
 
+        {openReceivedPage ? (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            onClose={() => setOpenReceivedPage(null)}
+            ariaLabel={openReceivedPage.title}
+            title={openReceivedPage.title}
+          >
+            <ErrorBoundary>
+              <ReceivedPagePanel
+                receivedId={openReceivedPage.receivedId}
+                onAddedToChat={() => {
+                  // Both layers close first, so the page's focus restore (to the drawer row that
+                  // opened it) runs before the composer takes focus. The phone's composer is a pill
+                  // that grows into the editor only inside a tap, as here: its own expand does it.
+                  flushSync(() => {
+                    setOpenReceivedPage(null);
+                    closeWorkspace();
+                  });
+                  const pill = document.querySelector<HTMLElement>('[data-composer-morph-prompt="true"]');
+                  if (pill) pill.click();
+                  else focusChatInput();
+                }}
+              />
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        ) : null}
+
+        {guestPage ? (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            dialogAlign="app"
+            onClose={closeGuestPage}
+            ariaLabel={guestPage.pageTitle ?? guestPage.name}
+            title={guestPage.pageTitle ?? guestPage.name}
+            // Escape inside the page belongs to the page; the back arrow closes it.
+            disableEscapeDismiss
+          >
+            <ErrorBoundary>
+              <React.Suspense fallback={null}>
+                <PluginPane key={guestPage.id} mode={pluginModeFromId(guestPage.id)} surface="page" />
+              </React.Suspense>
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        ) : null}
+
+        {/* Attach dialogs, hidden frames for slash commands and background actions. */}
+        <ErrorBoundary><GuestHosts /></ErrorBoundary>
+
         {activeSurface === 'instances' && showCapacitorOnlyFeatures ? (
           <MobileFullscreenSurface
             open
+            variant={surfaceVariant}
+            dialogAlign="app"
             onClose={closeSurface}
             ariaLabel={t('mobile.menu.instances')}
             title={t('mobile.menu.instances')}
@@ -717,6 +891,8 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
         {activeSurface === 'settings' ? (
           <MobileFullscreenSurface
             open
+            variant={surfaceVariant}
+            dialogAlign="app"
             onClose={closeSurface}
             ariaLabel={t('mobile.menu.settings')}
             headerless
@@ -726,13 +902,87 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
                 forceMobile
                 isWindowed
                 initialMobileStage={settingsInitialMobileStage}
-                // About exists for server updates — meaningful in a browser
-                // (hosted mobile), not in the Capacitor shell (store updates).
-                visiblePageSlugs={MOBILE_SETTINGS_PAGES.filter(
-                  (page) => !(showCapacitorOnlyFeatures && page === 'about'),
-                )}
+                registerBackHandler={registerSettingsBackHandler}
+                // About is shown in the native app too: there it checks and
+                // installs updates of the connected server (AboutSettings).
+                visiblePageSlugs={[...MOBILE_SETTINGS_PAGES]}
                 onClose={closeSurface}
               />
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        ) : null}
+
+        {activeSurface === 'usage' ? (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            dialogAlign="app"
+            onClose={closeSurface}
+            ariaLabel={t('usageStats.title')}
+            title={t('usageStats.title')}
+          >
+            <ErrorBoundary>
+              <UsageStatsView />
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        ) : null}
+
+        {activeSurface === 'scheduled' ? (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            dialogAlign="app"
+            onClose={closeSurface}
+            ariaLabel={t('sessions.scheduledTasks.dialog.title')}
+            title={t('sessions.scheduledTasks.dialog.title')}
+          >
+            <ErrorBoundary>
+              <ScheduledTasksView layout="mobile" onLeave={leaveScheduledTasks} />
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        ) : null}
+
+        {activeSurface === 'board' ? (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            dialogAlign="app"
+            onClose={closeSurface}
+            ariaLabel={t('sourceBoard.title')}
+            headerless
+          >
+            <ErrorBoundary>
+              <MobileSourceBoard onLeave={leaveSourceBoard} onClose={closeSurface} />
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        ) : null}
+
+        {activeSurface === 'overview' && overviewAvailable ? (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            dialogAlign="app"
+            onClose={closeSurface}
+            ariaLabel={t('overview.title')}
+            title={t('overview.title')}
+          >
+            <ErrorBoundary>
+              <OverviewPage layout="mobile" onLeave={leaveOverview} />
+            </ErrorBoundary>
+          </MobileFullscreenSurface>
+        ) : null}
+
+        {activeSurface === 'archive' ? (
+          <MobileFullscreenSurface
+            open
+            variant={surfaceVariant}
+            dialogAlign="app"
+            onClose={closeSurface}
+            ariaLabel={t('sessions.archivePage.title')}
+            title={t('sessions.archivePage.title')}
+          >
+            <ErrorBoundary>
+              <ArchiveSessionsView layout="mobile" onLeave={leaveArchive} />
             </ErrorBoundary>
           </MobileFullscreenSurface>
         ) : null}
@@ -740,14 +990,16 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
         {activeSurface === 'update' ? (
           <MobileFullscreenSurface
             open
+            variant={surfaceVariant}
+            dialogAlign="app"
             onClose={closeSurface}
             ariaLabel={t('mobile.menu.update')}
             title={t('mobile.menu.update')}
           >
             <ErrorBoundary>
-              <div className="h-full overflow-auto px-5 py-4">
+              <ScrollableOverlay outerClassName="h-full" className="px-5 py-4" disableHorizontal>
                 <AboutSettings initialUpdateDialogOpen />
-              </div>
+              </ScrollableOverlay>
             </ErrorBoundary>
           </MobileFullscreenSurface>
         ) : null}
@@ -756,7 +1008,8 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
   );
 };
 
-export function MobileApp({ apis }: MobileAppProps) {
+function MobileAppContent({ apis }: MobileAppProps) {
+  const isolatedSpacesEnabled = useUIStore((state) => state.isolatedSpacesEnabled);
   const { t } = useI18n();
   const initializeApp = useConfigStore((state) => state.initializeApp);
   const isInitialized = useConfigStore((state) => state.isInitialized);
@@ -770,9 +1023,17 @@ export function MobileApp({ apis }: MobileAppProps) {
   const error = useSessionUIStore((state) => state.error);
   const clearError = useSessionUIStore((state) => state.clearError);
   const setIsMobile = useUIStore((state) => state.setIsMobile);
-  const refreshGitHubAuthStatus = useGitHubAuthStore((state) => state.refreshStatus);
-  const setPlanModeEnabled = useFeatureFlagsStore((state) => state.setPlanModeEnabled);
-  const projects = useProjectsStore((state) => state.projects);
+  const refreshSourceControlAuth = useSourceControlAuthStore((state) => state.refreshAll);
+  const refreshSourceControlProviders = useSourceControlProviderRegistry((state) => state.refresh);
+  // The mobile shell has no layout-level session list sync, so a lost
+  // `session.deleted` is reconciled here from the same complete global
+  // active+archived snapshots, refreshed whenever the sessions sheet opens.
+  const authoritativeSessions = useGlobalSessionsStore((state) => state.authoritativeSessions);
+  const cleanupSessions = React.useMemo(() => authoritativeSessions ?? [], [authoritativeSessions]);
+  useAuthoritativeSessionCleanup({
+    hasAuthoritativeGlobalSessions: authoritativeSessions != null,
+    sessions: cleanupSessions,
+  });
   const [connectionEpoch, setConnectionEpoch] = React.useState(0);
   const [runtimeEndpointEpoch, setRuntimeEndpointEpoch] = React.useState(0);
   const [showConnectionRecovery, setShowConnectionRecovery] = React.useState(false);
@@ -805,9 +1066,11 @@ export function MobileApp({ apis }: MobileAppProps) {
       // saved instance instead of dead-ending on the connect screen until the
       // user restarts the app. Success fires runtime-endpoint-changed, which
       // re-bootstraps everything.
+      logMobileConnectEvent('resume:auto-connect', {});
       void autoConnectLastInstance();
       return;
     }
+    logMobileConnectEvent('resume:reprobe', {});
 
     // Re-probe the active device's transports on resume: the network may have
     // changed while the app slept, so hot-switch LAN⇄relay if a better transport
@@ -816,48 +1079,79 @@ export function MobileApp({ apis }: MobileAppProps) {
     // only refresh in place when the transport is 'unchanged'.
     const refreshInPlace = () => {
       void initializeApp();
-      void refreshGitHubAuthStatus(apis.github, { force: true });
+      void refreshSourceControlProviders(apis.sourceControl);
+      void refreshSourceControlAuth(apis.sourceControl, { force: true });
+      void refreshTrackers(apis.trackers);
       if (providersCount === 0) void loadProviders({ source: 'mobileApp:nativeResume' });
       if (agentsCount === 0) void loadAgents({ source: 'mobileApp:nativeResume' });
     };
-    const disconnect = () => {
-      switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+    const disconnect = (reason: string) => {
+      logMobileConnectEvent('resume:disconnect', { reason });
+      switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: MOBILE_DISCONNECTED_RUNTIME_KEY });
       setConnectionEpoch((value) => value + 1);
     };
 
     void reprobeActiveConnection().then((outcome) => {
       if (nativeResumeValidationSeqRef.current !== validationSeq) return;
       if (outcome === 'no-connection') {
-        disconnect();
+        disconnect('no-connection');
         return;
       }
       if (outcome === 'needs-login') {
         // Token explicitly rejected (revoked/expired) — tell the user why they
         // land back on the connect screen instead of silently bouncing them.
         setAutoConnectNotice({ kind: 'auth-expired', label: getAutoConnectTargetLabel() ?? '' });
-        disconnect();
+        disconnect('needs-login');
+        return;
+      }
+      if (outcome === 'relay-limit') {
+        // The relay refused this device over its limits. The parked tunnel
+        // makes no attempt of its own, so the grace ladder below would only
+        // keep the user on a frozen session. The connect screen says why;
+        // tapping the instance, or the next resume/online, tries again.
+        setAutoConnectNotice({ kind: 'relay-limit', label: getAutoConnectTargetLabel() ?? '' });
+        disconnect('relay-limit');
         return;
       }
       if (outcome === 'unreachable') {
         // Right after a resume or Wi-Fi switch the network is often still
-        // settling (on Android without a SIM there is NO connectivity at all for
-        // a few seconds), so a single fast probe races the network coming up.
-        // Retry once after a grace period before tearing the connection down.
-        window.setTimeout(() => {
-          if (nativeResumeValidationSeqRef.current !== validationSeq) return;
-          void reprobeActiveConnection().then((retry) => {
+        // settling (Android without a SIM has NO connectivity for a few
+        // seconds; a WireGuard tunnel re-handshakes; a relay cold start pays
+        // TLS + WS + E2EE before it can answer), so a single fast probe races
+        // the network coming up. Retry on a widening grace ladder before
+        // tearing the connection down — the last attempt runs with the full
+        // connect budget so slow-but-alive transports get a real chance.
+        const retryDelaysMs = [4000, 10000];
+        const retryAt = (attempt: number) => {
+          window.setTimeout(() => {
             if (nativeResumeValidationSeqRef.current !== validationSeq) return;
-            if (retry === 'switched') return;
-            if (retry === 'unchanged') {
-              refreshInPlace();
-              return;
-            }
-            if (retry === 'needs-login') {
-              setAutoConnectNotice({ kind: 'auth-expired', label: getAutoConnectTargetLabel() ?? '' });
-            }
-            disconnect();
-          });
-        }, 4000);
+            const lastAttempt = attempt === retryDelaysMs.length - 1;
+            void reprobeActiveConnection({ fast: !lastAttempt }).then((retry) => {
+              if (nativeResumeValidationSeqRef.current !== validationSeq) return;
+              if (retry === 'switched') return;
+              if (retry === 'unchanged') {
+                refreshInPlace();
+                return;
+              }
+              if (retry === 'needs-login') {
+                setAutoConnectNotice({ kind: 'auth-expired', label: getAutoConnectTargetLabel() ?? '' });
+                disconnect('retry-needs-login');
+                return;
+              }
+              if (retry === 'relay-limit') {
+                setAutoConnectNotice({ kind: 'relay-limit', label: getAutoConnectTargetLabel() ?? '' });
+                disconnect('retry-relay-limit');
+                return;
+              }
+              if (!lastAttempt) {
+                retryAt(attempt + 1);
+                return;
+              }
+              disconnect(`retry-${retry}`);
+            });
+          }, retryDelaysMs[attempt]);
+        };
+        retryAt(0);
         return;
       }
       if (outcome === 'switched') return;
@@ -870,7 +1164,7 @@ export function MobileApp({ apis }: MobileAppProps) {
       lastNativeResumeSyncEventAtRef.current = now;
       window.dispatchEvent(new Event('openchamber:system-resume'));
     }
-  }, [agentsCount, apis.github, initializeApp, loadAgents, loadProviders, providersCount, refreshGitHubAuthStatus]);
+  }, [agentsCount, apis.sourceControl, apis.trackers, initializeApp, loadAgents, loadProviders, providersCount, refreshSourceControlAuth, refreshSourceControlProviders]);
 
   useNativeMobileChrome();
   useNativeMobileLifecycle(handleNativeResume);
@@ -898,6 +1192,35 @@ export function MobileApp({ apis }: MobileAppProps) {
     };
   }, [isNativeMobileApp, handleNativeResume]);
 
+  // A confirmed mid-session auth expiry (classified centrally from live 401
+  // traffic) runs the same seq-guarded re-probe the resume path uses: it ends
+  // in needs-login → the native welcome screen with the auth-expired notice.
+  // The shared web banner never renders on native (the session gate is not
+  // mounted here), so this is the only surface reacting to the signal.
+  React.useEffect(() => {
+    if (!isNativeMobileApp) return;
+    return useAuthSessionStore.subscribe((store, previous) => {
+      if (store.state === 'expired' && previous.state !== 'expired') {
+        handleNativeResume();
+        // The probe ladder owns the outcome from here; the shared store goes
+        // back to 'ok' so a later expiry can signal again.
+        useAuthSessionStore.getState().markAuthenticated();
+      }
+    });
+  }, [isNativeMobileApp, handleNativeResume]);
+
+  // The runtime tunnel can be refused over the relay's limits on a reconnect
+  // while the app is in the foreground. It then parks without a resume to
+  // wake it, and the shell would sit on "reconnecting" over a frozen session.
+  // The resume re-probe settles it: a reachable LAN takes over, otherwise the
+  // connect screen explains the refusal.
+  React.useEffect(() => {
+    if (!isNativeMobileApp) return;
+    return subscribeActiveRelayTunnelStatus((status) => {
+      if (isRelayLimitReached(status)) handleNativeResume();
+    });
+  }, [isNativeMobileApp, handleNativeResume]);
+
   React.useEffect(() => {
     registerRuntimeAPIs(apis);
     return () => registerRuntimeAPIs(null);
@@ -909,6 +1232,15 @@ export function MobileApp({ apis }: MobileAppProps) {
   // stale. The SyncProvider is keyed by runtimeEndpointEpoch so it remounts too.
   React.useEffect(() => {
     return subscribeRuntimeEndpointChanged((detail) => {
+      // Catch-all trail entry: EVERY endpoint change lands here regardless of
+      // which code path triggered it, so a "kicked to the connect screen"
+      // report always shows what dropped the runtime even when the trigger
+      // itself is not instrumented.
+      logMobileConnectEvent('endpoint:changed', {
+        runtimeKey: detail.runtimeKey || 'none',
+        previousRuntimeKey: detail.previousRuntimeKey || 'none',
+        connected: Boolean(detail.apiBaseUrl),
+      });
       // A LAN⇄relay swap for the SAME device keeps the runtime key stable. Treat
       // that as a transport-only change: rebind the sync layer to the new
       // transport but keep the user's session/connection state — no reconnecting
@@ -945,24 +1277,36 @@ export function MobileApp({ apis }: MobileAppProps) {
     }
     let cancelled = false;
     setAutoConnectPhase('attempting');
-    void autoConnectLastInstance()
-      .catch((): AutoConnectOutcome => ({ status: 'no-candidate' }))
-      .then((outcome) => {
-        if (cancelled) return;
-        // Landing on the connect screen silently reads as data loss — say WHY
-        // the saved instance didn't come back (unreachable vs revoked auth).
-        if (outcome.status === 'unreachable') {
-          setAutoConnectNotice({ kind: 'unreachable', label: outcome.label });
-        } else if (outcome.status === 'needs-login') {
-          setAutoConnectNotice({ kind: 'auth-expired', label: outcome.label });
-        }
-        setAutoConnectPhase('done');
-      });
+    void (async () => {
+      const outcome = await autoConnectLastInstance()
+        .catch((): AutoConnectOutcome => ({ status: 'no-candidate' }));
+      if (cancelled) return;
+      // Landing on the connect screen silently reads as data loss — say WHY
+      // the saved instance didn't come back (unreachable vs revoked auth).
+      if (outcome.status === 'unreachable' || outcome.status === 'relay-limit') {
+        setAutoConnectNotice({ kind: outcome.status, label: outcome.label });
+      } else if (outcome.status === 'needs-login') {
+        setAutoConnectNotice({ kind: 'auth-expired', label: outcome.label });
+      }
+      // Release the splash on the fast verdict — a dead server must not pin
+      // the logo for the full connect budget. The fast probe races a
+      // just-woken network/relay (WireGuard re-handshake, relay TLS + WS +
+      // E2EE cold start), so a false "unreachable" is common right after
+      // launch: retry once IN THE BACKGROUND with the full budget. A success
+      // switches the runtime and the app moves in from the connect screen on
+      // its own; a manual connect the user started meanwhile wins via
+      // skipIfConnected. A relay refusal over its limits gets no such retry:
+      // dialing again at once only counts against the same limits.
+      setAutoConnectPhase('done');
+      if (outcome.status === 'unreachable') {
+        void autoConnectLastInstance({ fast: false, skipIfConnected: true }).catch(() => null);
+      }
+    })();
     return () => {
       cancelled = true;
     };
     // Run once on mount — auto-connect is a cold-launch concern only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Cold launch with a PERSISTED runtime endpoint (the auto-connect effect
@@ -978,8 +1322,9 @@ export function MobileApp({ apis }: MobileAppProps) {
     if (!isNativeMobileApp || !getRuntimeApiBaseUrl()) return;
     let cancelled = false;
     const dropToConnectScreen = (notice: MobileConnectionNotice | null) => {
+      logMobileConnectEvent('cold-launch:drop', { kind: notice?.kind ?? 'unknown' });
       if (notice) setAutoConnectNotice(notice);
-      switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+      switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: MOBILE_DISCONNECTED_RUNTIME_KEY });
       setConnectionEpoch((value) => value + 1);
     };
     void reprobeActiveConnection().then(async (outcome) => {
@@ -992,7 +1337,18 @@ export function MobileApp({ apis }: MobileAppProps) {
         return;
       }
       if (outcome === 'unreachable') {
+        // A fast probe racing the just-woken network/relay produces false
+        // "unreachable" verdicts (seen in the field: the same LAN candidate
+        // refuses on launch and answers 200 two minutes later). Show the
+        // connect screen on the fast verdict — no splash hostage — and retry
+        // once in the background with the full budget; a success reconnects
+        // the app from the connect screen on its own.
         dropToConnectScreen(label ? { kind: 'unreachable', label } : null);
+        void autoConnectLastInstance({ fast: false, skipIfConnected: true }).catch(() => null);
+        return;
+      }
+      if (outcome === 'relay-limit') {
+        dropToConnectScreen({ kind: 'relay-limit', label: label ?? '' });
         return;
       }
       // 'no-connection': at cold start the runtime key may not map to a saved
@@ -1002,8 +1358,8 @@ export function MobileApp({ apis }: MobileAppProps) {
       if (cancelled || fallback.status === 'connected') return;
       if (fallback.status === 'needs-login') {
         dropToConnectScreen({ kind: 'auth-expired', label: fallback.label });
-      } else if (fallback.status === 'unreachable') {
-        dropToConnectScreen({ kind: 'unreachable', label: fallback.label });
+      } else if (fallback.status === 'unreachable' || fallback.status === 'relay-limit') {
+        dropToConnectScreen({ kind: fallback.status, label: fallback.label });
       } else {
         dropToConnectScreen(null);
       }
@@ -1013,7 +1369,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     };
     // Run once on mount — a cold-launch classification only; live drops are
     // handled by the resume/online re-probe paths.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   React.useEffect(() => {
@@ -1050,47 +1406,16 @@ export function MobileApp({ apis }: MobileAppProps) {
   const [lastSessionRestorePending, setLastSessionRestorePending] = React.useState(isNativeMobileApp);
   React.useEffect(() => {
     if (!isNativeMobileApp || !isConnected || lastSessionRestoreDoneRef.current) return;
-    if (useSessionUIStore.getState().currentSessionId) {
-      lastSessionRestoreDoneRef.current = true;
-      setLastSessionRestorePending(false);
-      return;
-    }
-    const runtimeKey = getRuntimeKey();
-    const persisted = readLastActiveSession(runtimeKey);
-    if (!persisted) {
-      lastSessionRestoreDoneRef.current = true;
-      setLastSessionRestorePending(false);
-      return;
-    }
     let cancelled = false;
     // Safety valve: the overlay must never strand the user on the splash if
     // the snapshot hangs — fall through to the draft after a bounded wait.
     const overlayTimeoutId = window.setTimeout(() => setLastSessionRestorePending(false), 6000);
     void (async () => {
-      // `null` = fetch failure — keep the ref unset so the next connect (a
-      // stale persisted isConnected can fire this early) retries the restore.
-      const snapshot = await refreshGlobalSessions().catch(() => null);
+      const result = await restoreLastActiveSession({ refresh: true });
       if (cancelled) return;
-      if (!snapshot) {
-        setLastSessionRestorePending(false);
-        return;
-      }
-      lastSessionRestoreDoneRef.current = true;
-      const session = snapshot.activeSessions.find((entry) => entry.id === persisted.sessionId);
-      if (!session) {
-        // Authoritative snapshot says the session is gone (deleted/archived) —
-        // drop the stale pointer instead of retrying it on every launch.
-        clearLastActiveSession(runtimeKey);
-        setLastSessionRestorePending(false);
-        return;
-      }
-      const latest = useSessionUIStore.getState();
-      if (!latest.currentSessionId) {
-        void latest.setCurrentSession(
-          session.id,
-          resolveGlobalSessionDirectory(session) ?? persisted.directory ?? undefined,
-        );
-      }
+      // A failed list read keeps the ref unset so the next connect (a stale
+      // persisted isConnected can fire this early) retries the restore.
+      if (result !== 'failed') lastSessionRestoreDoneRef.current = true;
       setLastSessionRestorePending(false);
     })();
     return () => {
@@ -1105,86 +1430,18 @@ export function MobileApp({ apis }: MobileAppProps) {
   }, [currentDirectory, isConnected]);
 
   // Gated on isConnected (and re-run on reconnect/instance switch): probing the
-  // GitHub auth status before the runtime is reachable cached a "not connected"
+  // Source-control auth status before the runtime is reachable cached a "not connected"
   // answer that stuck until something else forced a re-check.
   React.useEffect(() => {
     if (!isConnected) return;
-    void refreshGitHubAuthStatus(apis.github, { force: true });
-  }, [apis.github, isConnected, refreshGitHubAuthStatus]);
+    void refreshSourceControlProviders(apis.sourceControl);
+    void refreshSourceControlAuth(apis.sourceControl, { force: true });
+    void refreshTrackers(apis.trackers);
+  }, [apis.sourceControl, apis.trackers, isConnected, refreshSourceControlAuth, refreshSourceControlProviders]);
 
-  // Discover all worktrees for every known project so the draft session's
-  // worktree/branch dropdown can list every available branch — not only the
-  // current one. Mirrors ElectronMiniChatApp + desktop SessionSidebar.
-  // Gated on isConnected: running before the runtime is reachable made every
-  // per-project probe fail silently, leaving the map empty until some later
-  // projects-store update happened to re-run this effect (the "switch projects
-  // back and forth to see worktrees" bug).
-  React.useEffect(() => {
-    if (!isConnected || projects.length === 0) return;
-    let cancelled = false;
-
-    const run = async () => {
-      const worktreesByProject = new Map(useSessionUIStore.getState().availableWorktreesByProject);
-
-      await Promise.all(
-        projects.map(async (project) => {
-          const projectPath = project.path.replace(/\\/g, '/').replace(/\/+$/, '');
-          if (!projectPath) return;
-          try {
-            const cachedIsGitRepo = useGitStore.getState().directories.get(projectPath)?.isGitRepo;
-            const isGitRepo =
-              cachedIsGitRepo ?? (await import('@/lib/gitApi').then((m) => m.checkIsGitRepository(projectPath)));
-            if (!isGitRepo) return;
-            const worktrees = await listProjectWorktrees({ id: project.id, path: projectPath });
-            if (cancelled) return;
-            worktreesByProject.set(projectPath, worktrees);
-          } catch {
-            // Worktree discovery is best-effort per project: a failed probe keeps
-            // that project's previously known (persisted) worktrees instead of
-            // wiping the whole map.
-          }
-        }),
-      );
-
-      if (cancelled) return;
-
-      const allWorktrees = Array.from(worktreesByProject.values()).flat();
-
-      // Skip update if nothing changed — see worktreeMapsEqual JSDoc.
-      const currentByProject = useSessionUIStore.getState().availableWorktreesByProject;
-      if (!worktreeMapsEqual(worktreesByProject, currentByProject)) {
-        useSessionUIStore.setState({
-          availableWorktrees: allWorktrees,
-          availableWorktreesByProject: worktreesByProject,
-        });
-      }
-    };
-
-    void run();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isConnected, projects]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-
-    const run = async () => {
-      const res = await runtimeFetch('/health', { method: 'GET' }).catch(() => null);
-      if (!res || !res.ok || cancelled) return;
-      const data = (await res.json().catch(() => null)) as null | { planModeExperimentalEnabled?: unknown };
-      if (!data || cancelled) return;
-      const raw = data.planModeExperimentalEnabled;
-      setPlanModeEnabled(raw === true || raw === 1 || raw === '1' || raw === 'true');
-    };
-
-    void run();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [setPlanModeEnabled]);
+  // Worktree discovery for every project, and its refresh on the server's
+  // worktree and session events, run in the sessions drawer's list, which is
+  // the desktop sidebar's and stays mounted while the drawer is closed.
 
   React.useEffect(() => {
     if (!error) return;
@@ -1214,6 +1471,20 @@ export function MobileApp({ apis }: MobileAppProps) {
   usePushVisibilityBeacon({ enabled: true });
   useUpdatePolling();
   useWindowTitle();
+  useRoutingSync();
+  useEnterprisePolicySync();
+  useSourceControlProviderSync(apis.sourceControl);
+  useTrackerProviderSync(apis.trackers);
+  useQuotaProviderSync();
+  // The catalog and the sidebar marks feed what the host draws for extensions
+  // on the phone too: link rules, tool cards, provider logos, row marks.
+  useGuestCatalogSync();
+  useGuestMarksSync();
+  // The phone can pick an extension browser now, so it hears when the server drops it.
+  useBrowserProviderSync();
+  // Same as App.tsx: the session's memory index and the Memory tab both read
+  // this snapshot, and without it the phone showed no memory at all.
+  useAgentMemorySync(currentDirectory || null);
   useRouter();
   // APNs is the only notification channel on the native app (background-capable,
   // focus-suppressed server-side via the visibility beacon). Local notifications are
@@ -1221,6 +1492,7 @@ export function MobileApp({ apis }: MobileAppProps) {
   // (document.hasFocus() is unreliable) and leaked while the app was open; the in-app SSE
   // notification dispatch is no-op'd for native in renderMobileApp.
   useNativePushRegistration({ enabled: isNativeMobileApp && isConnected });
+  useNativeWidgetSync({ enabled: isNativeMobileApp && isConnected && isInitialized });
   // Single native deep-link entry point: notification taps AND the openchamber:// URL
   // scheme (widgets, Live Activities, external links). Registered unconditionally so a
   // cold-launch tap/open isn't lost on the connect/splash screen; intents stash until
@@ -1239,8 +1511,8 @@ export function MobileApp({ apis }: MobileAppProps) {
   // already uses the real font instead of flashing the fallback and reflowing (FOUT).
   if (!fontsReady) {
     return (
-      <main className="flex min-h-dvh items-center justify-center bg-background text-foreground">
-        <OpenChamberLogo width={120} height={120} isAnimated />
+      <main className="flex min-h-dvh items-center justify-center bg-[var(--splash-background,var(--surface-background))] text-foreground">
+        <OpenChamberLogo width={120} height={120} isAnimated variant="splash" />
       </main>
     );
   }
@@ -1256,22 +1528,22 @@ export function MobileApp({ apis }: MobileAppProps) {
     // show a loader while it re-bootstraps instead of flashing the onboarding screen.
     if (hasRuntimeEndpoint) {
       return (
-        <main className="flex min-h-dvh items-center justify-center bg-background px-6 text-center text-foreground">
+        <main className="flex min-h-dvh items-center justify-center bg-[var(--splash-background,var(--surface-background))] px-6 text-center text-foreground">
           <div className="flex max-w-sm flex-col items-center gap-4">
-            <OpenChamberLogo width={120} height={120} isAnimated={!showConnectionRecovery} />
+            <OpenChamberLogo width={120} height={120} isAnimated={!showConnectionRecovery} variant="splash" />
             {showConnectionRecovery ? (
               <>
                 <div className="space-y-2">
                   <h1 className="typography-h3 text-foreground">{t('sessionAuth.error.networkTitle')}</h1>
                   {/* Native copy — the browser-oriented sessionAuth description
                       (Desktop Network Access etc.) reads as noise here. */}
-                  <p className="typography-body text-muted-foreground">{t('mobile.connect.recovery.description')}</p>
+                  <p className="typography-markdown text-muted-foreground">{t('mobile.connect.recovery.description')}</p>
                 </div>
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => {
-                    switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+                    switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: MOBILE_DISCONNECTED_RUNTIME_KEY });
                     setConnectionEpoch((value) => value + 1);
                   }}
                 >
@@ -1288,8 +1560,8 @@ export function MobileApp({ apis }: MobileAppProps) {
     // (no saved instance, unreachable, or needs re-login).
     if (autoConnectPhase !== 'done') {
       return (
-        <main className="relative flex min-h-dvh items-center justify-center bg-background text-foreground">
-          <OpenChamberLogo width={120} height={120} isAnimated />
+        <main className="relative flex min-h-dvh items-center justify-center bg-[var(--splash-background,var(--surface-background))] text-foreground">
+          <OpenChamberLogo width={120} height={120} isAnimated variant="splash" />
           {/* Absolutely positioned below the (still perfectly centered) logo so
               the text never pushes it up. 50% + half the 120px logo + a gap. */}
           {autoConnectLabel ? (
@@ -1320,8 +1592,8 @@ export function MobileApp({ apis }: MobileAppProps) {
     // only shows once the recovery delay has expired (genuinely unreachable).
     if (!showConnectionRecovery) {
       return (
-        <main className="flex min-h-dvh items-center justify-center bg-background text-foreground">
-          <OpenChamberLogo width={120} height={120} isAnimated />
+        <main className="flex min-h-dvh items-center justify-center bg-[var(--splash-background,var(--surface-background))] text-foreground">
+          <OpenChamberLogo width={120} height={120} isAnimated variant="splash" />
         </main>
       );
     }
@@ -1329,7 +1601,7 @@ export function MobileApp({ apis }: MobileAppProps) {
       <main className="flex min-h-dvh items-center justify-center bg-background px-6 text-center text-foreground">
         <div className="max-w-sm space-y-3">
           <h1 className="typography-h3 text-foreground">{t('sessionAuth.error.networkTitle')}</h1>
-          <p className="typography-body text-muted-foreground">{t('sessionAuth.error.networkDescription')}</p>
+          <p className="typography-markdown text-muted-foreground">{t('sessionAuth.error.networkDescription')}</p>
         </div>
       </main>
     );
@@ -1345,24 +1617,43 @@ export function MobileApp({ apis }: MobileAppProps) {
                   until the last-session restore decides between session and
                   draft — otherwise the auto-opened draft flashes first. The
                   shell (and sync) still mounts and warms up underneath. */}
-              {isNativeMobileApp && lastSessionRestorePending ? (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
-                  <OpenChamberLogo width={120} height={120} isAnimated />
-                </div>
-              ) : null}
-              <SyncAppEffects embeddedBackgroundWorkEnabled={isInitialized} />
+              <AppStartupOverlay ready={!isNativeMobileApp || !lastSessionRestorePending} animated />
+              <SyncAppEffects backgroundWorkEnabled={isInitialized} />
               <OpenCodeUpdateToast />
               <MobileAppUpdateToast />
               <MobileShell onActiveConnectionDeleted={() => {
-                switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+                suppressAutoConnectUntilManualConnect();
+                switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: MOBILE_DISCONNECTED_RUNTIME_KEY });
                 setConnectionEpoch((value) => value + 1);
               }} />
-              <Toaster position="top-center" offset="calc(var(--oc-safe-area-top, 0px) + 16px)" />
+              <AppLinkConfirmDialog />
+              <SnippetQuickCreateDialog />
+              <SharedTrustConfirmDialog />
+              <OpenCodeTrustDialog />
+              {isolatedSpacesEnabled ? <><SpaceAccessDialog /><SpaceActionsSheet /><SpaceApplyDialog /><SpaceDeleteDialog /><SpaceSetupOutputDialog /></> : null}
+              <MobileToaster />
               {isInitialized ? <ConfigUpdateOverlay /> : null}
             </div>
           </TooltipProvider>
         </RuntimeAPIProvider>
       </SyncProvider>
     </ErrorBoundary>
+  );
+}
+
+export function MobileApp(props: MobileAppProps) {
+  const endpoint = React.useSyncExternalStore(
+    (notify) => subscribeRuntimeEndpointChanged(() => notify()),
+    getRuntimeApiBaseUrl,
+    getRuntimeApiBaseUrl,
+  );
+  // Native connection selection must mount before there is a server to probe.
+  // The tree keeps one shape across connect/disconnect: a remount on every
+  // connect re-ran the cold-launch re-probe, and its fast-timeout verdict on a
+  // slow server dropped the runtime again, looping connect → drop → connect.
+  return (
+    <OpenCodeCompatibilityGate enabled={!isCapacitorMobileApp() || Boolean(endpoint)}>
+      <MobileAppContent {...props} />
+    </OpenCodeCompatibilityGate>
   );
 }

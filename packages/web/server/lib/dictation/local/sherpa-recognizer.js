@@ -1,7 +1,12 @@
 /**
- * Sherpa-onnx offline recognizer engine (NeMo transducer / Parakeet) plus a
- * realtime streaming transcription session that re-decodes the accumulated
- * segment audio on a throttle to produce live partial transcripts.
+ * Sherpa-onnx offline recognizer engine (Parakeet, Whisper, Qwen3-ASR) plus a
+ * segment transcription session that decodes each segment exactly once, when
+ * the segment is committed.
+ *
+ * Parakeet is an offline model: it is trained to see a whole utterance at
+ * once. Decoding the accumulated audio repeatedly to animate a live transcript
+ * costs O(n^2) work for a result the final decode throws away, so this session
+ * only decodes on commit.
  *
  * Runs inside the dictation worker process only — never load the native
  * addon in the main server process.
@@ -10,8 +15,10 @@
 import { EventEmitter } from 'events';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
+import path from 'path';
 
 import { loadSherpaOnnxNode } from './sherpa-loader.js';
+import { resolveModelLanguage } from './model-language.js';
 import { pcm16lePeakAbs, pcm16leToFloat32 } from '../audio.js';
 
 function assertFileExists(filePath, label) {
@@ -20,51 +27,77 @@ function assertFileExists(filePath, label) {
   }
 }
 
+/**
+ * The model-specific part of sherpa's OfflineModelConfig for a catalog entry.
+ * @param {string} type catalog `type`
+ * @param {(role: string) => string} file absolute path of a catalog file role
+ * @param {string} language the model's language hint, '' to auto-detect
+ */
+function buildModelSpecificConfig(type, file, language) {
+  switch (type) {
+    case 'nemo_transducer':
+      return {
+        transducer: { encoder: file('encoder'), decoder: file('decoder'), joiner: file('joiner') },
+        tokens: file('tokens'),
+        modelType: 'nemo_transducer',
+      };
+    case 'whisper':
+      return {
+        whisper: {
+          encoder: file('encoder'),
+          decoder: file('decoder'),
+          // Whisper takes the language per recognizer, not per stream. Empty
+          // auto-detects.
+          language,
+          task: 'transcribe',
+          tailPaddings: -1,
+        },
+        tokens: file('tokens'),
+        modelType: 'whisper',
+      };
+    case 'qwen3_asr':
+      return {
+        qwen3Asr: {
+          convFrontend: file('convFrontend'),
+          encoder: file('encoder'),
+          decoder: file('decoder'),
+          tokenizer: file('tokenizer'),
+          // The default of 128 new tokens cuts off a 25 s segment of fast
+          // speech mid-sentence.
+          maxNewTokens: 512,
+          hotwords: '',
+        },
+        tokens: '',
+      };
+    default:
+      throw new Error(`Unsupported local speech model type: ${type}`);
+  }
+}
+
 export class SherpaOfflineRecognizerEngine {
   /**
-   * @param {{ type: 'nemo_transducer' | 'whisper',
-   *           encoder: string, decoder: string, joiner?: string, tokens: string,
-   *           numThreads?: number }} config
+   * @param {{ modelId?: string, type: 'nemo_transducer' | 'whisper' | 'qwen3_asr',
+   *           modelDir: string, files: Record<string, string>,
+   *           language?: string, numThreads?: number }} config
+   *   `language` is the user's dictation language; models that take no hint
+   *   or do not know it detect the language themselves.
    */
   constructor(config) {
-    assertFileExists(config.encoder, 'offline encoder');
-    assertFileExists(config.decoder, 'offline decoder');
-    if (config.type === 'nemo_transducer') {
-      assertFileExists(config.joiner, 'offline joiner');
-    }
-    assertFileExists(config.tokens, 'tokens');
+    this.language = resolveModelLanguage(config.modelId, config.type, config.language);
+    this.type = config.type;
+    const file = (role) => {
+      const filePath = path.join(config.modelDir, config.files[role]);
+      assertFileExists(filePath, role);
+      return filePath;
+    };
+    const modelConfig = {
+      ...buildModelSpecificConfig(config.type, file, this.language),
+      numThreads: config.numThreads ?? 2,
+      provider: 'cpu',
+      debug: 0,
+    };
 
     const sherpa = loadSherpaOnnxNode();
-
-    const modelConfig =
-      config.type === 'whisper'
-        ? {
-            whisper: {
-              encoder: config.encoder,
-              decoder: config.decoder,
-              // Empty language auto-detects for multilingual Whisper exports.
-              language: '',
-              task: 'transcribe',
-              tailPaddings: -1,
-            },
-            tokens: config.tokens,
-            modelType: 'whisper',
-            numThreads: config.numThreads ?? 2,
-            provider: 'cpu',
-            debug: 0,
-          }
-        : {
-            transducer: {
-              encoder: config.encoder,
-              decoder: config.decoder,
-              joiner: config.joiner,
-            },
-            tokens: config.tokens,
-            modelType: 'nemo_transducer',
-            numThreads: config.numThreads ?? 2,
-            provider: 'cpu',
-            debug: 0,
-          };
 
     const recognizerConfig = {
       featConfig: {
@@ -121,6 +154,10 @@ export class SherpaOfflineRecognizerEngine {
 
     const stream = this.createStream();
     try {
+      // Qwen3-ASR reads its language hint per stream.
+      if (this.type === 'qwen3_asr' && this.language) {
+        stream.setOption('language', this.language);
+      }
       const floatSamples = pcm16leToFloat32(pcm16, gain);
       this.acceptWaveform(stream, this.sampleRate, floatSamples);
       this.recognizer.decode(stream);
@@ -147,31 +184,26 @@ export class SherpaOfflineRecognizerEngine {
 }
 
 /**
- * Streaming transcription session backed by the offline recognizer.
- * Accumulates the current segment's PCM and re-decodes it at most every
- * `minDecodeIntervalMs` to emit non-final partial transcripts; `commit()`
- * finalizes the segment and starts a new one.
+ * Segment transcription session backed by the offline recognizer.
+ * Accumulates the current segment's PCM and decodes it once in `commit()`,
+ * which emits the segment's final transcript and starts a new segment.
  *
  * Implements the StreamingTranscriptionSession contract used by
- * DictationStreamManager.
+ * DictationStreamManager. It never emits non-final transcripts: the manager's
+ * live `partial` messages are the concatenation of already-committed segments.
  */
-export class SherpaRealtimeTranscriptionSession extends EventEmitter {
+export class SherpaSegmentTranscriptionSession extends EventEmitter {
   /**
-   * @param {{ engine: SherpaOfflineRecognizerEngine, minDecodeIntervalMs?: number }} params
+   * @param {{ engine: SherpaOfflineRecognizerEngine }} params
    */
-  constructor({ engine, minDecodeIntervalMs }) {
+  constructor({ engine }) {
     super();
     this.engine = engine;
     this.requiredSampleRate = engine.sampleRate;
-    this.minDecodeIntervalMs = minDecodeIntervalMs ?? 350;
     this.connected = false;
     this.currentSegmentId = null;
     this.previousSegmentId = null;
-    this.lastPartialText = '';
     this.pcm16 = Buffer.alloc(0);
-    this.lastDecodeAt = 0;
-    this.decoding = false;
-    this.pendingDecode = false;
   }
 
   async connect() {
@@ -184,39 +216,64 @@ export class SherpaRealtimeTranscriptionSession extends EventEmitter {
 
   appendPcm16(chunk) {
     if (!this.connected || !this.currentSegmentId) {
-      this.emit('error', new Error('Sherpa realtime session not connected'));
+      this.emit('error', new Error('Sherpa transcription session not connected'));
       return;
     }
     this.pcm16 = this.pcm16.length === 0 ? chunk : Buffer.concat([this.pcm16, chunk]);
-    this.maybeDecode(false).catch((err) => {
+  }
+
+  /**
+   * Close the current segment and hand it back for decoding, WITHOUT decoding.
+   * The caller decodes later (e.g. on the next event-loop turn) so a long
+   * segment's quadratic decode never blocks the worker's IPC — see
+   * worker-process.js session.commit. Returns null when not connected or the
+   * segment holds no audio.
+   * @returns {{ segmentId: string, previousSegmentId: string|null, pcm16: Buffer } | null}
+   */
+  takePendingSegment() {
+    if (!this.connected || !this.currentSegmentId) {
+      this.emit('error', new Error('Sherpa transcription session not connected'));
+      return null;
+    }
+    const segmentId = this.currentSegmentId;
+    const previousSegmentId = this.previousSegmentId;
+    const pcm16 = this.pcm16;
+
+    // Start the next segment before decoding: decoding can take seconds on
+    // long segments, and audio for the next one keeps arriving meanwhile.
+    this.previousSegmentId = segmentId;
+    this.currentSegmentId = randomUUID();
+    this.pcm16 = Buffer.alloc(0);
+
+    this.emit('committed', { segmentId, previousSegmentId });
+
+    if (pcm16.length === 0) {
+      return null;
+    }
+    return { segmentId, previousSegmentId, pcm16 };
+  }
+
+  /**
+   * Decode a segment previously returned by takePendingSegment() and emit its
+   * final transcript.
+   * @param {{ segmentId: string, pcm16: Buffer }} pending
+   */
+  decodeSegment(pending) {
+    let transcript;
+    try {
+      transcript = this.engine.decodePcm16(pending.pcm16);
+    } catch (err) {
       this.emit('error', err instanceof Error ? err : new Error(String(err)));
-    });
+      return;
+    }
+    this.emit('transcript', { segmentId: pending.segmentId, transcript, isFinal: true });
   }
 
   commit() {
-    if (!this.connected || !this.currentSegmentId) {
-      this.emit('error', new Error('Sherpa realtime session not connected'));
-      return;
+    const pending = this.takePendingSegment();
+    if (pending) {
+      this.decodeSegment(pending);
     }
-
-    void (async () => {
-      try {
-        await this.maybeDecode(true);
-        const finalText = this.lastPartialText;
-        const segmentId = this.currentSegmentId;
-        const previousSegmentId = this.previousSegmentId;
-
-        this.emit('committed', { segmentId, previousSegmentId });
-        this.emit('transcript', { segmentId, transcript: finalText, isFinal: true });
-
-        this.previousSegmentId = segmentId;
-        this.currentSegmentId = randomUUID();
-        this.lastPartialText = '';
-        this.pcm16 = Buffer.alloc(0);
-      } catch (err) {
-        this.emit('error', err instanceof Error ? err : new Error(String(err)));
-      }
-    })();
   }
 
   clear() {
@@ -225,53 +282,11 @@ export class SherpaRealtimeTranscriptionSession extends EventEmitter {
     }
     this.pcm16 = Buffer.alloc(0);
     this.currentSegmentId = randomUUID();
-    this.lastPartialText = '';
   }
 
   close() {
     this.connected = false;
     this.currentSegmentId = null;
     this.pcm16 = Buffer.alloc(0);
-  }
-
-  async maybeDecode(force) {
-    if (!this.connected || !this.currentSegmentId) {
-      return;
-    }
-
-    const now = Date.now();
-    if (!force && now - this.lastDecodeAt < this.minDecodeIntervalMs) {
-      return;
-    }
-
-    if (this.decoding) {
-      this.pendingDecode = true;
-      return;
-    }
-
-    this.decoding = true;
-    try {
-      const decodeStartedAt = Date.now();
-      const text = this.engine.decodePcm16(this.pcm16);
-      this.lastDecodeAt = Date.now();
-      // Adaptive throttle: on slow hardware (or heavy models) re-decoding the
-      // growing segment every 350ms would monopolize the worker. Space partial
-      // decodes to ~1.5x the observed decode time.
-      this.minDecodeIntervalMs = Math.max(350, (this.lastDecodeAt - decodeStartedAt) * 1.5);
-      if (text !== this.lastPartialText) {
-        this.lastPartialText = text;
-        this.emit('transcript', {
-          segmentId: this.currentSegmentId,
-          transcript: text,
-          isFinal: false,
-        });
-      }
-    } finally {
-      this.decoding = false;
-      if (this.pendingDecode) {
-        this.pendingDecode = false;
-        await this.maybeDecode(true);
-      }
-    }
   }
 }

@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import type { ReadingPlayback } from '@/lib/voice/readingAudioFocus';
 
 interface SayTTSStatusCache {
   available: boolean;
@@ -101,10 +102,13 @@ export interface UseSayTTSReturn {
 }
 
 interface SpeakOptions {
+  beforePlayback?: (playback: ReadingPlayback) => Promise<void>;
   /** Voice to use (defaults to Samantha) */
   voice?: string;
   /** Speech rate in words per minute (defaults to 200) */
   rate?: number;
+  /** `'auto'`: the server switches to a voice that speaks the text's language. */
+  language?: 'auto';
   /** Callback when playback starts */
   onStart?: () => void;
   /** Callback when playback ends */
@@ -217,7 +221,8 @@ export function useSayTTS(options: UseSayTTSOptions = {}): UseSayTTSReturn {
     
     try {
       // Create abort controller for this request
-      abortControllerRef.current = new AbortController();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
       
       // Fetch audio from server
       const response = await runtimeFetch('/api/tts/say/speak', {
@@ -229,8 +234,9 @@ export function useSayTTS(options: UseSayTTSOptions = {}): UseSayTTSReturn {
           text: text.trim(),
           voice: options?.voice || 'Samantha',
           rate: options?.rate || 200,
+          language: options?.language,
         }),
-        signal: abortControllerRef.current.signal,
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -256,6 +262,9 @@ export function useSayTTS(options: UseSayTTSOptions = {}): UseSayTTSReturn {
       console.log('[useSayTTS] Decoding audio data...');
       const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
       
+      await options?.beforePlayback?.({ pause: () => ctx.suspend(), resume: () => ctx.resume() });
+      if (controller.signal.aborted) return;
+
       // Create source node
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;

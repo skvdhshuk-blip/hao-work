@@ -7,7 +7,7 @@ import { LEGACY_LINUX_IDENTITY, LINUX_IDENTITY } from './linux-identity.mjs';
 const AUTOSTART_FILE_NAME = LINUX_IDENTITY.desktopFileName;
 const LEGACY_AUTOSTART_FILE_NAME = LEGACY_LINUX_IDENTITY.desktopFileName;
 
-export const resolveLinuxAutostartDirectory = ({
+const resolveLinuxAutostartDirectory = ({
   env = process.env,
   homeDir = os.homedir(),
 } = {}) => {

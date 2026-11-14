@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
@@ -63,10 +66,13 @@ export const createWorkerSupervisor = ({
     let settled = false;
     let protocolError = null;
     let resolveExit;
+    const controlPath = path.join(os.tmpdir(), `haocode-control-${sessionId}-${crypto.randomBytes(4).toString('hex')}.jsonl`);
+    fs.writeFileSync(controlPath, '');
     const record = {
       child,
       exited: false,
       forceTimer: null,
+      controlPath,
       exitPromise: new Promise((done) => { resolveExit = done; }),
     };
 
@@ -77,6 +83,7 @@ export const createWorkerSupervisor = ({
       record.exited = true;
       if (record.forceTimer) clearTimeout(record.forceTimer);
       active.delete(sessionId);
+      fs.rm(controlPath, { force: true }, () => {});
       resolveExit();
     };
 
@@ -188,7 +195,7 @@ export const createWorkerSupervisor = ({
     // the child exit/error handler above remains the source of the run failure.
     child.stdin.on('error', () => {});
     try {
-      child.stdin.end(`${JSON.stringify(request)}\n`);
+      child.stdin.end(`${JSON.stringify({ ...request, controlPath })}\n`);
     } catch (error) {
       reportProtocolError(new Error(`Unable to send the HaoCode worker request: ${error.message}`, { cause: error }));
     }
@@ -214,10 +221,20 @@ export const createWorkerSupervisor = ({
     await Promise.all(records.map((record) => record.exitPromise));
   };
 
+  const appendControl = (sessionId, type, text) => {
+    const current = active.get(sessionId);
+    const message = typeof text === 'string' ? text.trim() : '';
+    if (!current?.controlPath || current.exited || !message) return false;
+    fs.appendFileSync(current.controlPath, `${JSON.stringify({ type, text: message })}\n`);
+    return true;
+  };
+
   return {
     run,
     abort,
     stopAll,
+    steer: (sessionId, text) => appendControl(sessionId, 'steer', text),
+    queue: (sessionId, text) => appendControl(sessionId, 'queue', text),
     isRunning: (sessionId) => active.has(sessionId),
     activeCount: () => active.size,
     phpBinary,

@@ -1,12 +1,10 @@
 import { create } from 'zustand';
 
-import { fetchDesktopInstalledApps, isDesktopLocalOriginActive, isDesktopShell, type DesktopSettings, type InstalledDesktopAppInfo } from '@/lib/desktop';
+import { fetchDesktopInstalledApps, isDesktopLocalOriginActive, isDesktopShell, type InstalledDesktopAppInfo } from '@/lib/desktop';
 import { OPEN_IN_APPS, DEFAULT_OPEN_IN_APP_ID, OPEN_IN_ALWAYS_AVAILABLE_APP_IDS, getOpenInAppById, getPlatformOpenInApp, type OpenInApp } from '@/lib/openInApps';
-import { updateDesktopSettings } from '@/lib/persistence';
+import { type SettingsSyncedDetail, updateDesktopSettings } from '@/lib/persistence';
 
-export type OpenInAppOption = OpenInApp & {
-  iconDataUrl?: string;
-};
+export type OpenInAppOption = OpenInApp;
 
 type OpenInAppsState = {
   selectedAppId: string;
@@ -23,6 +21,15 @@ const getAlwaysAvailableApps = (): OpenInAppOption[] => {
   return OPEN_IN_APPS
     .filter((app) => OPEN_IN_ALWAYS_AVAILABLE_APP_IDS.has(app.id))
     .map((app) => ({ ...getPlatformOpenInApp(app) }));
+};
+
+// The installed apps from our list, plus the ones every system has. The
+// marks come from the sprite, so the system's icons are not used.
+const toAvailableApps = (installed: InstalledDesktopAppInfo[]): OpenInAppOption[] => {
+  const allowed = new Set(installed.map((app) => app.name));
+  return OPEN_IN_APPS
+    .filter((app) => allowed.has(app.appName) || OPEN_IN_ALWAYS_AVAILABLE_APP_IDS.has(app.id))
+    .map(getPlatformOpenInApp);
 };
 
 const getStoredAppId = (): string => {
@@ -70,19 +77,7 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
         return;
       }
 
-      const allowed = new Set(installed.map((app) => app.name));
-      const iconMap = new Map(installed.map((app) => [app.name, app.iconDataUrl ?? undefined]));
-
-      const filtered = OPEN_IN_APPS.filter(
-        (app) => allowed.has(app.appName) || OPEN_IN_ALWAYS_AVAILABLE_APP_IDS.has(app.id)
-      );
-
-      const withIcons = filtered.map((app) => ({
-        ...getPlatformOpenInApp(app),
-        iconDataUrl: iconMap.get(app.appName),
-      }));
-
-      set({ availableApps: withIcons, hasLoadedApps: true });
+      set({ availableApps: toAvailableApps(installed), hasLoadedApps: true });
     };
 
     const loadInstalledApps = async (force?: boolean) => {
@@ -160,7 +155,7 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
     void loadInstalledApps();
 
     const settingsHandler = (event: Event) => {
-      const detail = (event as CustomEvent<DesktopSettings>).detail;
+      const detail = (event as CustomEvent<SettingsSyncedDetail>).detail?.settings;
       const nextId = detail
         && typeof detail.openInAppId === 'string'
         && detail.openInAppId.length > 0
@@ -244,19 +239,11 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
         isCacheStale,
       } = await fetchDesktopInstalledApps(appNames, force);
 
-      const allowed = new Set(installed.map((app) => app.name));
-      const iconMap = new Map(installed.map((app) => [app.name, app.iconDataUrl ?? undefined]));
-      const filtered = OPEN_IN_APPS.filter(
-        (app) => allowed.has(app.appName) || OPEN_IN_ALWAYS_AVAILABLE_APP_IDS.has(app.id)
-      );
-      const withIcons = filtered.map((app) => ({
-        ...app,
-        iconDataUrl: iconMap.get(app.appName),
-      }));
+      const apps = toAvailableApps(installed);
 
       set({
-        availableApps: withIcons.length > 0 ? withIcons : getAlwaysAvailableApps(),
-        hasLoadedApps: withIcons.length > 0,
+        availableApps: apps,
+        hasLoadedApps: apps.length > 0,
         isCacheStale: hasCache ? isCacheStale : false,
       });
     } finally {

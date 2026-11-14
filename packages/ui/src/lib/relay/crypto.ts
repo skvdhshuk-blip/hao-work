@@ -1,7 +1,7 @@
 // E2EE primitives for the private relay (Layer 2 of the protocol spec).
 // WebCrypto only — isomorphic across browser, Node >= 20, WKWebView, and Workers.
 // Key agreement: ECDH P-256 -> HKDF-SHA-256 -> two AES-256-GCM keys (one per direction).
-// Spec: .opencode/plans/private-relay/01-protocol-spec.md (Layer 2).
+// Spec: packages/web/server/lib/relay/DOCUMENTATION.md (Layer 2).
 
 import {
   ENCRYPTED_FRAME_HEADER_BYTES,
@@ -64,7 +64,7 @@ export const generateHandshakeNonce = (): Uint8Array => {
   return nonce;
 };
 
-export interface SessionKeys {
+interface SessionKeys {
   clientToHost: CryptoKey;
   hostToClient: CryptoKey;
 }
@@ -153,8 +153,9 @@ export const createFrameEncryptor = (key: CryptoKey): FrameEncryptor => {
   };
 };
 
-// Enforces strictly increasing per-direction counters: the relay WS preserves
-// ordering, so any regression or replay means tampering and must fail closed.
+// Enforces consecutive per-direction counters: the relay WS preserves ordering
+// and loses nothing while open, so a regression or replay means tampering and
+// a gap means a lost or dropped message; both must fail closed.
 export const createFrameDecryptor = (key: CryptoKey): FrameDecryptor => {
   let lastCounter = 0n;
   return {
@@ -169,6 +170,9 @@ export const createFrameDecryptor = (key: CryptoKey): FrameDecryptor => {
       const counter = readCounter(iv, IV_PREFIX_BYTES);
       if (counter <= lastCounter) {
         throw new RelayCryptoError('frame counter regression');
+      }
+      if (counter !== lastCounter + 1n) {
+        throw new RelayCryptoError('frame counter gap');
       }
       let plaintext: ArrayBuffer;
       try {

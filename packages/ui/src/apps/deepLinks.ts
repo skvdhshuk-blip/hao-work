@@ -10,7 +10,9 @@
  * context — including, eventually, a tiny encoder shared with the native widget/extension.
  */
 
-export const DEEP_LINK_SCHEME = 'openchamber';
+import { isLinkIdentifier } from '@/lib/router/messageFocus';
+
+const DEEP_LINK_SCHEME = 'openchamber';
 
 export type SessionsFilter = 'all' | 'attention' | 'recent';
 export type ViewTarget = 'files' | 'mcp' | 'instances' | 'update';
@@ -21,11 +23,11 @@ export type ViewTarget = 'files' | 'mcp' | 'instances' | 'update';
  * that keeps the "blocks" composable without leaking ad-hoc URL parsing into features.
  */
 export type DeepLinkIntent =
-  | { type: 'session'; sessionId: string; directory?: string }
+  | { type: 'session'; sessionId: string; directory?: string; messageId?: string }
   | { type: 'new-session'; directory?: string; projectId?: string; agent?: string; model?: string }
   | { type: 'sessions'; filter?: SessionsFilter }
   | { type: 'status' }
-  | { type: 'settings'; section?: string }
+  | { type: 'settings'; section?: string; providerId?: string }
   | { type: 'changes'; path?: string; staged?: boolean }
   | { type: 'view'; target: ViewTarget };
 
@@ -74,7 +76,14 @@ export function parseDeepLink(raw: string | null | undefined): DeepLinkIntent | 
       if (!sessionId) {
         return null;
       }
-      return { type: 'session', sessionId, directory: query.get('dir') ?? undefined };
+      // A message link (`?message=<id>`) also names the message to show.
+      const messageId = query.get('message')?.trim() ?? '';
+      return {
+        type: 'session',
+        sessionId,
+        directory: query.get('dir') ?? undefined,
+        ...(isLinkIdentifier(messageId) ? { messageId } : {}),
+      };
     }
 
     case 'new':
@@ -98,8 +107,17 @@ export function parseDeepLink(raw: string | null | undefined): DeepLinkIntent | 
     case 'status':
       return { type: 'status' };
 
-    case 'settings':
-      return { type: 'settings', section: rest[0] || query.get('section') || undefined };
+    case 'settings': {
+      const section = rest[0] || query.get('section') || undefined;
+      const provider = query.get('provider')?.trim();
+      // Only the Usage section interprets provider deep-links. Extension quota
+      // providers use the same id format (ext-...) as built-in providers.
+      const intent: DeepLinkIntent = { type: 'settings', section };
+      if (section === 'usage' && provider && /^[a-z0-9][a-z0-9-]{0,79}$/.test(provider)) {
+        intent.providerId = provider;
+      }
+      return intent;
+    }
 
     case 'changes':
       return {
@@ -122,48 +140,5 @@ export function parseDeepLink(raw: string | null | undefined): DeepLinkIntent | 
 
     default:
       return null;
-  }
-}
-
-/**
- * Build a canonical `openchamber://…` URL for an intent. Used by anything that needs to hand
- * a deep link to iOS — notification payloads, `widgetURL(...)`, Live Activity tap targets —
- * so every producer emits the exact shape {@link parseDeepLink} understands.
- */
-export function buildDeepLink(intent: DeepLinkIntent): string {
-  const base = `${DEEP_LINK_SCHEME}://`;
-  const withQuery = (path: string, params: Record<string, string | undefined>): string => {
-    const search = new URLSearchParams();
-    for (const [key, value] of Object.entries(params)) {
-      if (typeof value === 'string' && value.length > 0) {
-        search.set(key, value);
-      }
-    }
-    const query = search.toString();
-    return query ? `${base}${path}?${query}` : `${base}${path}`;
-  };
-
-  switch (intent.type) {
-    case 'session':
-      return withQuery(`session/${encodeURIComponent(intent.sessionId)}`, { dir: intent.directory });
-    case 'new-session':
-      return withQuery('new', {
-        dir: intent.directory,
-        project: intent.projectId,
-        agent: intent.agent,
-        model: intent.model,
-      });
-    case 'sessions':
-      return withQuery('sessions', { filter: intent.filter });
-    case 'status':
-      return `${base}status`;
-    case 'settings':
-      return intent.section ? `${base}settings/${encodeURIComponent(intent.section)}` : `${base}settings`;
-    case 'changes':
-      return withQuery(intent.path ? `changes/${intent.path}` : 'changes', {
-        staged: intent.staged ? 'true' : undefined,
-      });
-    case 'view':
-      return `${base}view/${intent.target}`;
   }
 }

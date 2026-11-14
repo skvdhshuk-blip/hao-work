@@ -4,19 +4,35 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { getModelDisplayName } from './mobileControlsUtils';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { useI18n } from '@/lib/i18n';
+import { isAutoModel } from '@/lib/routing/autoModel';
+import { Icon } from '@/components/icon/Icon';
+import { useModelMissingFromCatalog } from './agentAvailability';
+import { useChatSessionSelection } from './chatColumnSession';
 
 interface MobileModelButtonProps {
     onOpenModel: () => void;
     className?: string;
+    model?: { providerId: string; modelId: string } | null;
 }
 
-export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenModel, className }) => {
+export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenModel, className, model }) => {
     const { t } = useI18n();
-    const currentModelId = useConfigStore((state) => state.currentModelId);
-    const currentProviderId = useConfigStore((state) => state.currentProviderId);
-    const getCurrentProvider = useConfigStore((state) => state.getCurrentProvider);
-    const currentProvider = getCurrentProvider();
-    const modelLabel = getModelDisplayName(currentProvider, currentModelId, t('chat.modelControls.selectModel'));
+    const currentModelId = useConfigStore((state) => model === undefined ? state.currentModelId : model?.modelId);
+    const currentProviderId = useConfigStore((state) => model === undefined ? state.currentProviderId : model?.providerId);
+    const providers = useConfigStore((state) => state.providers);
+    const currentProvider = providers.find((provider) => provider.id === currentProviderId);
+    const isAuto = isAutoModel(currentProviderId, currentModelId);
+    const modelLabel = isAuto
+        ? t('chat.modelControls.autoModel')
+        : getModelDisplayName(currentProvider, currentModelId, t('chat.modelControls.selectModel'));
+    // The send would stop with an error, so the button says so beforehand.
+    // A controlled button (`model` given) belongs to its column's folder; the
+    // main chat's reads the active selection, so it checks the active catalog.
+    const columnDirectory = useChatSessionSelection().directory ?? undefined;
+    const modelUnavailable = useModelMissingFromCatalog(model === undefined ? undefined : columnDirectory, currentProviderId, currentModelId);
+    const unavailableText = modelUnavailable
+        ? t('chat.modelControls.modelUnavailable', { model: modelLabel })
+        : undefined;
 
     return (
         <button
@@ -33,17 +49,20 @@ export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenMode
                 }
             }}
             className={cn(
-                'inline-flex min-w-0 items-stretch',
+                // 36px to tap, drawn in the row's 26px: the margin keeps the row's height.
+                'inline-flex h-9 -my-[5px] min-h-0 min-w-0 items-stretch',
                 'rounded-lg',
                 'typography-micro font-medium text-foreground/80',
                 'focus:outline-none hover:bg-[var(--interactive-hover)]',
                 className
             )}
-            style={{ height: '26px', maxHeight: '26px', minHeight: '26px' }}
-            title={modelLabel}
+            title={unavailableText ?? modelLabel}
+            aria-label={unavailableText}
         >
             <span className="flex h-full w-full min-w-0 items-center gap-1">
-                {currentProviderId ? (
+                {unavailableText ? (
+                    <Icon name="error-warning" className="size-4 flex-shrink-0 text-[var(--status-warning)]" />
+                ) : currentProviderId && !isAuto ? (
                     <ProviderLogo providerId={currentProviderId} className="size-4 flex-shrink-0" />
                 ) : null}
                 <span className="truncate">{modelLabel}</span>

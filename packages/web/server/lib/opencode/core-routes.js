@@ -1,3 +1,19 @@
+import { buildExternalManualRestartResponse } from './config-mutation-response.js';
+import { ThemeImportStorageError } from './theme-runtime.js';
+import { registerThemeCatalogRoutes } from './theme-catalog.js';
+import { collectLocalFileDiagnostics } from '../diagnostics/local-files.js';
+import { serverDiagnosticJournal } from '../diagnostics/server-journal.js';
+
+// Install before any routes or body parsers so early 4xx responses are covered too.
+export const registerHttpResponseDiagnostics = (app, journal = serverDiagnosticJournal) => {
+  app.use((req, res, next) => {
+    res.once('finish', () => {
+      journal.recordHttpResponse(req.method, req.path, res.statusCode);
+    });
+    next();
+  });
+};
+
 const parseLoopbackUrl = (rawUrl) => {
   if (typeof rawUrl !== 'string') {
     return null;
@@ -22,40 +38,17 @@ const parseLoopbackUrl = (rawUrl) => {
   return url;
 };
 
-const getRequestPathname = (req) => {
-  const rawUrl = req?.originalUrl || req?.url || '';
-  if (typeof rawUrl !== 'string' || rawUrl.length === 0) return '';
-  try {
-    return new URL(rawUrl, 'http://localhost').pathname;
-  } catch {
-    return '';
+/**
+ * Whether a request carries credentials /api would accept, without refusing
+ * it: routes open before login use this to leave private details out.
+ */
+export const isRequestAuthorized = async (req, res, { tunnelAuthController, uiAuthController }) => {
+  const scope = tunnelAuthController?.classifyRequestScope?.(req);
+  if (scope === 'tunnel' || scope === 'unknown-public') {
+    return Boolean(tunnelAuthController.getTunnelSessionFromRequest(req));
   }
-};
-
-const getQueryParam = (req, name) => {
-  const rawUrl = req?.originalUrl || req?.url || '';
-  if (typeof rawUrl !== 'string' || rawUrl.length === 0) return '';
-  try {
-    return new URL(rawUrl, 'http://localhost').searchParams.get(name)?.trim() || '';
-  } catch {
-    return '';
-  }
-};
-
-const getCookieValue = (req, name) => {
-  const cookieHeader = req?.headers?.cookie;
-  if (typeof cookieHeader !== 'string' || cookieHeader.length === 0) return '';
-  for (const segment of cookieHeader.split(';')) {
-    const [rawName, ...rawValueParts] = segment.split('=');
-    if (rawName?.trim() !== name) continue;
-    return rawValueParts.join('=').trim();
-  }
-  return '';
-};
-
-const hasPreviewProxyCredential = (req) => {
-  if (!getRequestPathname(req).startsWith('/api/preview/proxy/')) return false;
-  return Boolean(getQueryParam(req, 'oc_preview_token') || getCookieValue(req, 'oc_preview_token'));
+  if (!uiAuthController) return false;
+  return Boolean(await uiAuthController.resolveAuthContext(req, res, { allowUrlToken: false }));
 };
 
 export const registerServerStatusRoutes = (app, dependencies) => {
@@ -67,6 +60,12 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     serverStartedAt,
     gracefulShutdown,
     getHealthSnapshot,
+    // Port this OpenChamber instance serves on and the tunnel public URL (if
+    // a tunnel is active). Exposed on /api/system/info so the UI can surface
+    // the active instance's service URLs. Optional: older wiring omits them
+    // and the endpoint reports null.
+    getServerPort = () => null,
+    getTunnelUrl = () => null,
     // Stable server identity (hash of the public signing key — not a secret).
     // Exposed on /health and /api/version so a client can verify that a
     // learned/probed address belongs to the expected server BEFORE sending its
@@ -74,6 +73,9 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     getServerId = async () => null,
     tunnelAuthController = null,
     uiAuthController = null,
+    // Loaded OpenCode directories and process counts for the diagnostic
+    // export (`../diagnostics/opencode-load.js`); older wiring omits it.
+    readOpenCodeLoad = null,
   } = dependencies;
 
   // The identity is immutable for the process lifetime; resolve once, and never
@@ -120,9 +122,12 @@ export const registerServerStatusRoutes = (app, dependencies) => {
       'api.health.v1',
       'api.runtime-url.v1',
       'api.raw-file.v1',
+      'api.notifications.emit.v1',
       'realtime.sse.v1',
       'realtime.websocket.global-events.v1',
       'terminal.websocket.v1',
+      // Message pages honour `x-openchamber-part-shells` (message-shells.js).
+      'api.message-part-shells.v1',
     ],
   };
 
@@ -245,6 +250,40 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     });
   });
 
+  // This is a local support export, not an API for connected remote clients.
+  // Check the socket address rather than proxy-provided forwarding headers.
+  // The private relay also dials loopback, and stamps every request it forwards.
+  const requireLocalDiagnostics = (req, res, next) => {
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket?.remoteAddress)
+      || req.headers['x-openchamber-relay-connection']
+      || (tunnelAuthController?.classifyRequestScope && tunnelAuthController.classifyRequestScope(req) !== 'local')) {
+      res.status(403).json({ error: 'Local diagnostics require a loopback connection' });
+      return;
+    }
+    if (uiAuthController?.requireAuth) return uiAuthController.requireAuth(req, res, next);
+    next();
+  };
+
+  app.get('/api/diagnostics/local-files', requireLocalDiagnostics, async (_req, res) => {
+    try {
+      res.json(await collectLocalFileDiagnostics({ webPort: getServerPort() }));
+    } catch {
+      res.status(500).json({ error: 'Diagnostics unavailable' });
+    }
+  });
+
+  app.get('/api/diagnostics/opencode-load', requireLocalDiagnostics, async (_req, res) => {
+    if (!readOpenCodeLoad) {
+      res.status(404).json({ error: 'Diagnostics unavailable' });
+      return;
+    }
+    try {
+      res.json(await readOpenCodeLoad());
+    } catch {
+      res.status(500).json({ error: 'Diagnostics unavailable' });
+    }
+  });
+
   app.get('/api/version', async (_req, res) => {
     const serverId = await resolveServerId();
     res.json({
@@ -350,13 +389,21 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     }
   });
 
-  app.get('/api/system/info', (_req, res) => {
-    res.json({
+  app.get('/api/system/info', async (req, res) => {
+    // Open before login: the CLI matches `pid` against its pid file to tell
+    // its own server from whatever else holds the port. Where this server is
+    // reachable (port, tunnel address) is for signed-in callers only.
+    const info = {
       openchamberVersion,
       runtime: runtimeName,
       pid: process.pid,
       startedAt: serverStartedAt,
-    });
+    };
+    if (await isRequestAuthorized(req, res, { tunnelAuthController, uiAuthController }).catch(() => false)) {
+      info.port = getServerPort();
+      info.tunnelUrl = getTunnelUrl();
+    }
+    res.json(info);
   });
 
   // Allocates a best-effort free TCP port hint on 127.0.0.1.
@@ -390,6 +437,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     getRelayPairingCandidate = async () => null,
     // Re-evaluate the relay lifecycle after pairing/device changes.
     reconcileRelay = async () => {},
+    // Drops the push registrations of the given clients' devices.
+    removeClientPushDevices = async () => {},
     // Returns { local, lan, relayAvailable } — the direct transport URLs the
     // server can actually be reached on (LAN derived from the server bind, not
     // the UI origin), for the create-device dialog.
@@ -550,6 +599,23 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   };
 
+  const candidateUrlType = (url) => {
+    try {
+      return new URL(url).protocol === 'https:' ? 'tunnel' : 'lan';
+    } catch {
+      return 'lan';
+    }
+  };
+
+  const isLoopbackCandidateUrl = (url) => {
+    try {
+      const hostname = new URL(url).hostname.toLowerCase();
+      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+    } catch {
+      return true;
+    }
+  };
+
   // `preferredServerUrl` is the caller-supplied externally reachable URL (the
   // desktop UI reaches its own server over loopback, so the request origin is not
   // scannable — it passes the LAN URL instead). Falls back to the request origin
@@ -563,15 +629,21 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
   const pairingServerCandidates = async (req, { preferredServerUrl, includeRelay, includeDirect = true } = {}) => {
     const candidates = [];
     if (includeDirect) {
-      const direct = normalizeCandidateUrl(preferredServerUrl) || requestOrigin(req);
+      const preferred = normalizeCandidateUrl(preferredServerUrl);
+      const origin = normalizeCandidateUrl(requestOrigin(req));
+      const direct = preferred || origin;
       if (direct) {
-        let type = 'lan';
-        try {
-          const parsed = new URL(direct);
-          type = parsed.protocol === 'https:' ? 'tunnel' : 'lan';
-        } catch {
-        }
-        candidates.push({ type, url: direct, priority: 10 });
+        candidates.push({ type: candidateUrlType(direct), url: direct, priority: 10 });
+      }
+      // The origin the creator is browsing over (e.g. a public https domain in
+      // front of a reverse proxy) is a reachable address the server cannot
+      // discover from its own interfaces. Carry it as an additional direct
+      // candidate so the paired device can keep using that same domain instead
+      // of depending on LAN hairpin behavior or relay availability. Loopback
+      // origins (desktop shell, localhost dev) are unreachable from another
+      // device and are skipped.
+      if (origin && direct && origin !== direct && !isLoopbackCandidateUrl(origin)) {
+        candidates.push({ type: candidateUrlType(origin), url: origin, priority: 20 });
       }
     }
     // The client races candidates and falls back to relay only if the direct URL
@@ -592,15 +664,55 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     res.status(statusCode).json({ error: 'Invalid or expired pairing session' });
   };
 
+  /**
+   * Endpoints that carry their own authority instead of a UI session.
+   *
+   * The repository credential helper runs from Git itself, in a terminal or
+   * the agent's shell, wherever a repository names it in `.git/config`. It
+   * authenticates with the secret the server writes beside its endpoint file,
+   * rotated every start, and the route refuses any peer that is not this
+   * machine. It has no UI session and cannot obtain one, so leaving it behind
+   * the session guard would make a repository's account silently unusable on
+   * every instance that sets a UI password, which Docker requires.
+   */
+  const selfAuthenticatedApiPaths = new Set(['/api/git/repository-credential']);
+
+  // An extension tracker's OAuth callback (`/tracker/ext-<id>/oauth/callback`)
+  // is the same kind of page: the tracker redirects the browser here with no
+  // UI bearer, and the route accepts only a `state` this process issued.
+  const isGuestOauthCallback = (req) => (
+    req.method === 'GET'
+    && /^\/(?:guests\/[a-z][a-z0-9-]*|tracker\/ext-[a-z][a-z0-9-]*)\/oauth\/callback$/.test(req.path || '')
+  );
+
+  // An MCP server's OAuth callback lands on the OpenChamber origin because a
+  // browser on another machine cannot reach OpenCode's loopback listener. The
+  // route forwards it there only for a state bound to a live sign-in.
+  const isMcpOauthCallback = (req) => (
+    req.method === 'GET'
+    && /^\/mcp\/oauth\/[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\/callback$/.test(req.path || '')
+  );
+
+  // An HTML preview runs in an opaque-origin sandbox and carries no session.
+  // The grant in its path is the capability; the fs route checks it.
+  const isFilePreviewRead = (req) => (
+    req.method === 'GET'
+    && /^\/fs\/preview\/[^/]+\/./.test(req.path || '')
+  );
+
+  // An extension frame is sandboxed the same way and loads its package
+  // through a grant in the path; the guests route checks it.
+  const isGuestFrameFileRead = (req) => (
+    req.method === 'GET'
+    && /^\/guest-files\/[^/]+\/./.test(req.path || '')
+  );
+
   const requireApiAuth = async (req, res, next) => {
-    // Preview proxy requests carry a target-scoped capability token that the
-    // preview proxy validates against the registered target id/TTL. Let those
-    // requests reach that stricter check instead of failing the global UI auth
-    // gate when the short-lived browser URL auth token expires.
-    if (hasPreviewProxyCredential(req)) {
+    const pathname = (req.originalUrl || '').split('?')[0];
+    if (selfAuthenticatedApiPaths.has(pathname)) return next();
+    if (isGuestOauthCallback(req) || isMcpOauthCallback(req) || isFilePreviewRead(req) || isGuestFrameFileRead(req)) {
       return next();
     }
-
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
       return tunnelAuthController.requireTunnelSession(req, res, next);
@@ -722,6 +834,20 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  app.patch('/api/passkeys/:id', express.json({ limit: '8kb' }), async (req, res, next) => {
+    const requestScope = tunnelAuthController.classifyRequestScope(req);
+    if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
+      return res.status(403).json({ error: 'Passkey management is disabled for tunnel scope', tunnelLocked: true });
+    }
+    try {
+      await uiAuthController.requireSessionAuth(req, res, async () => {
+        await uiAuthController.handlePasskeyRename(req, res);
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post('/api/auth/reset', async (req, res, next) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -781,6 +907,12 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
       if (!result.revoked) {
         return res.status(404).json({ revoked: false, error: 'Client not found' });
       }
+      // The revocation is already written, and the page acts on its success (the
+      // desktop drops its own token), so a failure here stays a log line. Sends
+      // skip this client's key, and clearing it from the list retries the rest.
+      await removeClientPushDevices([req.params.id]).catch((error) => {
+        console.warn('Failed to remove push registrations of a revoked client:', error?.message ?? error);
+      });
       void reconcileRelay();
       res.json(result);
     });
@@ -796,6 +928,10 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
           return res.status(403).json({ purged: 0, error: 'Client tokens cannot purge revoked devices' });
         }
       }
+      // Before the rows go: once a row is gone its registrations can no longer
+      // be told from a cookie session's. A failure keeps the rows for a retry.
+      const clients = await remoteClientAuthRuntime.listClients();
+      await removeClientPushDevices(clients.filter((client) => client.revokedAt).map((client) => client.id));
       const result = await remoteClientAuthRuntime.purgeRevokedClients();
       void reconcileRelay();
       res.json(result);
@@ -1006,6 +1142,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
 export const registerSettingsUtilityRoutes = (app, dependencies) => {
   const {
     readCustomThemesFromDisk,
+    saveImportedTheme,
+    deleteImportedTheme,
     refreshOpenCodeAfterConfigChange,
     clientReloadDelayMs,
   } = dependencies;
@@ -1020,11 +1158,41 @@ export const registerSettingsUtilityRoutes = (app, dependencies) => {
     }
   });
 
+  app.post('/api/config/themes', async (req, res) => {
+    try {
+      const theme = await saveImportedTheme(req.body?.theme);
+      res.status(201).json({ theme });
+    } catch (error) {
+      if (error instanceof ThemeImportStorageError) {
+        res.status(error.status).json({ error: error.code });
+        return;
+      }
+      console.error('[themes] Failed to save imported theme');
+      res.status(500).json({ error: 'save' });
+    }
+  });
+
+  registerThemeCatalogRoutes(app);
+  app.delete('/api/config/themes/:id', async (req, res) => {
+    try {
+      await deleteImportedTheme(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(error instanceof ThemeImportStorageError ? error.status : 500).json({ error: 'delete' });
+    }
+  });
+
   app.post('/api/config/reload', async (_req, res) => {
     try {
       console.log('[Server] Manual configuration reload requested');
 
-      await refreshOpenCodeAfterConfigChange('manual configuration reload');
+      const refreshResult = await refreshOpenCodeAfterConfigChange('manual configuration reload');
+
+      if (refreshResult?.external) {
+        return res.json(buildExternalManualRestartResponse(
+          'Configuration is saved on disk. Restart your connected OpenCode server to apply the changes.',
+        ));
+      }
 
       res.json({
         success: true,
@@ -1043,15 +1211,24 @@ export const registerSettingsUtilityRoutes = (app, dependencies) => {
 };
 
 export const registerCommonRequestMiddleware = (app, dependencies) => {
-  const { express, verboseRequestLogs = false } = dependencies;
+  // `skipBodyParsing(req)` names a request whose body must reach its route untouched: a
+  // request the isolated-spaces dispatcher streams into a space, where a parsed body would
+  // otherwise be consumed here and lost.
+  const { express, verboseRequestLogs = false, skipBodyParsing = () => false } = dependencies;
 
   app.use((req, res, next) => {
-    if (req.path.startsWith('/api/behavior')) {
+    if (skipBodyParsing(req)) {
+      next();
+    } else if (req.path === '/api/config/themes' || req.path.startsWith('/api/config/themes/')) {
+      express.json({ limit: '1mb' })(req, res, next);
+    } else if (req.path.startsWith('/api/behavior')) {
       const contentLength = parseInt(req.headers['content-length'] || '0', 10);
       if (contentLength > 1024 * 1024) {
         return res.status(413).json({ error: 'Content exceeds maximum size of 1048576 bytes' });
       }
       express.json({ limit: '1mb' })(req, res, next);
+    } else if (req.path.startsWith('/api/source-control')) {
+      express.json({ limit: '256kb' })(req, res, next);
     } else if (
       req.path.startsWith('/api/config/agents') ||
       req.path.startsWith('/api/config/commands') ||
@@ -1059,7 +1236,12 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
       req.path.startsWith('/api/config/snippets') ||
       req.path.startsWith('/api/config/settings') ||
       req.path.startsWith('/api/config/skills') ||
+      req.path === '/api/config/skill-switch' ||
       req.path.startsWith('/api/config/plugins') ||
+      req.path.startsWith('/api/config/websearch') ||
+      req.path.startsWith('/api/config/warming') ||
+      req.path === '/api/config/compaction' ||
+      req.path.startsWith('/api/session-warming') ||
       req.path.startsWith('/api/projects') ||
       req.path.startsWith('/api/fs') ||
       req.path.startsWith('/api/git') ||
@@ -1067,16 +1249,23 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
       req.path.startsWith('/api/prompts') ||
       req.path.startsWith('/api/terminal') ||
       req.path.startsWith('/api/opencode') ||
+      req.path === '/api/openchamber/directory' ||
       req.path.startsWith('/api/push') ||
       req.path.startsWith('/api/notifications') ||
       req.path.startsWith('/api/permission-auto-accept') ||
+      req.path.startsWith('/api/message-queue') ||
+      req.path.startsWith('/api/auto-review') ||
+      req.path.startsWith('/api/provider') ||
       req.path.startsWith('/api/session-folders') ||
       req.path.startsWith('/api/small-model') ||
+      req.path.startsWith('/api/walkthrough') ||
       req.path.startsWith('/api/goals') ||
       req.path.startsWith('/api/text') ||
       req.path.startsWith('/api/voice') ||
+      req.path.startsWith('/api/environment') ||
       req.path.startsWith('/api/tts') ||
-      req.path.startsWith('/api/openchamber/tunnel')
+      req.path.startsWith('/api/openchamber/tunnel') ||
+      req.path.startsWith('/api/openchamber/spaces')
     ) {
       express.json({ limit: '50mb' })(req, res, next);
     } else if (req.path.startsWith('/api')) {
@@ -1086,7 +1275,14 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
     }
   });
 
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  const urlencoded = express.urlencoded({ extended: true, limit: '50mb' });
+  app.use((req, res, next) => {
+    if (skipBodyParsing(req)) {
+      next();
+      return;
+    }
+    urlencoded(req, res, next);
+  });
 
   app.use((req, _res, next) => {
     if (verboseRequestLogs) {

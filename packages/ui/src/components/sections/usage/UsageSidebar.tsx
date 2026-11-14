@@ -1,17 +1,15 @@
 import React from 'react';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
-import { ProviderLogo } from '@/components/ui/ProviderLogo';
+import { QuotaProviderLogo } from '@/components/usage/QuotaProviderLogo';
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Icon } from "@/components/icon/Icon";
 import { cn } from '@/lib/utils';
-import { QUOTA_PROVIDERS, resolveUsageTone } from '@/lib/quota';
-import { useQuotaStore } from '@/stores/useQuotaStore';
+import { resolveUsageTone } from '@/lib/quota';
+import { useQuotaAutoRefresh, useQuotaProviders, useQuotaStore } from '@/stores/useQuotaStore';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { useI18n } from '@/lib/i18n';
-import { SETTINGS_PANEL_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
+import { SETTINGS_SECTION_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
 
 interface UsageSidebarProps {
   onItemSelect?: () => void;
@@ -35,41 +33,18 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
   const setSelectedProvider = useQuotaStore((state) => state.setSelectedProvider);
   const fetchAllQuotas = useQuotaStore((state) => state.fetchAllQuotas);
   const isLoading = useQuotaStore((state) => state.isLoading);
-  const usageAutoRefresh = useQuotaStore((state) => state.autoRefresh);
-  const usageRefreshIntervalMs = useQuotaStore((state) => state.refreshIntervalMs);
   const usageDisplayMode = useQuotaStore((state) => state.displayMode);
-  const setUsageAutoRefresh = useQuotaStore((state) => state.setAutoRefresh);
-  const setUsageRefreshInterval = useQuotaStore((state) => state.setRefreshInterval);
   const setUsageDisplayMode = useQuotaStore((state) => state.setDisplayMode);
-  const showPredValues = useQuotaStore((state) => state.showPredValues);
-  const setShowPredValues = useQuotaStore((state) => state.setShowPredValues);
-  const loadUsageSettings = useQuotaStore((state) => state.loadSettings);
+  const providers = useQuotaProviders();
+  useQuotaAutoRefresh(true, true);
 
-  React.useEffect(() => {
-    void loadUsageSettings();
-  }, [loadUsageSettings]);
-
-  const persistUsageSettings = React.useCallback(async (changes: { usageAutoRefresh?: boolean; usageRefreshIntervalMs?: number; usageDisplayMode?: 'usage' | 'remaining'; usageDropdownProviders?: string[]; usageShowPredValues?: boolean }) => {
+  const persistUsageSettings = React.useCallback(async (changes: { usageDisplayMode?: 'usage' | 'remaining'; usageDropdownProviders?: string[] }) => {
     try {
       await updateDesktopSettings(changes);
     } catch (error) {
       console.warn('Failed to save usage settings:', error);
     }
   }, []);
-
-  const handleUsageAutoRefreshChange = React.useCallback((enabled: boolean) => {
-    setUsageAutoRefresh(enabled);
-    void persistUsageSettings({ usageAutoRefresh: enabled });
-  }, [persistUsageSettings, setUsageAutoRefresh]);
-
-  const handleUsageRefreshIntervalChange = React.useCallback((value: string) => {
-    const next = Number(value);
-    if (!Number.isFinite(next)) {
-      return;
-    }
-    setUsageRefreshInterval(next);
-    void persistUsageSettings({ usageRefreshIntervalMs: next });
-  }, [persistUsageSettings, setUsageRefreshInterval]);
 
   const handleUsageDisplayModeChange = React.useCallback((value: string) => {
     if (value !== 'usage' && value !== 'remaining') {
@@ -79,48 +54,15 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
     void persistUsageSettings({ usageDisplayMode: value });
   }, [persistUsageSettings, setUsageDisplayMode]);
 
-  const handleShowPredValuesChange = React.useCallback((enabled: boolean) => {
-    setShowPredValues(enabled);
-    void persistUsageSettings({ usageShowPredValues: enabled });
-  }, [persistUsageSettings, setShowPredValues]);
-
   const bgClass = 'bg-background';
 
   return (
     <div className={cn('flex h-full flex-col', bgClass)}>
       <div className="border-b px-3 pt-4 pb-3">
-        <h2 className={`${SETTINGS_PANEL_TITLE_CLASS} mb-3`}>{t('settings.usage.sidebar.title')}</h2>
+        <h2 className={`${SETTINGS_SECTION_TITLE_CLASS} mb-3`}>{t('settings.usage.sidebar.title')}</h2>
         <div className="flex items-center justify-between gap-2">
-          <span className="typography-meta text-muted-foreground">{t('settings.usage.sidebar.total', { count: QUOTA_PROVIDERS.length })}</span>
+          <span className="typography-meta text-muted-foreground">{t('settings.usage.sidebar.total', { count: providers.length })}</span>
           <div className="flex items-center gap-2">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-flex">
-                  <Checkbox
-                    checked={usageAutoRefresh}
-                    onChange={handleUsageAutoRefreshChange}
-                    ariaLabel={t('settings.usage.sidebar.actions.toggleAutoRefreshAria')}
-                  />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {t('settings.usage.sidebar.tooltip.autoRefresh')}
-              </TooltipContent>
-            </Tooltip>
-            <Select
-              value={String(usageRefreshIntervalMs)}
-              onValueChange={handleUsageRefreshIntervalChange}
-              disabled={!usageAutoRefresh}
-            >
-              <SelectTrigger className="w-fit">
-                <SelectValue placeholder={t('settings.usage.sidebar.field.intervalPlaceholder')} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="30000">30s</SelectItem>
-                <SelectItem value="60000">1m</SelectItem>
-                <SelectItem value="300000">5m</SelectItem>
-              </SelectContent>
-            </Select>
             <Button size="sm"
               variant="ghost"
               className="h-7 w-7 px-0 text-muted-foreground"
@@ -137,7 +79,11 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
           <span className="typography-micro text-muted-foreground">{t('settings.usage.sidebar.field.display')}</span>
           <Select value={usageDisplayMode} onValueChange={handleUsageDisplayModeChange}>
             <SelectTrigger className="w-fit">
-              <SelectValue placeholder={t('settings.usage.sidebar.field.displayModePlaceholder')} />
+              <SelectValue>
+                {usageDisplayMode === 'remaining'
+                  ? t('settings.usage.sidebar.field.displayModeRemaining')
+                  : t('settings.usage.sidebar.field.displayModeUsage')}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="usage">{t('settings.usage.sidebar.field.displayModeUsage')}</SelectItem>
@@ -145,25 +91,15 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
             </SelectContent>
           </Select>
         </div>
-        <div className="mt-2 flex items-center justify-between gap-2">
-          <span className="typography-micro text-muted-foreground">
-            {t('settings.usage.sidebar.field.showPredictions')}
-          </span>
-          <Checkbox
-            checked={showPredValues}
-            onChange={handleShowPredValuesChange}
-            ariaLabel={t('settings.usage.sidebar.field.showPredictions')}
-          />
-        </div>
       </div>
 
       <ScrollableOverlay outerClassName="flex-1 min-h-0" className="space-y-1 px-3 py-2 overflow-x-hidden">
-        {QUOTA_PROVIDERS.map((provider) => {
+        {providers.map((provider) => {
           const result = results.find((entry) => entry.providerId === provider.id);
           const percent = getUsagePercent(result?.usage);
           const tone = resolveUsageTone(percent);
           const isSelected = provider.id === selectedProviderId;
-          const configured = result?.configured ?? false;
+          const configured = result?.configured;
 
           const statusStyle = !configured
             ? { backgroundColor: 'var(--surface-muted-foreground)', opacity: 0.4 }
@@ -187,15 +123,15 @@ export const UsageSidebar: React.FC<UsageSidebarProps> = ({ onItemSelect }) => {
                   setSelectedProvider(provider.id);
                   onItemSelect?.();
                 }}
-                className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <span className="h-2.5 w-2.5 rounded-full flex-shrink-0" style={statusStyle} />
-                <ProviderLogo providerId={provider.id} className="h-4 w-4 flex-shrink-0" />
+                <QuotaProviderLogo providerId={provider.id} className="h-4 w-4 flex-shrink-0" />
                 <span className="typography-ui-label font-normal truncate flex-1 min-w-0 text-foreground">
                   {provider.name}
                 </span>
-              {!configured && (
-                <span className="typography-micro text-muted-foreground/60 flex-shrink-0">{t('settings.usage.sidebar.status.notSet')}</span>
+              {configured === false && (
+                <span className="typography-micro text-muted-foreground flex-shrink-0">{t('settings.usage.sidebar.status.notSet')}</span>
               )}
             </button>
           </div>

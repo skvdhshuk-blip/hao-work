@@ -2,21 +2,22 @@ import React from 'react';
 
 import { Icon } from '@/components/icon/Icon';
 import type { IconName } from '@/components/icon/icons';
-import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { preloadProviderLogos } from '@/hooks/useProviderLogo';
+import { useTabletLayout } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
-import { isIPadApp } from '@/lib/platform';
-import { clampPercent, formatQuotaResetLabel, formatQuotaValueLabel, formatWindowLabel, QUOTA_PROVIDERS, resolveUsageTone } from '@/lib/quota';
-import { getDisplayModelName } from '@/lib/quota/model-families';
+import { clampPercent, isExtensionQuotaProviderId, resolveUsageTone } from '@/lib/quota';
+import { UsageProviderCards } from '@/components/usage/UsageProviderCards';
+import { useUsageProviderGroups, type UsageProviderGroup } from '@/components/usage/usageGroups';
 import { cn } from '@/lib/utils';
+import { findLatestContextFill } from '@/stores/utils/tokenUtils';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
-import type { QuotaProviderId, UsageWindow } from '@/types';
 import { useUIStore, type TimeFormatPreference } from '@/stores/useUIStore';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionMessages } from '@/sync/sync-context';
+import { MOBILE_HEADER_BUTTON_CLASS } from '@/components/ui/mobileHeader';
 
-const IPAD_METADATA_POPOVER_WIDTH = 380;
+const TABLET_METADATA_POPOVER_WIDTH = 380;
 
 const getNumericLimit = (limit: unknown, key: 'context' | 'output'): number | undefined => {
   if (!limit || typeof limit !== 'object') return undefined;
@@ -24,47 +25,26 @@ const getNumericLimit = (limit: unknown, key: 'context' | 'output'): number | un
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 };
 
-const getTokenCount = (value: unknown): number => (
-  typeof value === 'number' && Number.isFinite(value) ? value : 0
-);
-
 const formatTokens = (value: number): string => {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return String(value);
 };
 
-type MobileUsageLimitRow = {
-  key: string;
-  label: string;
-  subtitle?: string;
-  window: UsageWindow;
-};
+type ContextDisplay =
+  | { state: 'measured'; percentage: number; tokens: string; colorClass: string }
+  /** Compacted since the last response that reported tokens: the fill is unknown. */
+  | { state: 'compacted'; tokens: string }
+  /** Nothing to measure yet: a draft, or a session without a response. */
+  | { state: 'pending' }
+  | null;
 
-type MobileUsageProviderGroup = {
-  providerId: QuotaProviderId;
-  providerName: string;
-  rows: MobileUsageLimitRow[];
-  status: string | null;
-};
+const UNKNOWN_VALUE = '\u2014';
 
-type ContextDisplay = {
-  percentage: number;
-  tokens: string;
-  colorClass: string;
-} | null;
-
-const getWindowValueClass = (window: UsageWindow): string => {
-  const usedPercent = window.usedPercent;
-  if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) return 'text-foreground';
-  if (usedPercent >= 80) return 'text-[var(--status-error)]';
-  if (usedPercent >= 50) return 'text-[var(--status-warning)]';
-  return 'text-foreground';
-};
-
-const ContextProgressIcon: React.FC<{ percentage: number }> = ({ percentage }) => {
-  const progressPct = clampPercent(percentage) ?? 0;
-  const tone = resolveUsageTone(percentage);
+/** `percentage: null` draws the empty track only: the fill is unknown after a compaction. */
+const ContextProgressIcon: React.FC<{ percentage: number | null }> = ({ percentage }) => {
+  const progressPct = clampPercent(percentage ?? 0) ?? 0;
+  const tone = resolveUsageTone(percentage ?? 0);
   const progressColor = tone === 'critical'
     ? 'var(--status-error)'
     : tone === 'warn'
@@ -80,7 +60,7 @@ const ContextProgressIcon: React.FC<{ percentage: number }> = ({ percentage }) =
       viewBox={`0 0 ${size} ${size}`}
       className="size-[18px] -rotate-90"
       role="progressbar"
-      aria-valuenow={Math.round(progressPct)}
+      aria-valuenow={percentage === null ? undefined : Math.round(progressPct)}
       aria-valuemin={0}
       aria-valuemax={100}
     >
@@ -92,18 +72,20 @@ const ContextProgressIcon: React.FC<{ percentage: number }> = ({ percentage }) =
         stroke="var(--interactive-border)"
         strokeWidth={stroke}
       />
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={radius}
-        fill="none"
-        stroke={progressColor}
-        strokeWidth={stroke}
-        strokeLinecap="round"
-        strokeDasharray={circumference}
-        strokeDashoffset={circumference * (1 - progressPct / 100)}
-        className="transition-[stroke-dashoffset,stroke] duration-300"
-      />
+      {percentage === null ? null : (
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={progressColor}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - progressPct / 100)}
+          className="transition-[stroke-dashoffset,stroke] duration-300"
+        />
+      )}
     </svg>
   );
 };
@@ -119,7 +101,7 @@ const MetadataRow: React.FC<{
       {iconNode ?? (icon ? <Icon name={icon} className="size-[18px]" /> : null)}
     </span>
     <span className="shrink-0 typography-ui-label text-muted-foreground">{label}</span>
-    <span className="min-w-0 flex-1 truncate text-right typography-ui-label font-medium text-foreground">
+    <span className="min-w-0 flex-1 truncate text-end typography-ui-label font-medium text-foreground">
       {children}
     </span>
   </div>
@@ -130,7 +112,7 @@ const SessionMetadataOverlay: React.FC<{
   onClose: () => void;
   anchorRef: React.RefObject<HTMLElement | null>;
   contextDisplay: ContextDisplay;
-  usageGroups: MobileUsageProviderGroup[];
+  usageGroups: UsageProviderGroup[];
   usageDisplayMode: 'usage' | 'remaining';
   isUsageLoading: boolean;
   timeFormatPreference: TimeFormatPreference;
@@ -139,18 +121,18 @@ const SessionMetadataOverlay: React.FC<{
   const panelRef = React.useRef<HTMLDivElement>(null);
   const [shouldRender, setShouldRender] = React.useState(open);
   const [isExiting, setIsExiting] = React.useState(false);
-  // iPad: a phone-width sheet stretched across the whole chat column looks
+  // Tablet: a phone-width sheet stretched across the whole chat column looks
   // broken — render a popover anchored to the metadata button instead.
-  const isIPad = React.useMemo(() => isIPadApp(), []);
+  const { enabled: isTabletLayout } = useTabletLayout();
   const wrapperRef = React.useRef<HTMLDivElement>(null);
-  const [ipadAnchorLeft, setIpadAnchorLeft] = React.useState<number | null>(null);
+  const [anchorLeft, setIpadAnchorLeft] = React.useState<number | null>(null);
 
   // The shell has transformed ancestors, so the fixed wrapper's containing
   // block is the chat column, NOT the viewport. Anchor the popover in the
   // wrapper's own coordinate space — viewport-based lefts would double-count
   // the sidebar offset.
   React.useLayoutEffect(() => {
-    if (!open || !isIPad || !shouldRender) return;
+    if (!open || !isTabletLayout || !shouldRender) return;
     const compute = () => {
       const anchorRect = anchorRef.current?.getBoundingClientRect();
       const wrapperRect = wrapperRef.current?.getBoundingClientRect();
@@ -161,7 +143,7 @@ const SessionMetadataOverlay: React.FC<{
       const relativeLeft = anchorRect.left - wrapperRect.left;
       const left = Math.min(
         Math.max(relativeLeft, 8),
-        Math.max(8, wrapperRect.width - IPAD_METADATA_POPOVER_WIDTH - 8),
+        Math.max(8, wrapperRect.width - TABLET_METADATA_POPOVER_WIDTH - 8),
       );
       setIpadAnchorLeft(left);
     };
@@ -173,9 +155,9 @@ const SessionMetadataOverlay: React.FC<{
     const observer = new ResizeObserver(compute);
     observer.observe(wrapper);
     return () => observer.disconnect();
-  }, [anchorRef, isIPad, open, shouldRender]);
+  }, [anchorRef, isTabletLayout, open, shouldRender]);
 
-  const ipadPopover = isIPad && ipadAnchorLeft !== null;
+  const isPopover = isTabletLayout && anchorLeft !== null;
 
   React.useEffect(() => {
     if (open) {
@@ -232,18 +214,18 @@ const SessionMetadataOverlay: React.FC<{
         role="dialog"
         aria-label={t('mobile.header.openMetadataAria')}
         className={cn(
-          'overflow-y-auto overscroll-contain rounded-[20px] border border-border/70 bg-[var(--surface-elevated)] p-2 shadow-[0_12px_32px_rgb(0_0_0_/_0.2)] will-change-transform',
-          ipadPopover ? 'absolute origin-top-left' : 'mx-3 mt-2',
+          'oc-surface-elevated overflow-y-auto overscroll-contain rounded-[20px] border border-edge bg-surface-elevated p-2 shadow-[0_4px_12px_rgb(0_0_0_/_0.08)] will-change-transform',
+          isPopover ? 'absolute origin-top-left' : 'mx-3 mt-2',
           isExiting ? 'pointer-events-none' : 'pointer-events-auto',
         )}
         style={{
           animation: `${isExiting ? 'session-metadata-out' : 'session-metadata-in'} ${isExiting ? 140 : 170}ms cubic-bezier(0.32, 0.72, 0, 1) forwards`,
           maxHeight: 'min(72dvh, calc(100dvh - var(--oc-safe-area-top, 0px) - var(--oc-header-height, 56px) - 1rem))',
-          ...(ipadPopover
+          ...(isPopover
             ? {
                 top: 8,
-                left: ipadAnchorLeft ?? 8,
-                width: `min(${IPAD_METADATA_POPOVER_WIDTH}px, calc(100% - 16px))`,
+                left: anchorLeft ?? 8,
+                width: `min(${TABLET_METADATA_POPOVER_WIDTH}px, calc(100% - 16px))`,
               }
             : null),
         }}
@@ -251,14 +233,26 @@ const SessionMetadataOverlay: React.FC<{
         <div className="space-y-1">
           {contextDisplay ? (
             <MetadataRow
-              iconNode={<ContextProgressIcon percentage={contextDisplay.percentage} />}
+              iconNode={<ContextProgressIcon percentage={contextDisplay.state === 'measured' ? contextDisplay.percentage : null} />}
               label={t('mobile.header.metadata.context')}
             >
-              <span className="inline-flex items-baseline gap-1.5 tabular-nums">
-                <span className={cn('font-semibold', contextDisplay.colorClass)}>{contextDisplay.percentage.toFixed(1)}%</span>
-                <span className="text-muted-foreground">{contextDisplay.tokens}</span>
-              </span>
+              {contextDisplay.state === 'pending' ? null : (
+                <span className="inline-flex items-baseline gap-1.5 tabular-nums">
+                  {contextDisplay.state === 'measured'
+                    ? <span className={cn('font-semibold', contextDisplay.colorClass)}>{contextDisplay.percentage.toFixed(1)}%</span>
+                    : null}
+                  <span className="text-muted-foreground">{contextDisplay.tokens}</span>
+                </span>
+              )}
             </MetadataRow>
+          ) : null}
+          {contextDisplay?.state === 'compacted' ? (
+            <p className="px-2.5 pb-1 typography-meta text-muted-foreground">{t('contextUsage.compacted.description')}</p>
+          ) : null}
+          {/* The header ring is empty on a draft; this row says why, so the
+              empty ring reads as "nothing yet" rather than "still loading". */}
+          {contextDisplay?.state === 'pending' ? (
+            <p className="px-2.5 pb-1 typography-meta text-muted-foreground">{t('mobile.header.metadata.contextPending')}</p>
           ) : null}
           <MobileUsageLimits
             groups={usageGroups}
@@ -283,7 +277,7 @@ const SessionMetadataOverlay: React.FC<{
 };
 
 const MobileUsageLimits: React.FC<{
-  groups: MobileUsageProviderGroup[];
+  groups: UsageProviderGroup[];
   displayMode: 'usage' | 'remaining';
   isLoading: boolean;
   timeFormatPreference: TimeFormatPreference;
@@ -318,54 +312,11 @@ const MobileUsageLimits: React.FC<{
         </span>
       </div>
 
-      <div className="space-y-1.5">
-        {groups.map((group) => (
-          <div key={group.providerId} className="min-w-0 rounded-xl bg-[var(--surface-muted)] p-2.5">
-            <div className="flex min-w-0 items-center gap-2">
-              <ProviderLogo providerId={group.providerId} className="size-4 shrink-0" />
-              <span className="min-w-0 flex-1 truncate typography-ui-label font-medium text-foreground">
-                {group.providerName}
-              </span>
-              {group.status && group.rows.length === 0 ? (
-                <span className="shrink-0 truncate typography-micro text-muted-foreground">
-                  {group.status}
-                </span>
-              ) : null}
-            </div>
-            {group.rows.length > 0 ? (
-              <div className="mt-1.5 space-y-1">
-                {group.rows.map((row) => {
-                  const displayPercent = displayMode === 'remaining' ? row.window.remainingPercent : row.window.usedPercent;
-                  const metricLabel = formatQuotaValueLabel(row.window.valueLabel, displayPercent);
-                  const resetLabel = formatQuotaResetLabel(
-                    row.window.resetAt,
-                    row.window.resetAfterFormatted ?? row.window.resetAtFormatted,
-                    timeFormatPreference,
-                  );
-                  return (
-                    <div key={row.key} className="flex min-w-0 items-baseline justify-between gap-3">
-                      <span className="inline-flex min-w-0 flex-1 items-baseline gap-1.5">
-                        <span className="truncate typography-ui-label text-muted-foreground">
-                          {row.subtitle ? `${row.subtitle} · ${row.label}` : row.label}
-                        </span>
-                        {resetLabel ? (
-                          <span className="shrink-0 truncate typography-micro text-muted-foreground/70">{resetLabel}</span>
-                        ) : null}
-                      </span>
-                      <span className={cn('shrink-0 typography-ui-label font-semibold tabular-nums', getWindowValueClass(row.window))}>
-                        {metricLabel === '-' ? '' : metricLabel}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-            {group.status && group.rows.length > 0 ? (
-              <div className="mt-1.5 typography-micro text-muted-foreground">{group.status}</div>
-            ) : null}
-          </div>
-        ))}
-      </div>
+      <UsageProviderCards
+        groups={groups}
+        displayMode={displayMode}
+        timeFormatPreference={timeFormatPreference}
+      />
     </div>
   );
 };
@@ -397,46 +348,27 @@ export const MobileSessionMetadataButton = React.memo(function MobileSessionMeta
       [currentSessionId],
     ),
   );
-  const quotaResults = useQuotaStore((state) => state.results);
-  const loadQuotaSettings = useQuotaStore((state) => state.loadSettings);
-  const fetchAllQuotas = useQuotaStore((state) => state.fetchAllQuotas);
   const isQuotaLoading = useQuotaStore((state) => state.isLoading);
   const quotaDisplayMode = useQuotaStore((state) => state.displayMode);
   const dropdownProviderIds = useQuotaStore((state) => state.dropdownProviderIds);
-  const selectedQuotaModels = useQuotaStore((state) => state.selectedModels);
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
 
-  useQuotaAutoRefresh();
+  useQuotaAutoRefresh(open);
+
 
   React.useEffect(() => {
-    void loadQuotaSettings();
-  }, [loadQuotaSettings]);
-
-  React.useEffect(() => {
-    preloadProviderLogos(dropdownProviderIds);
+    // An extension's icon comes from its package, not the logo set.
+    preloadProviderLogos(dropdownProviderIds.filter((id) => !isExtensionQuotaProviderId(id)));
   }, [dropdownProviderIds]);
 
-  React.useEffect(() => {
-    if (!open || isQuotaLoading) return;
-    const missingEnabledProvider = dropdownProviderIds.some((providerId) => (
-      !quotaResults.some((result) => result.providerId === providerId)
-    ));
-    if (!missingEnabledProvider) return;
-    void fetchAllQuotas();
-  }, [dropdownProviderIds, fetchAllQuotas, isQuotaLoading, open, quotaResults]);
 
+  // v2 records the model on the assistant reply (a user message carries none).
   const latestMessageModel = React.useMemo(() => {
     for (let i = activeSessionMessages.length - 1; i >= 0; i -= 1) {
-      const message = activeSessionMessages[i] as typeof activeSessionMessages[number] & {
-        model?: { providerID?: string; modelID?: string };
-      };
-      if (message.role !== 'user') continue;
-      const providerID = typeof message.model?.providerID === 'string' && message.model.providerID.trim().length > 0
-        ? message.model.providerID
-        : undefined;
-      const modelID = typeof message.model?.modelID === 'string' && message.model.modelID.trim().length > 0
-        ? message.model.modelID
-        : undefined;
+      const message = activeSessionMessages[i];
+      if (message.role !== 'assistant') continue;
+      const providerID = message.providerID.trim();
+      const modelID = message.modelID.trim();
       if (providerID && modelID) return { providerID, modelID };
     }
     return null;
@@ -451,98 +383,34 @@ export const MobileSessionMetadataButton = React.memo(function MobileSessionMeta
   const contextLimit = getNumericLimit((liveModel as { limit?: unknown } | undefined)?.limit, 'context')
     ?? metadata?.limit?.context
     ?? 0;
-  const totalTokens = React.useMemo(() => {
-    for (let i = activeSessionMessages.length - 1; i >= 0; i -= 1) {
-      const message = activeSessionMessages[i] as typeof activeSessionMessages[number] & {
-        tokens?: {
-          input?: unknown;
-          output?: unknown;
-          reasoning?: unknown;
-          cache?: { read?: unknown; write?: unknown };
-        };
-      };
-      if (message.role !== 'assistant' || !message.tokens) continue;
-      const total = getTokenCount(message.tokens.input)
-        + getTokenCount(message.tokens.output)
-        + getTokenCount(message.tokens.reasoning)
-        + getTokenCount(message.tokens.cache?.read)
-        + getTokenCount(message.tokens.cache?.write);
-      if (total > 0) return total;
+  const contextFill = React.useMemo(() => findLatestContextFill(activeSessionMessages), [activeSessionMessages]);
+
+  const contextDisplay = React.useMemo<ContextDisplay>(() => {
+    if (contextLimit <= 0) return null;
+    if (isNewSessionDraftOpen || !contextFill) return { state: 'pending' };
+    if (contextFill.state === 'compacted') {
+      return { state: 'compacted', tokens: `${UNKNOWN_VALUE}/${formatTokens(contextLimit)}` };
     }
-    return 0;
-  }, [activeSessionMessages]);
 
-  const contextPercentage =
-    !isNewSessionDraftOpen && totalTokens > 0 && contextLimit > 0
-      ? Math.min((totalTokens / contextLimit) * 100, 999)
-      : null;
-  const contextTokens = contextPercentage !== null
-    ? `${formatTokens(totalTokens)}/${formatTokens(contextLimit)}`
-    : null;
-  const contextColorClass =
-    contextPercentage === null
-      ? ''
-      : contextPercentage >= 90
-        ? 'text-[var(--status-error)]'
-        : contextPercentage >= 75
-          ? 'text-[var(--status-warning)]'
-          : 'text-[var(--status-success)]';
-  const contextDisplay: ContextDisplay = contextPercentage !== null && contextTokens
-    ? { percentage: contextPercentage, tokens: contextTokens, colorClass: contextColorClass }
-    : null;
+    const percentage = Math.min((contextFill.totalTokens / contextLimit) * 100, 999);
+    const colorClass = percentage >= 90
+      ? 'text-[var(--status-error)]'
+      : percentage >= 75
+        ? 'text-[var(--status-warning)]'
+        : 'text-[var(--status-success)]';
+    return {
+      state: 'measured',
+      percentage,
+      tokens: `${formatTokens(contextFill.totalTokens)}/${formatTokens(contextLimit)}`,
+      colorClass,
+    };
+  }, [contextFill, contextLimit, isNewSessionDraftOpen]);
 
-  const usageGroups = React.useMemo<MobileUsageProviderGroup[]>(() => {
-    const resultsByProvider = new Map(quotaResults.map((result) => [result.providerId, result]));
-    return QUOTA_PROVIDERS
-      .filter((providerMeta) => dropdownProviderIds.includes(providerMeta.id))
-      .filter((providerMeta) => resultsByProvider.get(providerMeta.id)?.configured === true)
-      .map((providerMeta) => {
-        const result = resultsByProvider.get(providerMeta.id)!;
-        const rows: MobileUsageLimitRow[] = [];
-
-        for (const [label, window] of Object.entries(result?.usage?.windows ?? {})) {
-          rows.push({
-            key: `window-${label}`,
-            label: formatWindowLabel(label),
-            window,
-          });
-        }
-
-        const modelEntries = Object.entries(result?.usage?.models ?? {});
-        const providerSelectedModels = selectedQuotaModels[providerMeta.id] ?? [];
-        const visibleModelEntries = providerSelectedModels.length > 0
-          ? modelEntries.filter(([modelName]) => providerSelectedModels.includes(modelName))
-          : modelEntries;
-        for (const [modelName, modelUsage] of visibleModelEntries) {
-          const entries = Object.entries(modelUsage.windows ?? {});
-          if (entries.length === 0) continue;
-          const [label, window] = entries[0];
-          rows.push({
-            key: `model-${modelName}-${label}`,
-            label: formatWindowLabel(label),
-            subtitle: getDisplayModelName(modelName),
-            window,
-          });
-        }
-
-        const status = !result.ok && result.error
-          ? result.error
-          : rows.length === 0
-            ? t('header.services.noRateLimitsReported')
-            : null;
-
-        return {
-          providerId: providerMeta.id,
-          providerName: providerMeta.name,
-          rows,
-          status,
-        };
-      });
-  }, [dropdownProviderIds, quotaResults, selectedQuotaModels, t]);
+  const usageGroups = useUsageProviderGroups();
 
   React.useEffect(() => {
     if (!open || usageGroups.length === 0) return;
-    preloadProviderLogos(usageGroups.map((group) => group.providerId));
+    preloadProviderLogos(usageGroups.map((group) => group.providerId).filter((id) => !isExtensionQuotaProviderId(id)));
   }, [open, usageGroups]);
 
   return (
@@ -550,7 +418,7 @@ export const MobileSessionMetadataButton = React.memo(function MobileSessionMeta
       <button
         ref={metadataTriggerRef}
         type="button"
-        className="flex size-10 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        className={MOBILE_HEADER_BUTTON_CLASS}
         aria-label={t('mobile.header.openMetadataAria')}
         aria-expanded={open}
         onClick={() => onOpenChange((currentOpen) => !currentOpen)}
@@ -558,7 +426,11 @@ export const MobileSessionMetadataButton = React.memo(function MobileSessionMeta
       >
         {/* Live context gauge doubles as the metadata trigger: filled by the
             session's context usage, an empty ring on a fresh draft. */}
-        <ContextProgressIcon percentage={contextDisplay?.percentage ?? 0} />
+        <ContextProgressIcon
+          percentage={contextDisplay?.state === 'measured'
+            ? contextDisplay.percentage
+            : contextDisplay?.state === 'compacted' ? null : 0}
+        />
       </button>
       <SessionMetadataOverlay
         open={open}

@@ -1,10 +1,5 @@
-const asNonEmptyString = (value) => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-};
+import { asNonEmptyString } from '../shared/guards.js';
+import { randomUUID } from 'node:crypto';
 
 const parseProjectID = (req) => asNonEmptyString(req?.params?.projectId);
 const parseTaskID = (req) => asNonEmptyString(req?.params?.taskId);
@@ -62,6 +57,32 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  // The picker asks the scheduler which of the candidates it already holds a
+  // save would accept. Eligibility shares validateTarget's membership rule on
+  // purpose: the client never decides it from its own worktree topology (#4757).
+  app.post('/api/projects/:projectId/scheduled-tasks/targets/eligible', async (req, res) => {
+    const projectID = parseProjectID(req);
+    if (!projectID) {
+      return res.status(400).json({ error: 'projectId is required' });
+    }
+    const candidates = req.body && Array.isArray(req.body.candidates) ? req.body.candidates : null;
+    if (!candidates || candidates.length > 500) {
+      return res.status(400).json({ error: 'candidates must be an array of at most 500 entries' });
+    }
+    if (!scheduledTasksRuntime?.listEligibleTargets) {
+      return res.status(503).json({ error: 'Eligible target resolution is unavailable' });
+    }
+
+    try {
+      const eligible = await scheduledTasksRuntime.listEligibleTargets(projectID, candidates);
+      return res.json({ eligible });
+    } catch (error) {
+      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+      console.error('[ScheduledTasks] failed to resolve eligible targets:', error);
+      return res.status(500).json({ error: 'Failed to resolve eligible targets' });
+    }
+  });
+
   app.delete('/api/projects/:projectId/scheduled-tasks/:taskId', async (req, res) => {
     const projectID = parseProjectID(req);
     const taskID = parseTaskID(req);
@@ -81,6 +102,35 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  app.patch('/api/projects/:projectId/scheduled-tasks/:taskId/loop-file', async (req, res) => {
+    const projectID = parseProjectID(req);
+    const taskID = parseTaskID(req);
+    if (!projectID) return res.status(400).json({ error: 'projectId is required' });
+    if (!taskID) return res.status(400).json({ error: 'taskId is required' });
+    try {
+      const task = await scheduledTaskService.setLoopEnabled(projectID, taskID, req.body?.enabled);
+      return res.json({ task });
+    } catch (error) {
+      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+      console.error('[ScheduledTasks] failed to update loop file:', error);
+      return res.status(500).json({ error: 'Failed to update loop file' });
+    }
+  });
+
+  app.delete('/api/projects/:projectId/scheduled-tasks/:taskId/loop-file', async (req, res) => {
+    const projectID = parseProjectID(req);
+    const taskID = parseTaskID(req);
+    if (!projectID) return res.status(400).json({ error: 'projectId is required' });
+    if (!taskID) return res.status(400).json({ error: 'taskId is required' });
+    try {
+      return res.json({ tasks: await scheduledTaskService.removeLoopFile(projectID, taskID) });
+    } catch (error) {
+      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+      console.error('[ScheduledTasks] failed to delete loop file:', error);
+      return res.status(500).json({ error: 'Failed to delete loop file' });
+    }
+  });
+
   app.post('/api/projects/:projectId/scheduled-tasks/:taskId/run', async (req, res) => {
     const projectID = parseProjectID(req);
     const taskID = parseTaskID(req);
@@ -94,7 +144,13 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     try {
       return res.json({ ok: true, ...await scheduledTaskService.run(projectID, taskID) });
     } catch (error) {
-      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message, ...(error.task ? { task: error.task } : {}) });
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          error: error.message,
+          ...(error.task ? { task: error.task } : {}),
+          ...(error.busy ? { busy: error.busy } : {}),
+        });
+      }
       console.error('[ScheduledTasks] failed to run task:', error);
       return res.status(500).json({ error: 'Failed to run scheduled task' });
     }
@@ -116,6 +172,15 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
+    // Whether a client can drive a browser view is a property of that client,
+    // not of this server: a desktop shell and a browser tab can be connected to
+    // the same server at once. Recording it on the connection keeps the answer
+    // current without any enable/disable setting to go stale.
+    res.openchamberBrowserCapable = req.query?.browser === '1';
+    // Names this connection, so what a client asks to follow lives exactly as
+    // long as the connection that receives its changes.
+    res.openchamberConnectionId = randomUUID();
+
     const clients = getOpenChamberEventClients();
     clients.add(res);
 
@@ -124,6 +189,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
         type: 'openchamber:event-stream-ready',
         properties: {
           connectedAt: Date.now(),
+          connectionId: res.openchamberConnectionId,
         },
       });
     } catch {

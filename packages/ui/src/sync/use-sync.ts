@@ -1,41 +1,34 @@
 import { useCallback, useMemo } from "react"
-import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import type { Message, Part } from "@/lib/opencode/model"
+import { opencodeClient } from "@/lib/opencode/client"
 import { Binary } from "./binary"
+import { upsertSessionRecord } from "./session-records"
+import { adoptSessionMove } from "./session-actions"
+import { resolveSessionReadDirectory, type SessionReadDirectorySources } from "./session-read-directory"
+import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { retry } from "./retry"
-import { SESSION_CACHE_LIMIT, type State } from "./types"
-import { pickSessionCacheEvictions } from "./session-cache"
 import {
-  dropCachedSessionMessageRecordsSnapshots,
   useChildStoreManager,
   useDirectoryStore,
   useSessionMessageLoader,
   useSyncDirectory,
-  useSyncSDK,
+  useSyncRuntime,
+  resyncBlockingRequestsForDirectory,
+  buildSessionMessageRecordsSnapshot,
+  markRecordedInterruptedTurn,
 } from "./sync-context"
-import { dropSessionCaches, getProtectedSessionCacheIds } from "./session-cache"
 import { stripSessionDiffSnapshots } from "./sanitize"
-import { isVSCodeRuntime } from "@/lib/desktop"
-import { isMobileSurfaceRuntime } from "@/lib/runtimeSurface"
-import { clearSessionPrefetch } from "./session-prefetch-cache"
 import { getSessionMaterializationStatus } from "./materialization"
-import { fetchAutoDecisionRecords, mergeAutoDecisionRecords } from "./auto-decisions"
-import { getRuntimeKey } from "@/lib/runtime-switch"
+import { captureRuntimeInstance, getRuntimeKey } from "@/lib/runtime-switch"
 
-const INITIAL_MESSAGE_PAGE_SIZE = 50
-const VSCODE_INITIAL_MESSAGE_PAGE_SIZE = 30
-const MOBILE_INITIAL_MESSAGE_PAGE_SIZE = 30
-const MAX_SEEN_DIRS = 30
-const VSCODE_SESSION_CACHE_LIMIT = 4
-const MOBILE_SESSION_CACHE_LIMIT = 4
-
-// Shared across useSync() instances so cache eviction is based on app-level
-// session recency, not whichever component happened to call sync first.
-type SeenDirectoryEntry = {
-  runtimeKey: string
-  directory: string
-  sessions: Set<string>
+const sessionReadDirectorySources: SessionReadDirectorySources = {
+  knownDirectory: (sessionID) => {
+    const record = useGlobalSessionsStore.getState().entityById.get(sessionID)
+    return record ? resolveGlobalSessionDirectory(record) : null
+  },
+  readUnscoped: (sessionID) => opencodeClient.getSessionUnscoped(sessionID),
+  adopt: adoptSessionMove,
 }
-const seenByDirectory = new Map<string, SeenDirectoryEntry>()
 
 // Shared across useSync() hook instances. Chat, model controls, and sidebar can
 // all request the same session during startup; coalesce them into one HTTP load.
@@ -47,57 +40,7 @@ const syncSessionInflightByKey = new Map<string, Promise<void>>()
 // sidebar) from having each completed fetch fight for focus.
 const syncSessionGenerationByKey = new Map<string, number>()
 
-type SdkResult<T> = {
-  data?: T
-  error?: unknown
-  response?: {
-    status?: number
-    headers?: { get?: (name: string) => string | null }
-  }
-}
-
-function formatSdkError(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (typeof error === "string") return error
-  if (error && typeof error === "object") {
-    const message = (error as { message?: unknown }).message
-    if (typeof message === "string" && message.length > 0) return message
-  }
-  try {
-    return JSON.stringify(error)
-  } catch {
-    return String(error)
-  }
-}
-
-function assertSdkSuccess<T>(result: SdkResult<T>, operation: string): void {
-  if (!result.error) return
-  const status = result.response?.status
-  throw new Error(`${operation} failed${status ? ` (${status})` : ""}: ${formatSdkError(result.error)}`)
-}
-
-const isConstrainedSessionRuntime = () => isVSCodeRuntime() || isMobileSurfaceRuntime()
-const getEffectiveSessionCacheLimit = () => {
-  if (isVSCodeRuntime()) return VSCODE_SESSION_CACHE_LIMIT
-  if (isMobileSurfaceRuntime()) return MOBILE_SESSION_CACHE_LIMIT
-  return SESSION_CACHE_LIMIT
-}
-const getInitialMessagePageSize = () => {
-  if (isVSCodeRuntime()) return VSCODE_INITIAL_MESSAGE_PAGE_SIZE
-  if (isMobileSurfaceRuntime()) return MOBILE_INITIAL_MESSAGE_PAGE_SIZE
-  return INITIAL_MESSAGE_PAGE_SIZE
-}
-function isHeavyConstrainedSessionCache(state: Pick<State, "message" | "part">, sessionID: string): boolean {
-  const messages = state.message[sessionID]
-  if (!messages || messages.length === 0) return false
-  return messages.length > getInitialMessagePageSize()
-}
-
-function isUserMessage(message: Message): boolean {
-  const info = message as Message & { clientRole?: unknown; role?: unknown }
-  const role = typeof info.clientRole === "string" ? info.clientRole : info.role
-  return role === "user"
-}
+const isUserMessage = (message: Message): boolean => message.role === "user"
 
 export function hasUserMessage(messages: Message[] | undefined): boolean {
   return Boolean(messages?.some(isUserMessage))
@@ -111,147 +54,54 @@ export function shouldFetchSessionForRenderableSync(input: {
   return Boolean(input.force) || !input.hasSession || input.shouldLoadMessages
 }
 
-// ---------------------------------------------------------------------------
-// useSync — message loading, pagination, optimistic updates
-// Message loading, pagination, optimistic updates
-// ---------------------------------------------------------------------------
+function useSessionCacheTouch() {
+  const { messageLoader, runtimeKey } = useSyncRuntime()
+  return useCallback((sessionID: string, directory: string) => {
+    if (getRuntimeKey() !== runtimeKey) return
+    messageLoader.touchSessionCache({ directory, sessionID })
+  }, [messageLoader, runtimeKey])
+}
 
 export function useSync() {
-  const sdk = useSyncSDK()
   const directory = useSyncDirectory()
   const store = useDirectoryStore()
   const childStores = useChildStoreManager()
   const messageLoader = useSessionMessageLoader()
   const runtimeKey = getRuntimeKey()
+  const touch = useSessionCacheTouch()
+
+  const recoverPendingQuestions = useCallback(
+    async (sessionID: string, directoryOverride?: string): Promise<boolean> => {
+      const selectedDirectory = directoryOverride || directory
+      if (!sessionID || !selectedDirectory || getRuntimeKey() !== runtimeKey) return false
+      const targetDirectory = await resolveSessionReadDirectory(sessionID, selectedDirectory, captureRuntimeInstance(), sessionReadDirectorySources)
+      if (!targetDirectory) return false
+      const targetStore = childStores.ensureChild(targetDirectory, {
+        priority: "selected",
+        reason: "selected-session",
+      })
+      await resyncBlockingRequestsForDirectory(targetDirectory, targetStore, [sessionID], {
+        includePermissions: false,
+      })
+      if (getRuntimeKey() !== runtimeKey) return false
+      return (targetStore.getState().form[sessionID]?.length ?? 0) > 0
+    },
+    [childStores, directory, runtimeKey],
+  )
 
   const keyFor = useCallback(
     (sessionID: string, directoryOverride = directory) => `${runtimeKey}\n${directoryOverride}\n${sessionID}`,
     [directory, runtimeKey],
   )
 
-  // Session cache eviction — two levels of LRU:
-  // (1) across directories (max 30), (2) within a directory (SESSION_CACHE_LIMIT).
-
-  // Evict all cached session data for given IDs from a directory's store
-  const evict = useCallback(
-    (dir: string, sessionIDs: string[]) => {
-      if (sessionIDs.length === 0 || getRuntimeKey() !== runtimeKey) return
-      const dirStore = childStores.getChild(dir)
-      if (!dirStore) return
-
-      const current = dirStore.getState()
-      const draft = {
-        message: { ...current.message },
-        part: { ...current.part },
-        session_status: { ...current.session_status },
-        session_diff: { ...current.session_diff },
-        todo: { ...current.todo },
-        permission: { ...current.permission },
-        question: { ...current.question },
-        autoDecision: { ...current.autoDecision },
-      }
-      dropSessionCaches(draft, sessionIDs)
-      dropCachedSessionMessageRecordsSnapshots(dirStore, sessionIDs)
-      dirStore.setState(draft)
-
-      // Clear meta + optimistic + prefetch cache for evicted sessions
-      for (const id of sessionIDs) {
-        messageLoader.invalidateSession({ directory: dir, sessionID: id })
-      }
-      clearSessionPrefetch(dir, sessionIDs)
-    },
-    [childStores, messageLoader, runtimeKey],
-  )
-
-  // Get or create the seen-set for a directory. LRU reorder on access.
-  // When seen directories exceed MAX_SEEN_DIRS, evict the oldest directory's caches.
-  // LRU reorder on access. Evicts oldest directory when exceeding MAX_SEEN_DIRS.
-  const seenFor = useCallback((targetDirectory: string) => {
-    const cacheKey = `${runtimeKey}\n${targetDirectory}`
-    const existing = seenByDirectory.get(cacheKey)
-    if (existing) {
-      // LRU reorder: delete + re-insert moves to end (most recent)
-      seenByDirectory.delete(cacheKey)
-      seenByDirectory.set(cacheKey, existing)
-      return existing.sessions
-    }
-    const created: SeenDirectoryEntry = { runtimeKey, directory: targetDirectory, sessions: new Set() }
-    seenByDirectory.set(cacheKey, created)
-
-    // Evict oldest directories if over limit
-    while (seenByDirectory.size > MAX_SEEN_DIRS) {
-      const first = seenByDirectory.keys().next().value
-      if (!first) break
-      const stale = seenByDirectory.get(first)
-      seenByDirectory.delete(first)
-      if (stale?.runtimeKey === runtimeKey) evict(stale.directory, [...stale.sessions])
-    }
-
-    return created.sessions
-  }, [evict, runtimeKey])
-
-  // Touch a session — triggers both directory-level and session-level eviction
-  const touch = useCallback(
-    (sessionID: string, targetDirectory = directory) => {
-      if (getRuntimeKey() !== runtimeKey) return
-      const s = seenFor(targetDirectory)
-      const targetStore = targetDirectory === directory
-        ? store
-        : childStores.ensureChild(targetDirectory, { bootstrap: false })
-      const protectedIds = getProtectedSessionCacheIds(targetStore.getState())
-      const cacheLimit = getEffectiveSessionCacheLimit()
-      const stale = pickSessionCacheEvictions({
-        seen: s,
-        keep: sessionID,
-        limit: cacheLimit,
-        preserve: protectedIds,
-      })
-      evict(targetDirectory, stale)
-
-      if (isConstrainedSessionRuntime()) {
-        const state = targetStore.getState()
-        const keep = new Set([sessionID, ...s, ...protectedIds])
-        const prefetched = Object.keys(state.message).filter((id) => !keep.has(id))
-        evict(targetDirectory, prefetched)
-
-        // One very large inactive session can create memory/GC pressure that
-        // makes later small-session switches feel slow. Keep it while active,
-        // but do not retain it as a warm cache in constrained shells.
-          const afterPrefetchEviction = prefetched.length > 0 ? targetStore.getState() : state
-        const heavyInactive = Object.keys(afterPrefetchEviction.message).filter((id) => {
-          if (id === sessionID || protectedIds.has(id)) return false
-          return isHeavyConstrainedSessionCache(afterPrefetchEviction, id)
-        })
-        if (heavyInactive.length > 0) {
-          for (const id of heavyInactive) s.delete(id)
-          evict(targetDirectory, heavyInactive)
-        }
-      }
-    },
-    [childStores, directory, seenFor, evict, runtimeKey, store],
-  )
-
-  // Backfill persisted auto-decision history (HaoCode smart mode) for a
-  // session. Fetch failure returns null and leaves state untouched — failure
-  // is never written as an empty list. Live SSE records already in the store
-  // are preserved by the requestID-keyed merge.
-  const loadAutoDecisions = useCallback(
-    async (sessionID: string, options?: { isStale?: () => boolean }) => {
-      const records = await fetchAutoDecisionRecords(directory, sessionID)
-      if (!records || options?.isStale?.()) return
-      const current = store.getState()
-      const merged = mergeAutoDecisionRecords(current.autoDecision[sessionID], records)
-      if (!merged || options?.isStale?.()) return
-      store.setState({ autoDecision: { ...store.getState().autoDecision, [sessionID]: merged } })
-    },
-    [store, directory],
-  )
-
   // Sync a session (load if not cached)
   const syncSession = useCallback(
     async (sessionID: string, force?: boolean, directoryOverride?: string) => {
       if (getRuntimeKey() !== runtimeKey) return
-      const targetDirectory = directoryOverride || directory
+      const selectedDirectory = directoryOverride || directory
+      if (!selectedDirectory) return
+      const targetDirectory = await resolveSessionReadDirectory(sessionID, selectedDirectory, captureRuntimeInstance(), sessionReadDirectorySources)
+      if (!targetDirectory) return
       touch(sessionID, targetDirectory)
       const key = keyFor(sessionID, targetDirectory)
 
@@ -264,16 +114,26 @@ export function useSync() {
       // knows it is stale and should not write to the store.
       const generation = (syncSessionGenerationByKey.get(key) ?? 0) + 1
       syncSessionGenerationByKey.set(key, generation)
-      const isStale = () => syncSessionGenerationByKey.get(key) !== generation
 
       const targetStore = targetDirectory === directory
         ? store
         : childStores.ensureChild(targetDirectory, { bootstrap: false })
+      const isStale = () => getRuntimeKey() !== runtimeKey
+        || syncSessionGenerationByKey.get(key) !== generation
+        || childStores.children.get(targetDirectory) !== targetStore
       const current = targetStore.getState()
-      const materialization = getSessionMaterializationStatus(current, sessionID)
+      const materialization = getSessionMaterializationStatus(current, sessionID, {
+        historyCovered: messageLoader.coversHistory({ directory: targetDirectory, sessionID }),
+      })
       const cachedReady = materialization.hasMessages && materialization.renderable
       const hasSession = Binary.search(current.session, sessionID, (s) => s.id).found
-      if (cachedReady && hasSession && !force) return
+      if (cachedReady && hasSession && !force) {
+        if (!isStale()) markRecordedInterruptedTurn(targetStore, sessionID)
+        // Renders from cache; a transcript a stream gap left unconfirmed
+        // refreshes its tail in the background.
+        messageLoader.revalidateIfStale({ directory: targetDirectory, sessionID })
+        return
+      }
       const shouldLoadMessages = Boolean(!cachedReady || force)
       const shouldFetchSession = shouldFetchSessionForRenderableSync({ hasSession, shouldLoadMessages, force: Boolean(force) })
       const promise = (async () => {
@@ -281,22 +141,12 @@ export function useSync() {
           shouldFetchSession
             ? (async () => {
                 try {
-                  const result = await retry(async () => {
-                    const response = await sdk.session.get({ sessionID, directory: targetDirectory })
-                    assertSdkSuccess(response, "session.get")
-                    return response
-                  })
-                  if (result.data && !isStale()) {
-                    const nextSession = stripSessionDiffSnapshots(result.data)
+                  const session = await retry(() => opencodeClient.getSession(sessionID, targetDirectory))
+                  if (!isStale()) {
+                    const nextSession = stripSessionDiffSnapshots(session)
                     const s = targetStore.getState()
-                    const sessions = [...s.session]
-                    const idx = Binary.search(sessions, sessionID, (s) => s.id)
-                    if (idx.found) {
-                      sessions[idx.index] = nextSession
-                    } else {
-                      sessions.splice(idx.index, 0, nextSession)
-                    }
-                    if (!isStale()) {
+                    const sessions = upsertSessionRecord(s.session, nextSession)
+                    if (sessions !== s.session && !isStale()) {
                       targetStore.setState({ session: sessions })
                     }
                   }
@@ -306,10 +156,15 @@ export function useSync() {
               })()
             : Promise.resolve(),
           shouldLoadMessages
-            ? messageLoader.ensure(
-                { directory: targetDirectory, sessionID },
-                { force, reason: "reactive" },
-              )
+            ? (async () => {
+                await messageLoader.ensure(
+                  { directory: targetDirectory, sessionID },
+                  { force, reason: "reactive" },
+                )
+                if (!isStale()) {
+                  markRecordedInterruptedTurn(targetStore, sessionID)
+                }
+              })()
             : Promise.resolve(),
           shouldLoadMessages ? loadAutoDecisions(sessionID, { isStale }) : Promise.resolve(),
         ])
@@ -327,7 +182,7 @@ export function useSync() {
       void promise.then(clearInflightRequest, clearInflightRequest)
       return promise
     },
-    [childStores, directory, keyFor, loadAutoDecisions, messageLoader, runtimeKey, sdk, store, touch],
+    [childStores, directory, keyFor, messageLoader, runtimeKey, store, touch],
   )
 
   // Load more (pagination)
@@ -339,23 +194,12 @@ export function useSync() {
     [messageLoader, touch],
   )
 
-  const loadCompleteHistory = useCallback(
-    async (sessionID: string, targetDirectory: string) => {
-      touch(sessionID, targetDirectory)
-      await messageLoader.loadComplete({ directory: targetDirectory, sessionID })
-    },
-    [messageLoader, touch],
-  )
-
   const prefetchSession = useCallback(
     async (sessionID: string, targetDirectory: string) => {
       if (getRuntimeKey() !== runtimeKey) return
       await messageLoader.prefetch({ directory: targetDirectory, sessionID })
-      if (messageLoader.getSnapshot({ directory: targetDirectory, sessionID }).status === "ready") {
-        touch(sessionID, targetDirectory)
-      }
     },
-    [messageLoader, runtimeKey, touch],
+    [messageLoader, runtimeKey],
   )
 
   const hasMore = useCallback(
@@ -423,16 +267,45 @@ export function useSync() {
       syncSession,
       prefetchSession,
       loadMore,
-      loadCompleteHistory,
       hasMore,
       isLoading,
       isComplete,
+      recoverPendingQuestions,
       optimistic: {
         add: optimisticAdd,
         remove: optimisticRemove,
         confirm: optimisticConfirm,
       },
     }),
-    [syncSession, prefetchSession, loadMore, loadCompleteHistory, hasMore, isLoading, isComplete, optimisticAdd, optimisticRemove, optimisticConfirm],
+    [syncSession, prefetchSession, loadMore, hasMore, isLoading, isComplete, recoverPendingQuestions, optimisticAdd, optimisticRemove, optimisticConfirm],
   )
+}
+
+export function usePrefetchSessionMessages() {
+  const { messageLoader, runtimeKey } = useSyncRuntime()
+
+  return useCallback(async ({ directory, sessionID }: { directory: string; sessionID: string }) => {
+    if (getRuntimeKey() !== runtimeKey) return
+    await messageLoader.prefetch({ directory, sessionID })
+  }, [messageLoader, runtimeKey])
+}
+
+export function useSessionMessageRecordsForExport() {
+  const { childStores, messageLoader, runtimeKey } = useSyncRuntime()
+  const touch = useSessionCacheTouch()
+
+  return useCallback(async ({ directory, sessionID }: { directory: string; sessionID: string }) => {
+    if (getRuntimeKey() !== runtimeKey) return null
+    const store = childStores.ensureChild(directory, { bootstrap: false })
+    touch(sessionID, directory)
+    const target = { directory, sessionID }
+    const release = messageLoader.retainSessionHistory(target)
+    try {
+      await messageLoader.loadComplete(target)
+      if (getRuntimeKey() !== runtimeKey) return null
+      return buildSessionMessageRecordsSnapshot(store.getState(), sessionID).list
+    } finally {
+      release()
+    }
+  }, [childStores, messageLoader, runtimeKey, touch])
 }

@@ -1,3 +1,4 @@
+import { rankByQuery } from '@/lib/search/fuzzySearch';
 import React from 'react';
 import QRCode from 'qrcode';
 import { Button } from '@/components/ui/button';
@@ -23,9 +24,11 @@ import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLay
 import {
   SettingsSection,
   SettingsGroupTitle,
+  SettingsChipGroup,
   SETTINGS_PAGE_TITLE_CLASS,
+  SETTINGS_SECTION_TITLE_CLASS,
   SETTINGS_FIELD_LABEL_CLASS,
-  SETTINGS_SELECT_SIZE,
+  SETTINGS_NUMBER_INPUT_CLASS,
 } from '@/components/sections/shared/SettingsSection';
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { useDesktopSshStore } from '@/stores/useDesktopSshStore';
@@ -42,6 +45,8 @@ import { useI18n, type I18nKey } from '@/lib/i18n';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import type { PendingPairingRecord, RemoteClientRecord } from '@/lib/api/types';
 import { buildPairingConnectionPayload, encodePairingConnectionPayload, parsePairingConnectionPayload, type PairingEndpointCandidate } from '@/lib/connectionPayload';
+import { readPairingResponse } from '@/lib/pairingResponse';
+import { RelayConflictNotice } from './RelayConflictNotice';
 import {
   desktopSshLogsClear,
   desktopSshLogs,
@@ -66,8 +71,15 @@ import {
 } from '@/lib/desktopHosts';
 import { createRelayTunnelClient } from '@/lib/relay/tunnel-client';
 import { getDesktopLanAddress, isDesktopLocalOriginActive, isDesktopShell } from '@/lib/desktop';
-import { runtimeFetch } from '@/lib/runtime-fetch';
+import { useEnterprisePolicyStore } from '@/stores/useEnterprisePolicyStore';
+import { loadDesktopSettings } from '@/lib/persistence';
 import { getRuntimeApiBaseUrl, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { runtimeKeyForDesktopHost } from '@/lib/desktopCurrentHost';
+import { useDurationTickerNow, useWaitingBlink } from '@/hooks/useDurationTicker';
+import { Spinner } from '@/components/ui/spinner';
+import { useSshConfirmation } from './useSshConfirmation';
+import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
+import { SettingsInlineLink } from '@/components/sections/classification/JevAccessNote';
 
 const randomPort = (): number => {
   return Math.floor(20000 + Math.random() * 30000);
@@ -150,18 +162,83 @@ const isConnectingPhase = (phase?: string): boolean => {
   return Boolean(phase && CONNECTING_PHASES.has(phase));
 };
 
+// The backend reports 13 lifecycle phases. People only need to know which of
+// three situations they are in; the phase stays as the secondary detail line.
+type InstanceState = 'idle' | 'connecting' | 'ready' | 'error';
+
+const instanceState = (phase?: string): InstanceState => {
+  if (phase === 'ready') return 'ready';
+  if (phase === 'error') return 'error';
+  if (phase === 'degraded' || isConnectingPhase(phase)) return 'connecting';
+  return 'idle';
+};
+
+const instanceStateLabelKey = (state: InstanceState): I18nKey => {
+  switch (state) {
+    case 'ready':
+      return 'settings.remoteInstances.page.state.ready';
+    case 'connecting':
+      return 'settings.remoteInstances.page.state.connecting';
+    case 'error':
+      return 'settings.remoteInstances.page.state.problem';
+    default:
+      return 'settings.remoteInstances.page.state.notConnected';
+  }
+};
+
+// Known backend failures that the user can act on from here. Everything else
+// falls back to the raw detail plus the logs button.
+type ErrorRemedy = 'uiPassword' | 'localPort' | 'noRuntime' | 'noOpencode' | 'externalPort' | null;
+
+const errorRemedy = (detail?: string): ErrorRemedy => {
+  const text = (detail || '').toLowerCase();
+  if (!text) return null;
+  if (text.includes('ui authentication') || text.includes('ui password')) return 'uiPassword';
+  if (text.includes('already in use') || text.includes('eaddrinuse')) return 'localPort';
+  if (text.includes('neither bun nor npm')) return 'noRuntime';
+  if (text.includes('opencode cli is not installed')) return 'noOpencode';
+  if (text.includes('requires a ui password')) return 'uiPassword';
+  if (text.includes('preferred remote openchamber port')) return 'externalPort';
+  return null;
+};
+
+// Remedies the user resolves on the remote machine: explain, do not offer a button.
+const REMEDY_HINT_KEYS = {
+  noRuntime: 'settings.remoteInstances.page.error.hint.noRuntime',
+  noOpencode: 'settings.remoteInstances.page.error.hint.noOpencode',
+} satisfies Record<string, I18nKey>;
+
+const remedyHintKey = (remedy: ErrorRemedy): I18nKey | null => {
+  if (remedy === 'noRuntime') return REMEDY_HINT_KEYS.noRuntime;
+  if (remedy === 'noOpencode') return REMEDY_HINT_KEYS.noOpencode;
+  return null;
+};
+
 const phaseDotClass = (phase?: string): string => {
   if (phase === 'ready') {
-    return 'bg-[var(--status-success)] animate-pulse';
+    return 'bg-[var(--status-success)]';
   }
   if (phase === 'error') {
-    return 'bg-[var(--status-error)] animate-pulse';
+    return 'bg-[var(--status-error)]';
   }
   if (phase === 'degraded' || isConnectingPhase(phase)) {
-    return 'bg-[var(--status-warning)] animate-pulse';
+    return 'bg-[var(--status-warning)]';
   }
   return 'bg-muted-foreground/40';
 };
+
+/**
+ * A status dot. A steady state (connected, degraded, failed) stands still; a
+ * wait (connecting, a pairing waiting for the phone, a probe in flight)
+ * blinks on the shared 1 s tick.
+ */
+const StatusDot: React.FC<{ className: string; waiting?: boolean }> = ({ className, waiting = false }) => {
+  const blink = useWaitingBlink(waiting);
+  return <span className={cn('size-1.5 shrink-0 rounded-full', className, blink)} />;
+};
+
+// Added through a relay pairing link: reachable only over the relay, no address.
+const isRelayOnlyHost = (host: DesktopHost): boolean => Boolean(host.relay) && !normalizeHostUrl(host.url);
 
 const buildForwardLabel = (forward: DesktopSshPortForward): string => {
   if (forward.type === 'dynamic') {
@@ -298,20 +375,7 @@ const resolvePairingServerUrl = async (): Promise<string> => {
     return fallback;
   }
 
-  let response: Response;
-  try {
-    response = await runtimeFetch('/api/config/settings', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-    });
-  } catch {
-    return fallback;
-  }
-  if (!response.ok) return fallback;
-
-  const settings = (await response.json().catch(() => null)) as null | {
-    desktopLanAccessActive?: unknown;
-  };
+  const settings = await loadDesktopSettings();
   if (settings?.desktopLanAccessActive !== true) {
     return fallback;
   }
@@ -403,6 +467,8 @@ export const RemoteInstancesPage: React.FC = () => {
 
   const selectedId = useUIStore((state) => state.settingsRemoteInstancesSelectedId);
   const setSelectedId = useUIStore((state) => state.setSettingsRemoteInstancesSelectedId);
+  const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
+  const { confirm: confirmSsh, dialog: sshConfirmationDialog } = useSshConfirmation(selectedId);
 
   const selectedInstance = React.useMemo(() => {
     if (!selectedId) return null;
@@ -420,7 +486,6 @@ export const RemoteInstancesPage: React.FC = () => {
   const [expandedForwards, setExpandedForwards] = React.useState<Record<string, boolean>>({});
   const [isPrimaryActionPending, setIsPrimaryActionPending] = React.useState(false);
   const [isRetryPending, setIsRetryPending] = React.useState(false);
-  const [clockMs, setClockMs] = React.useState(() => Date.now());
   const [directHosts, setDirectHosts] = React.useState<DesktopHost[]>([]);
   // Live reachability per saved host (undefined = probe in flight), mirroring
   // the host switcher's status line so this list is not just dead text.
@@ -436,11 +501,14 @@ export const RemoteInstancesPage: React.FC = () => {
   const [directError, setDirectError] = React.useState<string | null>(null);
   const [directAddDialogOpen, setDirectAddDialogOpen] = React.useState(false);
   const [directImportDialogOpen, setDirectImportDialogOpen] = React.useState(false);
+  const [directImporting, setDirectImporting] = React.useState(false);
   const [directEditingId, setDirectEditingId] = React.useState<string | null>(null);
   const [directEditLabel, setDirectEditLabel] = React.useState('');
   const [directEditUrl, setDirectEditUrl] = React.useState('');
   const [directEditToken, setDirectEditToken] = React.useState('');
   const [directEditHeaders, setDirectEditHeaders] = React.useState<HeaderDraft[]>([]);
+  const directEditingHost = directEditingId ? directHosts.find((host) => host.id === directEditingId) ?? null : null;
+  const directEditingRelayOnly = directEditingHost ? isRelayOnlyHost(directEditingHost) : false;
   const [remoteClients, setRemoteClients] = React.useState<RemoteClientRecord[]>([]);
   const [pendingPairings, setPendingPairings] = React.useState<PendingPairingRecord[]>([]);
   const [remoteClientsLoading, setRemoteClientsLoading] = React.useState(false);
@@ -460,10 +528,47 @@ export const RemoteInstancesPage: React.FC = () => {
   const [addDeviceTransport, setAddDeviceTransport] = React.useState<'local' | 'lan' | 'relay'>('relay');
   const [addDeviceFallback, setAddDeviceFallback] = React.useState(true);
   const [transportOptions, setTransportOptions] = React.useState<{ localUrl: string | null; lanUrl: string | null; relayAvailable: boolean } | null>(null);
+  const lanBlockedByEnterprise = useEnterprisePolicyStore((state) => state.networkAccessBlocked);
+  // Why "Home network only" is unavailable depends on who owns the listening
+  // address: a local desktop can open it in General → Password and network
+  // access, which the hint links to (unless enterprise mode keeps it closed),
+  // a plain web server needs a restart with a LAN bind address, and a desktop
+  // connected to another server can change neither from here.
+  const lanTransportHint = (() => {
+    if (!transportOptions || transportOptions.lanUrl) {
+      return t('settings.remoteInstances.clientAuth.addDevice.transport.lanHint');
+    }
+    if (!isDesktopShell()) {
+      return t('settings.remoteInstances.clientAuth.addDevice.transport.lanUnavailableServerHint');
+    }
+    if (!isDesktopLocalOriginActive()) {
+      return t('settings.remoteInstances.clientAuth.addDevice.transport.lanHint');
+    }
+    if (lanBlockedByEnterprise) {
+      return t('settings.openchamber.desktopNetwork.field.enterpriseBlocked');
+    }
+    return (
+      <>
+        {t('settings.remoteInstances.clientAuth.addDevice.transport.lanNeedsDesktopAccess')}
+        {' '}
+        <SettingsInlineLink
+          onClick={() => {
+            setAddDeviceOpen(false);
+            useUIStore.getState().openSettingsAt('general', 'sessions.desktop-ui-password');
+          }}
+        >
+          {t('settings.remoteInstances.clientAuth.addDevice.transport.openNetworkSettings')}
+        </SettingsInlineLink>
+      </>
+    );
+  })();
   const revokedClientCount = React.useMemo(() => remoteClients.filter((client) => Boolean(client.revokedAt)).length, [remoteClients]);
   const [sshAddDialogOpen, setSshAddDialogOpen] = React.useState(false);
-  const [sshCommandDraft, setSshCommandDraft] = React.useState('ssh user@example.com');
+  const [sshAddMode, setSshAddMode] = React.useState<'saved' | 'manual'>('saved');
+  const [sshHostSearch, setSshHostSearch] = React.useState('');
+  const [sshCommandDraft, setSshCommandDraft] = React.useState('');
   const [sshNameDraft, setSshNameDraft] = React.useState('');
+  const [advancedOpen, setAdvancedOpen] = React.useState(false);
 
   React.useEffect(() => {
     void load();
@@ -495,8 +600,10 @@ export const RemoteInstancesPage: React.FC = () => {
       await desktopHostsSet({ hosts, defaultHostId, initialHostChoiceCompleted: true });
       setDirectHosts(hosts);
       setDirectDefaultHostId(defaultHostId);
+      return true;
     } catch (err) {
       setDirectError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setDirectSaving(false);
     }
@@ -520,7 +627,7 @@ export const RemoteInstancesPage: React.FC = () => {
       ...(directToken.trim() ? { clientToken: directToken.trim() } : {}),
       ...(buildRequestHeaders(directHeaders) ? { requestHeaders: buildRequestHeaders(directHeaders) } : {}),
     };
-    await persistDirectHosts([host, ...directHosts], directDefaultHostId);
+    if (!await persistDirectHosts([host, ...directHosts], directDefaultHostId)) return;
     setDirectLabel('');
     setDirectUrl('');
     setDirectToken('');
@@ -532,6 +639,7 @@ export const RemoteInstancesPage: React.FC = () => {
   }, [directDefaultHostId, directHeaders, directHosts, directLabel, directToken, directUrl, persistDirectHosts, t]);
 
   const importDirectConnectLink = React.useCallback(async () => {
+    setDirectError(null);
     const payload = parsePairingConnectionPayload(directConnectLink);
     if (!payload) {
       setDirectError(t('settings.remoteInstances.direct.error.invalidConnectLink'));
@@ -555,11 +663,23 @@ export const RemoteInstancesPage: React.FC = () => {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: redeemBody,
     };
+    let pairingError: string | null = null;
     const tokenFromResponse = async (response: Response): Promise<string | null> => {
-      if (!response.ok) return null;
-      const body = (await response.json().catch(() => null)) as { clientToken?: unknown } | null;
-      const token = typeof body?.clientToken === 'string' ? body.clientToken.trim() : '';
-      return token || null;
+      const result = await readPairingResponse(response);
+      switch (result.kind) {
+        case 'success':
+          return result.token;
+        case 'rejected':
+          pairingError = t('desktopHostSwitcher.error.pairingRejected');
+          break;
+        case 'http-error':
+          pairingError ??= t('desktopHostSwitcher.error.pairingFailed', { status: result.status });
+          break;
+        case 'invalid-response':
+          pairingError ??= t('desktopHostSwitcher.error.pairingInvalidResponse');
+          break;
+      }
+      return null;
     };
 
     // Try direct (LAN/tunnel) candidates first — they're cheaper and don't need
@@ -584,7 +704,7 @@ export const RemoteInstancesPage: React.FC = () => {
           ...(candidate.grant ? { grant: candidate.grant } : {}),
         });
         try {
-          const response = await tunnel.fetch('/api/client-auth/pairing/redeem', redeemInit);
+          const response = await tunnel.fetch('/api/client-auth/pairing/redeem', { ...redeemInit, signal: AbortSignal.timeout(15_000) });
           const token = await tokenFromResponse(response);
           if (token) {
             redeemed = {
@@ -607,7 +727,7 @@ export const RemoteInstancesPage: React.FC = () => {
       const candidateUrl = normalizeHostUrl(candidate.url);
       if (!candidateUrl) continue;
       try {
-        const response = await fetch(`${candidateUrl}/api/client-auth/pairing/redeem`, redeemInit);
+        const response = await fetch(`${candidateUrl}/api/client-auth/pairing/redeem`, { ...redeemInit, signal: AbortSignal.timeout(15_000) });
         const token = await tokenFromResponse(response);
         if (token) {
           redeemed = { kind: 'direct', url: candidateUrl, token };
@@ -619,7 +739,7 @@ export const RemoteInstancesPage: React.FC = () => {
     }
 
     if (!redeemed) {
-      setDirectError(t('desktopHostSwitcher.error.invalidUrl'));
+      setDirectError(pairingError || t('mobile.connect.error.unreachable'));
       return;
     }
 
@@ -648,7 +768,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
     const url = directUrl || (relay ? relayHostDisplayUrl(relay.serverId) : null);
     if (!url) {
-      setDirectError(t('desktopHostSwitcher.error.invalidUrl'));
+      setDirectError(t('settings.remoteInstances.direct.error.invalidConnectLink'));
       return;
     }
     const transportFields = {
@@ -666,10 +786,10 @@ export const RemoteInstancesPage: React.FC = () => {
       const nextHosts = directHosts.map((host) => host.id === existing.id
         ? { ...host, label: payload.label || host.label, ...transportFields }
         : host);
-      await persistDirectHosts(nextHosts, directDefaultHostId);
+      if (!await persistDirectHosts(nextHosts, directDefaultHostId)) return;
     } else {
       // payload.label is normally the issuing server's hostname.
-      await persistDirectHosts([{ id: makeId(), label: payload.label || redactSensitiveUrl(url), ...transportFields }, ...directHosts], directDefaultHostId);
+      if (!await persistDirectHosts([{ id: makeId(), label: payload.label || redactSensitiveUrl(url), ...transportFields }, ...directHosts], directDefaultHostId)) return;
     }
     setDirectConnectLink('');
     setDirectError(null);
@@ -679,7 +799,7 @@ export const RemoteInstancesPage: React.FC = () => {
   const handleRemoveDirectHost = React.useCallback(async (id: string) => {
     const nextHosts = directHosts.filter((host) => host.id !== id);
     const nextDefault = directDefaultHostId === id ? 'local' : directDefaultHostId;
-    await persistDirectHosts(nextHosts, nextDefault);
+    if (!await persistDirectHosts(nextHosts, nextDefault)) return;
     if (directEditingId === id) {
       setDirectEditingId(null);
     }
@@ -696,6 +816,14 @@ export const RemoteInstancesPage: React.FC = () => {
 
   const saveDirectHostEdit = React.useCallback(async () => {
     if (!directEditingId) return;
+    // Keep relay pairing credentials and learned addresses intact on rename.
+    if (directEditingHost && directEditingRelayOnly) {
+      const label = directEditLabel.trim() || directEditingHost.label;
+      const nextHosts = directHosts.map((host) => host.id === directEditingId ? { ...host, label } : host);
+      if (!await persistDirectHosts(nextHosts, directDefaultHostId)) return;
+      setDirectEditingId(null);
+      return;
+    }
     const resolved = resolveDesktopHostUrl(directEditUrl);
     if (!resolved) {
       setDirectError(t('desktopHostSwitcher.error.invalidUrl'));
@@ -712,12 +840,12 @@ export const RemoteInstancesPage: React.FC = () => {
         requestHeaders: buildRequestHeaders(directEditHeaders),
       }
       : host);
-    await persistDirectHosts(nextHosts, directDefaultHostId);
+    if (!await persistDirectHosts(nextHosts, directDefaultHostId)) return;
     setDirectEditingId(null);
     if (resolved.redeemUrl) {
       navigateToUrl(resolved.redeemUrl);
     }
-  }, [directDefaultHostId, directEditHeaders, directEditLabel, directEditToken, directEditUrl, directEditingId, directHosts, persistDirectHosts, t]);
+  }, [directDefaultHostId, directEditHeaders, directEditLabel, directEditToken, directEditUrl, directEditingHost, directEditingId, directEditingRelayOnly, directHosts, persistDirectHosts, t]);
 
   const createSshInstanceFromDialog = React.useCallback(async () => {
     const command = sshCommandDraft.trim();
@@ -730,7 +858,7 @@ export const RemoteInstancesPage: React.FC = () => {
       await createFromCommand(id, command, sshNameDraft.trim() || t('settings.remoteInstances.sidebar.newSshInstanceName'));
       setSelectedId(id);
       setSshAddDialogOpen(false);
-      setSshCommandDraft('ssh user@example.com');
+      setSshCommandDraft('');
       setSshNameDraft('');
       toast.success(t('settings.remoteInstances.page.toast.instanceCreated'));
     } catch (error) {
@@ -739,6 +867,12 @@ export const RemoteInstancesPage: React.FC = () => {
       });
     }
   }, [createFromCommand, setSelectedId, sshCommandDraft, sshNameDraft, t]);
+
+  const openSshAddDialog = React.useCallback(() => {
+    setSshHostSearch('');
+    setSshAddMode(importCandidates.length > 0 ? 'saved' : 'manual');
+    setSshAddDialogOpen(true);
+  }, [importCandidates.length]);
 
   const setDefaultDirectHost = React.useCallback(async (id: string) => {
     await persistDirectHosts(directHosts, id);
@@ -761,11 +895,15 @@ export const RemoteInstancesPage: React.FC = () => {
       if (!url) {
         return [host.id, host.relay ? await relayProbe() : ({ status: 'unreachable', latencyMs: 0 } as HostProbeResult)] as const;
       }
-      const direct = await desktopHostProbe(url, { clientToken: host.clientToken || null, requestHeaders: host.requestHeaders || null })
+      const direct = await desktopHostProbe(url, {
+        clientToken: host.clientToken || null,
+        requestHeaders: host.requestHeaders || null,
+        expectedServerId: host.relay?.serverId ?? null,
+      })
         .catch((): HostProbeResult => ({ status: 'unreachable', latencyMs: 0 }));
-      if (direct.status === 'unreachable' && host.relay) {
+      if ((direct.status === 'unreachable' || direct.status === 'wrong-service' || direct.status === 'incompatible') && host.relay) {
         const relayResult = await relayProbe();
-        if (relayResult.status === 'ok') return [host.id, relayResult] as const;
+        if (relayResult.status === 'ok' || relayResult.status === 'relay-limit') return [host.id, relayResult] as const;
       }
       return [host.id, direct] as const;
     })).then((entries) => {
@@ -1000,6 +1138,11 @@ export const RemoteInstancesPage: React.FC = () => {
     setDraft(selectedInstance);
   }, [selectedInstance]);
 
+  // Every instance opens on the simple view; advanced stays a deliberate choice.
+  React.useEffect(() => {
+    setAdvancedOpen(false);
+  }, [selectedId]);
+
   React.useEffect(() => {
     if (!selectedId) {
       return;
@@ -1016,54 +1159,23 @@ export const RemoteInstancesPage: React.FC = () => {
     };
   }, [refreshStatuses, selectedId]);
 
-  React.useEffect(() => {
-    // Use requestAnimationFrame for smoother clock updates without setInterval overhead
-    let rafId: number | null = null;
-    let lastTime = Date.now();
-    
-    const tick = () => {
-      const now = Date.now();
-      // Update only once per second
-      if (now - lastTime >= 1_000) {
-        setClockMs(now);
-        lastTime = now;
-      }
-      rafId = requestAnimationFrame(tick);
-    };
-    
-    // Only run when visible
-    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
-      rafId = requestAnimationFrame(tick);
-    }
-    
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible' && rafId === null) {
-        rafId = requestAnimationFrame(tick);
-      } else if (document.visibilityState !== 'visible' && rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-    };
-    
-    document.addEventListener('visibilitychange', onVisibility);
-    
-    return () => {
-      document.removeEventListener('visibilitychange', onVisibility);
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-    };
-  }, []);
 
   const status = selectedId ? statusesById[selectedId] : null;
   const statusPhase = status?.phase;
   const isReady = statusPhase === 'ready';
   const isReconnecting = statusPhase === 'degraded';
+  // Only a reconnect needs the clock: it reads as stuck after 12 s. Ticking
+  // whenever a status exists re-rendered this whole page every second.
+  const clockMs = useDurationTickerNow(isReconnecting);
   const isConnecting = isConnectingPhase(statusPhase);
   const isBusy = isConnecting || isReconnecting;
   const canDisconnect = isReady || isBusy;
   const statusAgeMs = status ? Math.max(0, clockMs - status.updatedAtMs) : 0;
   const reconnectAppearsStuck = isReconnecting && statusAgeMs > 12_000;
+  const retrySpinning = isConnecting || (isReconnecting && !reconnectAppearsStuck);
+  const currentState = instanceState(statusPhase);
+  const currentRemedy = currentState === 'error' ? errorRemedy(status?.detail) : null;
+  const currentRemedyHintKey = remedyHintKey(currentRemedy);
 
   const hasChanges = React.useMemo(() => {
     if (!draft || !selectedInstance) return false;
@@ -1083,10 +1195,27 @@ export const RemoteInstancesPage: React.FC = () => {
       return;
     }
 
+    // "Already running" cannot pick a port on its own; catching it here keeps
+    // the failure in the form instead of surfacing it mid-connect.
+    if (normalized.remoteOpenchamber.mode === 'external' && !normalized.remoteOpenchamber.preferredPort) {
+      toast.error(t('settings.remoteInstances.page.validation.externalPortRequired'));
+      setAdvancedOpen(true);
+      return;
+    }
+
+    if (
+      normalized.remoteOpenchamber.mode === 'managed' &&
+      normalized.remoteOpenchamber.bindHost === '0.0.0.0' &&
+      !normalized.auth.openchamberPassword?.value?.trim()
+    ) {
+      toast.error(t('settings.remoteInstances.page.validation.remoteLanNeedsPassword'));
+      setAdvancedOpen(true);
+      window.setTimeout(() => uiPasswordRef.current?.focus(), 0);
+      return;
+    }
+
     if (normalized.localForward.bindHost === '0.0.0.0') {
-      const allow = window.confirm(
-        t('settings.remoteInstances.page.confirm.bindAllInterfaces'),
-      );
+      const allow = await confirmSsh('settings.remoteInstances.page.confirm.bindAllInterfaces');
       if (!allow) {
         return;
       }
@@ -1097,7 +1226,8 @@ export const RemoteInstancesPage: React.FC = () => {
       normalized.auth.sshPassword.value?.trim() &&
       normalized.auth.sshPassword.store !== 'settings'
     ) {
-      const store = window.confirm(t('settings.remoteInstances.page.confirm.storeSshPasswordPlaintext'));
+      const store = await confirmSsh('settings.remoteInstances.page.confirm.storeSshPasswordPlaintext');
+      if (store === null) return;
       normalized.auth.sshPassword.store = store ? 'settings' : 'never';
       if (!store) {
         normalized.auth.sshPassword.value = undefined;
@@ -1109,7 +1239,8 @@ export const RemoteInstancesPage: React.FC = () => {
       normalized.auth.openchamberPassword.value?.trim() &&
       normalized.auth.openchamberPassword.store !== 'settings'
     ) {
-      const store = window.confirm(t('settings.remoteInstances.page.confirm.storeUiPasswordPlaintext'));
+      const store = await confirmSsh('settings.remoteInstances.page.confirm.storeUiPasswordPlaintext');
+      if (store === null) return;
       normalized.auth.openchamberPassword.store = store ? 'settings' : 'never';
       if (!store) {
         normalized.auth.openchamberPassword.value = undefined;
@@ -1124,7 +1255,7 @@ export const RemoteInstancesPage: React.FC = () => {
         description: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [draft, t, upsertInstance]);
+  }, [confirmSsh, draft, t, upsertInstance]);
 
   const createImportedInstance = React.useCallback(
     async (host: string, destination: string): Promise<boolean> => {
@@ -1154,6 +1285,7 @@ export const RemoteInstancesPage: React.FC = () => {
 
   const handleImportCandidate = React.useCallback(
     (host: string, pattern: boolean) => {
+      setSshAddDialogOpen(false);
       if (pattern) {
         setPatternHost(host);
         setPatternDestination(suggestConcreteHost(host));
@@ -1163,6 +1295,34 @@ export const RemoteInstancesPage: React.FC = () => {
     },
     [createImportedInstance],
   );
+
+  const filteredImportCandidates = React.useMemo(
+    () => rankByQuery(importCandidates, sshHostSearch, (candidate) => [candidate.host, candidate.sshCommand]),
+    [importCandidates, sshHostSearch],
+  );
+
+  // Opening a ready instance switches this window's runtime to the forwarded
+  // local URL, the way the host switcher does, instead of navigating to it.
+  // Navigating would load the remote server's own UI on the tunnel origin,
+  // where the desktop shell refuses SSH commands: once the tunnel dropped, the
+  // window could no longer reconnect it.
+  const openInstance = React.useCallback(async (instanceId: string) => {
+    const config = await desktopHostsGet().catch(() => null);
+    const host = config?.hosts.find((entry) => entry.id === instanceId);
+    const apiBaseUrl = host ? normalizeHostUrl(getDesktopHostApiUrl(host)) : null;
+    if (!host || !apiBaseUrl) {
+      toast.error(t('settings.remoteInstances.page.toast.instanceUrlUnavailable'));
+      return;
+    }
+    switchRuntimeEndpoint({
+      apiBaseUrl,
+      clientToken: host.clientToken || null,
+      requestHeaders: host.requestHeaders || null,
+      runtimeKey: runtimeKeyForDesktopHost(host),
+      sshForwarded: host.sshForwarded === true,
+    });
+    setSettingsDialogOpen(false);
+  }, [setSettingsDialogOpen, t]);
 
   const handlePatternCreate = React.useCallback(async () => {
     const host = patternHost;
@@ -1197,7 +1357,10 @@ export const RemoteInstancesPage: React.FC = () => {
         throw error;
       }
 
-      const allow = window.confirm(t('settings.remoteInstances.sidebar.confirm.localPortInUseRetry'));
+      const allow = await confirmSsh(
+        'settings.remoteInstances.sidebar.confirm.localPortInUseRetry',
+        'settings.remoteInstances.sidebar.actions.retry',
+      );
       if (!allow) {
         throw error;
       }
@@ -1214,6 +1377,44 @@ export const RemoteInstancesPage: React.FC = () => {
       await connect(nextInstance.id);
       toast.success(t('settings.remoteInstances.sidebar.toast.retriedWithRandomPort'));
     }
+  }, [confirmSsh, connect, selectedInstance, t, upsertInstance]);
+
+  const uiPasswordRef = React.useRef<HTMLInputElement | null>(null);
+  const remotePortRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Turn a reported failure into the one action that resolves it, instead of
+  // leaving the raw backend sentence as the whole answer.
+  const applyErrorRemedy = React.useCallback(async (remedy: ErrorRemedy) => {
+    if (!selectedInstance) return;
+
+    if (remedy === 'localPort') {
+      const nextInstance: DesktopSshInstance = {
+        ...selectedInstance,
+        localForward: {
+          ...selectedInstance.localForward,
+          preferredLocalPort: randomPort(),
+        },
+      };
+      try {
+        await upsertInstance(nextInstance);
+        await connect(nextInstance.id);
+        toast.success(t('settings.remoteInstances.sidebar.toast.retriedWithRandomPort'));
+      } catch (error) {
+        toast.error(t('settings.remoteInstances.page.toast.connectFailed'), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+
+    setAdvancedOpen(true);
+    window.setTimeout(() => {
+      if (remedy === 'uiPassword') {
+        uiPasswordRef.current?.focus();
+        return;
+      }
+      remotePortRef.current?.scrollIntoView({ block: 'center' });
+    }, 0);
   }, [connect, selectedInstance, t, upsertInstance]);
 
   const readLogsForInstance = React.useCallback(async (id: string) => {
@@ -1301,23 +1502,26 @@ export const RemoteInstancesPage: React.FC = () => {
     }
   }, [draft, t]);
 
-  const handleOpenCurrentInstance = React.useCallback(async () => {
-    if (!status?.localUrl) {
-      toast.error(t('settings.remoteInstances.page.toast.instanceUrlUnavailable'));
-      return;
-    }
-
-    const target = status.localUrl.trim();
-    if (!target) {
-      toast.error(t('settings.remoteInstances.page.toast.instanceUrlUnavailable'));
-      return;
-    }
-
-    navigateToUrl(target);
-  }, [status?.localUrl, t]);
-
   const handlePrimaryConnectionAction = React.useCallback(() => {
     if (!draft) {
+      return;
+    }
+
+    if (!canDisconnect && draft.remoteOpenchamber.mode === 'external' && !draft.remoteOpenchamber.preferredPort) {
+      toast.error(t('settings.remoteInstances.page.validation.externalPortRequired'));
+      setAdvancedOpen(true);
+      return;
+    }
+
+    if (
+      !canDisconnect &&
+      draft.remoteOpenchamber.mode === 'managed' &&
+      draft.remoteOpenchamber.bindHost === '0.0.0.0' &&
+      !draft.auth.openchamberPassword?.value?.trim()
+    ) {
+      toast.error(t('settings.remoteInstances.page.validation.remoteLanNeedsPassword'));
+      setAdvancedOpen(true);
+      window.setTimeout(() => uiPasswordRef.current?.focus(), 0);
       return;
     }
 
@@ -1386,15 +1590,15 @@ export const RemoteInstancesPage: React.FC = () => {
 
   if (!draft) {
     return (
-      <SettingsPageLayout title={t('settings.page.remoteInstances.title')}>
+      <SettingsPageLayout title={t('settings.page.remoteInstances.title')} namedBySidebar>
         {clientAuth ? (
           <SettingsSection
             title={t('settings.remoteInstances.clientAuth.title')}
             info={t('settings.remoteInstances.clientAuth.description')}
-            divider={false}
             settingsItem="remote-instances.client-auth"
             contentClassName="space-y-3"
           >
+              <RelayConflictNotice clientAuth={clientAuth} />
               <div>
                 <Button type="button" size="xs" className="!font-normal" onClick={() => void openAddDevice()}>
                   <Icon name="add" className="h-3.5 w-3.5" />
@@ -1419,10 +1623,10 @@ export const RemoteInstancesPage: React.FC = () => {
                       <div key={`pending-${pending.id}`} className="flex items-center justify-between gap-3 py-1.5">
                         <div className="min-w-0 space-y-0.5">
                           <div className="flex min-w-0 items-center gap-2">
-                            <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--status-warning)] animate-pulse" />
+                            <StatusDot className="bg-[var(--status-warning)]" waiting />
                             <p className="typography-ui-label text-foreground truncate">{pending.label || t('settings.remoteInstances.clientAuth.field.labelPlaceholder')}</p>
                             {pending.usesRelay ? (
-                              <span className="typography-micro text-muted-foreground bg-muted px-1 rounded shrink-0 leading-none pb-px border border-border/50">{t('settings.remoteInstances.clientAuth.state.viaRelay')}</span>
+                              <span className="typography-micro text-muted-foreground oc-tile-inset px-1 rounded shrink-0 leading-none pb-px">{t('settings.remoteInstances.clientAuth.state.viaRelay')}</span>
                             ) : null}
                           </div>
                           <p className="typography-micro text-muted-foreground truncate">{t('settings.remoteInstances.clientAuth.state.pending')}</p>
@@ -1462,17 +1666,17 @@ export const RemoteInstancesPage: React.FC = () => {
                           <div className="min-w-0">
                             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                               <span className={cn(
-                                'h-2 w-2 shrink-0 rounded-full',
+                                'size-1.5 shrink-0 rounded-full',
                                 client.revokedAt ? 'bg-muted-foreground/20' : isOnline ? 'bg-[var(--status-success)]' : 'bg-muted-foreground/30',
                               )} />
                               <p className="typography-ui-label text-foreground truncate">{client.label}</p>
                               {devicePlatformLabel(client.devicePlatform) ? (
-                                <span className="typography-micro text-muted-foreground bg-muted px-1 rounded shrink-0 leading-none pb-px border border-border/50">
+                                <span className="typography-micro text-muted-foreground oc-tile-inset px-1 rounded shrink-0 leading-none pb-px">
                                   {devicePlatformLabel(client.devicePlatform)}
                                 </span>
                               ) : null}
                               {isLocalDesktopClient ? (
-                                <span className="typography-micro text-muted-foreground bg-muted px-1 rounded flex-shrink-0 leading-none pb-px border border-border/50">
+                                <span className="typography-micro text-muted-foreground oc-tile-inset px-1 rounded flex-shrink-0 leading-none pb-px">
                                   {t('settings.remoteInstances.clientAuth.state.thisDevice')}
                                 </span>
                               ) : null}
@@ -1488,7 +1692,7 @@ export const RemoteInstancesPage: React.FC = () => {
                   </>
                 )}
               </div>
-              {remoteClientError ? <p className="typography-meta text-[var(--status-error)]">{remoteClientError}</p> : null}
+              {remoteClientError ? <p dir="auto" className="typography-meta text-[var(--status-error)]">{remoteClientError}</p> : null}
           </SettingsSection>
         ) : null}
 
@@ -1502,10 +1706,10 @@ export const RemoteInstancesPage: React.FC = () => {
                the manual fallback. The token-storage note lives in the add
                dialog next to the token field it describes. */
             <div className="flex shrink-0 items-center gap-2">
-              <Button type="button" size="xs" className="!font-normal" onClick={() => setDirectImportDialogOpen(true)} disabled={directSaving}>
+              <Button type="button" size="xs" className="!font-normal" onClick={() => { setDirectError(null); setDirectImportDialogOpen(true); }} disabled={directSaving}>
                 {t('settings.remoteInstances.direct.import.action')}
               </Button>
-              <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => setDirectAddDialogOpen(true)} disabled={directSaving}>
+              <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => { setDirectError(null); setDirectAddDialogOpen(true); }} disabled={directSaving}>
                 <Icon name="add" className="h-3.5 w-3.5" />
                 {t('settings.remoteInstances.direct.actions.add')}
               </Button>
@@ -1531,17 +1735,21 @@ export const RemoteInstancesPage: React.FC = () => {
                           ? 'desktopHostSwitcher.status.incompatible'
                           : probe.status === 'wrong-service'
                             ? 'desktopHostSwitcher.status.wrongService'
-                            : 'desktopHostSwitcher.status.unreachable';
+                            : probe.status === 'relay-limit'
+                              ? 'desktopHostSwitcher.status.relayLimit'
+                              : 'desktopHostSwitcher.status.unreachable';
                 const isOnline = probe?.status === 'ok';
                 return (
                 <div key={host.id} className="py-1.5">
                   <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0 space-y-0.5">
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className={cn(
-                            'h-2 w-2 shrink-0 rounded-full',
-                            !probe ? 'bg-muted-foreground/30 animate-pulse' : isOnline ? 'bg-[var(--status-success)]' : 'bg-[var(--status-error)]',
-                          )} />
+                          <StatusDot
+                            className={cn(
+                              !probe ? 'bg-muted-foreground/30' : isOnline ? 'bg-[var(--status-success)]' : 'bg-[var(--status-error)]',
+                            )}
+                            waiting={!probe}
+                          />
                           <p className="typography-ui-label text-foreground truncate">{redactSensitiveUrl(host.label)}</p>
                           {directDefaultHostId === host.id ? <span className="typography-micro text-muted-foreground shrink-0">{t('desktopHostSwitcher.header.default')}</span> : null}
                           <span className={cn('typography-micro shrink-0', isOnline ? 'text-[var(--status-success)]' : 'text-muted-foreground')}>
@@ -1552,23 +1760,20 @@ export const RemoteInstancesPage: React.FC = () => {
                           </span>
                         </div>
                         <p className={cn('typography-micro text-muted-foreground truncate', host.apiUrl && 'font-mono')}>
-                          {host.relay && !host.apiUrl ? t('mobile.connect.relay.badge') : redactSensitiveUrl(host.apiUrl || host.url)}
+                          {isRelayOnlyHost(host) ? t('mobile.connect.relay.badge') : redactSensitiveUrl(host.apiUrl || host.url)}
                         </p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => void setDefaultDirectHost(host.id)} disabled={directSaving || directDefaultHostId === host.id} aria-label={t('desktopHostSwitcher.actions.setAsDefaultAria')}>
                           {directDefaultHostId === host.id ? <Icon name="star-fill" className="h-3.5 w-3.5" /> : <Icon name="star" className="h-3.5 w-3.5" />}
                         </Button>
-                        {/* The edit form is URL/token-centric; relay-ONLY hosts have
-                            nothing it can edit and are re-imported via a fresh pairing
-                            link instead. Multi-transport hosts keep their relay leg
-                            through the edit (object spread preserves it). */}
-                        {host.relay && !host.apiUrl ? null : (
-                          <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => beginEditDirectHost(host)} disabled={directSaving}>
-                            <Icon name="pencil" className="h-3.5 w-3.5" />
-                            {t('desktopHostSwitcher.actions.edit')}
-                          </Button>
-                        )}
+                        {/* Relay-only hosts edit just their name; their transport comes
+                            from a fresh pairing link. Multi-transport hosts keep their
+                            relay leg through the edit (object spread preserves it). */}
+                        <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => beginEditDirectHost(host)} disabled={directSaving}>
+                          <Icon name="pencil" className="h-3.5 w-3.5" />
+                          {t('desktopHostSwitcher.actions.edit')}
+                        </Button>
                         <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => void handleRemoveDirectHost(host.id)} disabled={directSaving}>
                           <Icon name="delete-bin" className="h-3.5 w-3.5" />
                           {t('settings.common.actions.delete')}
@@ -1580,7 +1785,7 @@ export const RemoteInstancesPage: React.FC = () => {
               })}
             </div>
 
-            {directError ? <p className="typography-meta text-[var(--status-error)]">{directError}</p> : null}
+            {directError && !directImportDialogOpen && !directAddDialogOpen && !directEditingId ? <p className="typography-meta text-[var(--status-error)]">{directError}</p> : null}
         </SettingsSection> : null}
 
         {showInstanceManagement ? <Dialog open={directAddDialogOpen} onOpenChange={setDirectAddDialogOpen}>
@@ -1619,6 +1824,7 @@ export const RemoteInstancesPage: React.FC = () => {
                 <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => setDirectAddDialogOpen(false)} disabled={directSaving}>{t('settings.common.actions.cancel')}</Button>
                 <Button type="submit" size="xs" className="!font-normal" disabled={directSaving || !directUrl.trim()}>{t('settings.remoteInstances.direct.actions.add')}</Button>
               </div>
+              {directError ? <p role="alert" className="typography-meta text-[var(--status-error)]">{directError}</p> : null}
             </form>
           </DialogContent>
         </Dialog> : null}
@@ -1630,7 +1836,8 @@ export const RemoteInstancesPage: React.FC = () => {
               <DialogDescription>{t('settings.remoteInstances.direct.description')}</DialogDescription>
             </DialogHeader>
             <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void saveDirectHostEdit(); }}>
-              <Input className="h-8" value={directEditLabel} onChange={(event) => setDirectEditLabel(event.target.value)} placeholder={t('settings.remoteInstances.direct.field.labelPlaceholder')} disabled={directSaving} />
+              <Input className="h-8" value={directEditLabel} onChange={(event) => setDirectEditLabel(event.target.value)} placeholder={t('settings.remoteInstances.direct.field.labelPlaceholder')} disabled={directSaving} autoFocus={directEditingRelayOnly} />
+              {directEditingRelayOnly ? null : <>
               <Input className="h-8" value={directEditUrl} onChange={(event) => setDirectEditUrl(event.target.value)} placeholder={t('settings.remoteInstances.direct.field.urlPlaceholder')} disabled={directSaving} autoFocus />
               <Input className="h-8" value={directEditToken} onChange={(event) => setDirectEditToken(event.target.value)} placeholder={t('settings.remoteInstances.direct.field.tokenPlaceholder')} type="password" disabled={directSaving} />
               <div className="space-y-2">
@@ -1652,25 +1859,39 @@ export const RemoteInstancesPage: React.FC = () => {
                   {t('settings.remoteInstances.direct.headers.actions.add')}
                 </Button>
               </div>
+              </>}
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => setDirectEditingId(null)} disabled={directSaving}>{t('settings.common.actions.cancel')}</Button>
                 <Button type="submit" size="xs" className="!font-normal" disabled={directSaving}>{t('settings.common.actions.saveChanges')}</Button>
               </div>
+              {directError ? <p role="alert" className="typography-meta text-[var(--status-error)]">{directError}</p> : null}
             </form>
           </DialogContent>
         </Dialog> : null}
 
-        {showInstanceManagement ? <Dialog open={directImportDialogOpen} onOpenChange={setDirectImportDialogOpen}>
+        {showInstanceManagement ? <Dialog open={directImportDialogOpen} onOpenChange={(open) => { if (!directImporting) setDirectImportDialogOpen(open); }}>
           <DialogContent className="sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>{t('settings.remoteInstances.direct.import.action')}</DialogTitle>
               <DialogDescription>{t('settings.remoteInstances.direct.import.description')}</DialogDescription>
             </DialogHeader>
-            <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void importDirectConnectLink(); }}>
-              <Input className="h-8" value={directConnectLink} onChange={(event) => setDirectConnectLink(event.target.value)} placeholder={t('settings.remoteInstances.direct.import.placeholder')} disabled={directSaving} autoFocus />
+            <form className="space-y-3" aria-busy={directImporting} onSubmit={async (event) => {
+              event.preventDefault();
+              if (directImporting || directSaving) return;
+              setDirectImporting(true);
+              try {
+                await importDirectConnectLink();
+              } catch {
+                setDirectError(t('mobile.connect.error.unreachable'));
+              } finally {
+                setDirectImporting(false);
+              }
+            }}>
+              <Input className="h-8" value={directConnectLink} onChange={(event) => { setDirectConnectLink(event.target.value); setDirectError(null); }} placeholder={t('settings.remoteInstances.direct.import.placeholder')} disabled={directSaving || directImporting} aria-describedby={directError ? 'direct-import-error' : undefined} autoFocus />
+              {directError ? <p id="direct-import-error" role="alert" className="typography-meta text-[var(--status-error)]">{directError}</p> : null}
               <div className="flex justify-end gap-2">
-                <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => setDirectImportDialogOpen(false)} disabled={directSaving}>{t('settings.common.actions.cancel')}</Button>
-                <Button type="submit" size="xs" className="!font-normal" disabled={directSaving || !directConnectLink.trim()}>{t('settings.remoteInstances.direct.import.action')}</Button>
+                <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => setDirectImportDialogOpen(false)} disabled={directSaving || directImporting}>{t('settings.common.actions.cancel')}</Button>
+                <Button type="submit" size="xs" className="!font-normal" disabled={directSaving || directImporting || !directConnectLink.trim()}>{t('settings.remoteInstances.direct.import.action')}</Button>
               </div>
             </form>
           </DialogContent>
@@ -1701,7 +1922,7 @@ export const RemoteInstancesPage: React.FC = () => {
                   <div role="radiogroup" aria-label={t('settings.remoteInstances.clientAuth.addDevice.transportLabel')} className="space-y-1.5">
                     {([
                       { key: 'relay' as const, label: t('settings.remoteInstances.clientAuth.addDevice.transport.relay'), hint: t('settings.remoteInstances.clientAuth.addDevice.transport.relayHint'), available: Boolean(transportOptions?.relayAvailable) },
-                      { key: 'lan' as const, label: t('settings.remoteInstances.clientAuth.addDevice.transport.lan'), hint: t('settings.remoteInstances.clientAuth.addDevice.transport.lanHint'), available: Boolean(transportOptions?.lanUrl) },
+                      { key: 'lan' as const, label: t('settings.remoteInstances.clientAuth.addDevice.transport.lan'), hint: lanTransportHint, available: Boolean(transportOptions?.lanUrl) },
                       { key: 'local' as const, label: t('settings.remoteInstances.clientAuth.addDevice.transport.local'), hint: t('settings.remoteInstances.clientAuth.addDevice.transport.localHint'), available: Boolean(transportOptions?.localUrl) },
                     ]).map((option) => {
                       const selected = addDeviceTransport === option.key;
@@ -1720,7 +1941,7 @@ export const RemoteInstancesPage: React.FC = () => {
                             className="mt-0.5"
                           />
                           <div className="min-w-0">
-                            <p className={cn('typography-ui-label font-normal', selected ? 'text-foreground' : 'text-foreground/70')}>{option.label}</p>
+                            <p className={cn('typography-ui-label font-normal', selected ? 'text-foreground' : 'oc-title-rest')}>{option.label}</p>
                             <p className="typography-meta text-muted-foreground">{option.hint}</p>
                           </div>
                         </div>
@@ -1740,7 +1961,7 @@ export const RemoteInstancesPage: React.FC = () => {
                     </label>
                   ) : null}
                 </div>
-                {remoteClientError ? <p className="typography-meta text-[var(--status-error)]">{remoteClientError}</p> : null}
+                {remoteClientError ? <p dir="auto" className="typography-meta text-[var(--status-error)]">{remoteClientError}</p> : null}
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => setAddDeviceOpen(false)} disabled={addDeviceCreating}>{t('settings.common.actions.cancel')}</Button>
                   <Button type="submit" size="xs" className="!font-normal" disabled={addDeviceCreating || !transportOptions}>{t('settings.remoteInstances.clientAuth.addDevice.create')}</Button>
@@ -1754,8 +1975,8 @@ export const RemoteInstancesPage: React.FC = () => {
                   </div>
                 ) : null}
                 {pairingUrl ? (
-                  <div className="flex items-center gap-2 rounded-md border border-[var(--interactive-border)] p-2">
-                    <code className="min-w-0 flex-1 truncate typography-code text-muted-foreground">{pairingUrl}</code>
+                  <div className="oc-tile-inset flex items-center gap-2 rounded-md p-2">
+                    <code dir="ltr" className="min-w-0 flex-1 truncate typography-code text-muted-foreground">{pairingUrl}</code>
                     <Button type="button" variant="outline" size="xs" className="!font-normal shrink-0" onClick={handleCopyPairing}>
                       <Icon name={pairingCopied ? 'check' : 'file-copy'} className={cn('h-3.5 w-3.5', pairingCopied && 'text-[var(--status-success)]')} />
                       {pairingCopied ? t('settings.remoteInstances.clientAuth.actions.copied') : t('settings.common.actions.copyAll')}
@@ -1774,7 +1995,7 @@ export const RemoteInstancesPage: React.FC = () => {
           title={t('settings.remoteInstances.sidebar.title')}
           description={t('settings.remoteInstances.sidebar.total', { count: instances.length })}
           headerAction={(
-            <Button type="button" size="xs" className="!font-normal" onClick={() => setSshAddDialogOpen(true)}>
+            <Button type="button" size="xs" className="!font-normal" onClick={openSshAddDialog}>
               <Icon name="add" className="h-3.5 w-3.5" />
               {t('settings.remoteInstances.sidebar.actions.addSshInstance')}
             </Button>
@@ -1782,50 +2003,71 @@ export const RemoteInstancesPage: React.FC = () => {
           contentClassName="space-y-2.5"
         >
             {isLoading ? (
-              <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.page.import.loading')}</p>
+              <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.page.state.loadingInstances')}</p>
             ) : instances.length === 0 ? (
-              <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.page.import.noneFound')}</p>
+              <p className="typography-meta text-muted-foreground">
+                {importCandidates.length === 1
+                  ? t('settings.remoteInstances.page.empty.noInstancesWithOneImport')
+                  : importCandidates.length > 1
+                    ? t('settings.remoteInstances.page.empty.noInstancesWithImports', { count: importCandidates.length })
+                    : t('settings.remoteInstances.page.empty.noInstances')}
+              </p>
             ) : instances.map((instance) => {
               const instanceStatus = statusesById[instance.id];
               const title = instance.nickname?.trim() || instance.sshParsed?.destination || instance.id;
               const phase = instanceStatus?.phase;
               const ready = phase === 'ready';
+              const state = instanceState(phase);
+              const failureDetail = state === 'error' ? instanceStatus?.detail : undefined;
               return (
-                <div key={instance.id} className="flex items-center justify-between gap-3 py-1.5">
-                  <div className="min-w-0 space-y-0.5">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className={`h-2 w-2 rounded-full ${phaseDotClass(phase)}`} />
-                      <p className="typography-ui-label text-foreground truncate">{title}</p>
+                <div key={instance.id} className="space-y-1.5 py-1.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <StatusDot className={phaseDotClass(phase)} waiting={isConnectingPhase(phase)} />
+                        <p className="typography-ui-label text-foreground truncate">{title}</p>
+                      </div>
+                      <p className="typography-micro text-muted-foreground truncate">
+                        {t(instanceStateLabelKey(state))}
+                        {state === 'connecting' ? ` · ${t(phaseLabelKey(phase))}` : ''}
+                        {ready && instanceStatus?.localUrl ? ` · ${instanceStatus.localUrl}` : ''}
+                      </p>
                     </div>
-                    <p className="typography-micro text-muted-foreground truncate">
-                      {t(phaseLabelKey(phase))}{instanceStatus?.localUrl ? ` · ${instanceStatus.localUrl}` : ''}
-                    </p>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {ready ? (
+                        <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => void openInstance(instance.id)}>
+                          <Icon name="external-link" className="h-3.5 w-3.5" />
+                          {t('settings.remoteInstances.page.actions.open')}
+                        </Button>
+                      ) : null}
+                      <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => {
+                        const op = ready ? disconnect(instance.id) : connect(instance.id);
+                        void op.catch((err) => toast.error(ready ? t('settings.remoteInstances.sidebar.toast.disconnectFailed') : t('settings.remoteInstances.sidebar.toast.connectFailed'), {
+                          description: err instanceof Error ? err.message : String(err),
+                        }));
+                      }}>
+                        {ready ? <Icon name="stop" className="h-3.5 w-3.5" /> : <Icon name="plug-2" className="h-3.5 w-3.5" />}
+                        {ready ? t('settings.remoteInstances.sidebar.actions.disconnect') : t('settings.remoteInstances.sidebar.actions.connect')}
+                      </Button>
+                      <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => setSelectedId(instance.id)}>
+                        <Icon name="pencil" className="h-3.5 w-3.5" />
+                        {t('desktopHostSwitcher.actions.edit')}
+                      </Button>
+                      <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => {
+                        const ok = window.confirm(t('settings.remoteInstances.page.confirm.removeInstance'));
+                        if (!ok) return;
+                        void removeInstance(instance.id).catch((err) => toast.error(t('settings.remoteInstances.page.toast.removeInstanceFailed'), {
+                          description: err instanceof Error ? err.message : String(err),
+                        }));
+                      }}>
+                        <Icon name="delete-bin" className="h-3.5 w-3.5" />
+                        {t('settings.common.actions.delete')}
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => {
-                      const op = ready ? disconnect(instance.id) : connect(instance.id);
-                      void op.catch((err) => toast.error(ready ? t('settings.remoteInstances.sidebar.toast.disconnectFailed') : t('settings.remoteInstances.sidebar.toast.connectFailed'), {
-                        description: err instanceof Error ? err.message : String(err),
-                      }));
-                    }}>
-                      {ready ? <Icon name="stop" className="h-3.5 w-3.5" /> : <Icon name="plug-2" className="h-3.5 w-3.5" />}
-                      {ready ? t('settings.remoteInstances.sidebar.actions.disconnect') : t('settings.remoteInstances.sidebar.actions.connect')}
-                    </Button>
-                    <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => setSelectedId(instance.id)}>
-                      <Icon name="pencil" className="h-3.5 w-3.5" />
-                      {t('desktopHostSwitcher.actions.edit')}
-                    </Button>
-                    <Button type="button" variant="ghost" size="xs" className="!font-normal" onClick={() => {
-                      const ok = window.confirm(t('settings.remoteInstances.page.confirm.removeInstance'));
-                      if (!ok) return;
-                      void removeInstance(instance.id).catch((err) => toast.error(t('settings.remoteInstances.page.toast.removeInstanceFailed'), {
-                        description: err instanceof Error ? err.message : String(err),
-                      }));
-                    }}>
-                      <Icon name="delete-bin" className="h-3.5 w-3.5" />
-                      {t('settings.common.actions.delete')}
-                    </Button>
-                  </div>
+                  {failureDetail ? (
+                    <p dir="auto" className="typography-micro text-[var(--status-error)] break-words">{failureDetail}</p>
+                  ) : null}
                 </div>
               );
             })}
@@ -1835,51 +2077,69 @@ export const RemoteInstancesPage: React.FC = () => {
           <DialogContent className="sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>{t('settings.remoteInstances.sidebar.actions.addSshInstance')}</DialogTitle>
-              <DialogDescription>{t('settings.remoteInstances.page.section.instanceDescription')}</DialogDescription>
+              <DialogDescription>{t('settings.remoteInstances.page.addDialog.description')}</DialogDescription>
             </DialogHeader>
-            <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void createSshInstanceFromDialog(); }}>
-              <Input className="h-8" value={sshNameDraft} onChange={(event) => setSshNameDraft(event.target.value)} placeholder={t('settings.remoteInstances.page.field.nicknamePlaceholder')} disabled={isSaving} />
-              <Input className="h-8" value={sshCommandDraft} onChange={(event) => setSshCommandDraft(event.target.value)} placeholder={t('settings.remoteInstances.page.field.sshCommandPlaceholder')} disabled={isSaving} autoFocus />
-              <div className="flex justify-end gap-2">
-                <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => setSshAddDialogOpen(false)} disabled={isSaving}>{t('settings.common.actions.cancel')}</Button>
-                <Button type="submit" size="xs" className="!font-normal" disabled={isSaving || !sshCommandDraft.trim()}>{t('settings.common.actions.create')}</Button>
+            <SettingsChipGroup
+              value={sshAddMode}
+              onChange={setSshAddMode}
+              aria-label={t('settings.remoteInstances.page.addDialog.sourceLabel')}
+              options={[
+                { value: 'saved', label: t('settings.remoteInstances.page.addDialog.tab.saved') },
+                { value: 'manual', label: t('settings.remoteInstances.page.addDialog.tab.manual') },
+              ]}
+            />
+            {sshAddMode === 'saved' ? (
+              <div className="space-y-2">
+                <Input
+                  className="h-8"
+                  value={sshHostSearch}
+                  onChange={(event) => setSshHostSearch(event.target.value)}
+                  placeholder={t('settings.remoteInstances.page.addDialog.searchPlaceholder')}
+                  autoFocus
+                />
+                {isImportsLoading ? (
+                  <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.page.import.loading')}</p>
+                ) : importCandidates.length === 0 ? (
+                  <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.page.addDialog.emptySaved')}</p>
+                ) : filteredImportCandidates.length === 0 ? (
+                  <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.page.addDialog.searchEmpty')}</p>
+                ) : (
+                  <ScrollableOverlay outerClassName="max-h-[45vh]">
+                    {filteredImportCandidates.map((candidate) => (
+                      <div key={`${candidate.source}:${candidate.host}`} className="flex items-center justify-between gap-3 border-b border-[var(--surface-subtle)] py-2.5 last:border-b-0">
+                        <div className="min-w-0">
+                          <div className="typography-ui-label font-medium text-foreground truncate">
+                            {candidate.host}
+                            {candidate.pattern ? ` ${t('settings.remoteInstances.page.import.patternSuffix')}` : ''}
+                          </div>
+                          <div className="typography-meta text-muted-foreground truncate">{candidate.sshCommand}</div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          className="!font-normal"
+                          onClick={() => void handleImportCandidate(candidate.host, candidate.pattern)}
+                        >
+                          {t('settings.remoteInstances.page.addDialog.use')}
+                        </Button>
+                      </div>
+                    ))}
+                  </ScrollableOverlay>
+                )}
               </div>
-            </form>
+            ) : (
+              <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void createSshInstanceFromDialog(); }}>
+                <Input className="h-8" value={sshNameDraft} onChange={(event) => setSshNameDraft(event.target.value)} placeholder={t('settings.remoteInstances.page.field.nicknamePlaceholder')} disabled={isSaving} />
+                <Input className="h-8" value={sshCommandDraft} onChange={(event) => setSshCommandDraft(event.target.value)} placeholder={t('settings.remoteInstances.page.field.sshCommandPlaceholder')} disabled={isSaving} autoFocus />
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="xs" className="!font-normal" onClick={() => setSshAddDialogOpen(false)} disabled={isSaving}>{t('settings.common.actions.cancel')}</Button>
+                  <Button type="submit" size="xs" className="!font-normal" disabled={isSaving || !sshCommandDraft.trim()}>{t('settings.common.actions.create')}</Button>
+                </div>
+              </form>
+            )}
           </DialogContent>
         </Dialog> : null}
-
-        {showInstanceManagement ? <SettingsSection
-          title={t('settings.remoteInstances.page.import.sectionTitle')}
-        >
-          {isImportsLoading ? (
-            <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.page.import.loading')}</p>
-          ) : importCandidates.length === 0 ? (
-            <p className="typography-meta text-muted-foreground">{t('settings.remoteInstances.page.import.noneFound')}</p>
-          ) : (
-            <div>
-              {importCandidates.map((candidate) => (
-                <div key={`${candidate.source}:${candidate.host}`} className="flex items-center justify-between gap-3 border-b border-[var(--surface-subtle)] py-3 last:border-b-0">
-                  <div className="min-w-0">
-                    <div className="typography-ui-label font-medium text-foreground truncate">
-                      {candidate.host}
-                      {candidate.pattern ? ` ${t('settings.remoteInstances.page.import.patternSuffix')}` : ''}
-                    </div>
-                    <div className="typography-meta text-muted-foreground truncate">{candidate.sshCommand}</div>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    className="!font-normal"
-                    onClick={() => void handleImportCandidate(candidate.host, candidate.pattern)}
-                  >
-                    {t('settings.common.actions.import')}
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </SettingsSection> : null}
 
         <Dialog
           open={Boolean(patternHost)}
@@ -1925,16 +2185,21 @@ export const RemoteInstancesPage: React.FC = () => {
   }
 
   const isManagedMode = draft.remoteOpenchamber.mode === 'managed';
+  // Publishing the remote server to its network turns the UI password from an
+  // option into the only thing standing in front of it.
+  const remoteLanExposed = isManagedMode && draft.remoteOpenchamber.bindHost === '0.0.0.0';
+  const uiPasswordMissing = remoteLanExposed && !draft.auth.openchamberPassword?.value?.trim();
   const instanceTitle = draft.nickname?.trim() || draft.sshParsed?.destination || draft.id;
 
   return (
     <Dialog open={Boolean(draft)} onOpenChange={(open) => { if (!open) setSelectedId(null); }}>
       <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-auto">
       <div className="mb-6 px-1">
-        <h1 className={`${SETTINGS_PAGE_TITLE_CLASS} truncate`}>{instanceTitle}</h1>
+        <h1 dir="auto" className={`${SETTINGS_PAGE_TITLE_CLASS} truncate`}>{instanceTitle}</h1>
         <div className="mt-1 flex flex-wrap items-center gap-2 typography-meta text-muted-foreground">
-          <span className={`h-2.5 w-2.5 rounded-full ${phaseDotClass(statusPhase)}`} />
-          <span>{t(phaseLabelKey(statusPhase))}</span>
+          <StatusDot className={phaseDotClass(statusPhase)} waiting={isConnectingPhase(statusPhase)} />
+          <span className="text-foreground">{t(instanceStateLabelKey(currentState))}</span>
+          {currentState === 'connecting' ? <span>{t(phaseLabelKey(statusPhase))}</span> : null}
           {status?.localUrl ? <span className="font-mono text-foreground/80">{status.localUrl}</span> : null}
           {reconnectAppearsStuck ? <span>{t('settings.remoteInstances.page.status.reconnectStale')}</span> : null}
         </div>
@@ -1943,7 +2208,6 @@ export const RemoteInstancesPage: React.FC = () => {
       <SettingsSection
         title={t('settings.remoteInstances.page.section.actions')}
         info={t('settings.remoteInstances.page.section.actionsDescription')}
-        divider={false}
         contentClassName="space-y-3"
       >
           <div className="flex flex-wrap items-center gap-2">
@@ -1960,20 +2224,20 @@ export const RemoteInstancesPage: React.FC = () => {
             </Button>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="xs"
-              className="!font-normal"
+              className="!font-normal text-foreground/80 hover:bg-transparent hover:text-foreground"
               onClick={handleRetryAction}
               disabled={!canRetry}
             >
-              <Icon name="refresh" className={`h-3.5 w-3.5 ${isConnecting || (isReconnecting && !reconnectAppearsStuck) ? 'animate-spin' : ''}`} />
+              {retrySpinning ? <Spinner className="h-3.5 w-3.5" /> : <Icon name="refresh" className="h-3.5 w-3.5" />}
               {retryButtonLabel}
             </Button>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="xs"
-              className="!font-normal"
+              className="!font-normal text-foreground/80 hover:bg-transparent hover:text-foreground"
               onClick={() => {
                 void handleOpenLogs();
               }}
@@ -1983,9 +2247,9 @@ export const RemoteInstancesPage: React.FC = () => {
             </Button>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="xs"
-              className="!font-normal text-[var(--status-error)] border-[var(--status-error)]/30 hover:text-[var(--status-error)]"
+              className="!font-normal text-status-error/80 hover:bg-transparent hover:text-status-error"
               onClick={() => {
                 const ok = window.confirm(t('settings.remoteInstances.page.confirm.removeInstance'));
                 if (!ok) return;
@@ -2005,10 +2269,33 @@ export const RemoteInstancesPage: React.FC = () => {
               {t('settings.remoteInstances.sidebar.actions.remove')}
             </Button>
           </div>
+          {currentState === 'error' && status?.detail ? (
+            <div className="space-y-2 rounded-md bg-[var(--status-error-background)] p-3">
+              <p dir="auto" className="typography-meta text-[var(--status-error)] break-words">{status.detail}</p>
+              {currentRemedyHintKey ? (
+                <p className="typography-micro text-muted-foreground">{t(currentRemedyHintKey)}</p>
+              ) : null}
+              {currentRemedy && !currentRemedyHintKey ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  className="!font-normal"
+                  onClick={() => void applyErrorRemedy(currentRemedy)}
+                >
+                  {currentRemedy === 'uiPassword'
+                    ? t('settings.remoteInstances.page.error.action.setUiPassword')
+                    : currentRemedy === 'localPort'
+                      ? t('settings.remoteInstances.page.error.action.pickRandomPort')
+                      : t('settings.remoteInstances.page.error.action.setRemotePort')}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           {status?.localUrl ? (
             <div className="flex flex-wrap items-center gap-2 typography-meta text-muted-foreground">
               <span>{t('settings.remoteInstances.page.status.currentLocalUrl')}</span>
-              <span className="font-mono text-foreground/90">{status.localUrl}</span>
+              <span dir="ltr" className="font-mono text-foreground/90">{status.localUrl}</span>
             </div>
           ) : null}
       </SettingsSection>
@@ -2047,30 +2334,6 @@ export const RemoteInstancesPage: React.FC = () => {
             />
           </div>
           <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
-            <span className="typography-ui-label text-foreground w-56 shrink-0">{t('settings.remoteInstances.page.field.connectionTimeoutSeconds')}</span>
-            <NumberInput
-              containerClassName="w-fit"
-              min={5}
-              max={240}
-              step={1}
-              className="w-16 tabular-nums"
-              value={draft.connectionTimeoutSec}
-              onValueChange={(next) => {
-                updateDraft((current) => ({
-                  ...current,
-                  connectionTimeoutSec: Number.isFinite(next) ? next : current.connectionTimeoutSec,
-                }));
-              }}
-            />
-          </div>
-      </SettingsSection>
-
-      <SettingsSection
-        title={t('settings.remoteInstances.page.section.remoteServer')}
-        info={t('settings.remoteInstances.page.section.remoteServerDescription')}
-        contentClassName="space-y-3"
-      >
-          <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
             <div className="w-56 shrink-0">
                 <HintLabel
                   label={t('settings.remoteInstances.page.field.mode')}
@@ -2089,8 +2352,12 @@ export const RemoteInstancesPage: React.FC = () => {
                 }))
               }
             >
-              <SelectTrigger size={SETTINGS_SELECT_SIZE} className="w-fit min-w-[140px]">
-                <SelectValue placeholder={t('settings.remoteInstances.page.field.modePlaceholder')} />
+              <SelectTrigger className="w-fit min-w-[140px]">
+                <SelectValue>
+                  {draft.remoteOpenchamber.mode === 'external'
+                    ? t('settings.remoteInstances.page.field.modeExternal')
+                    : t('settings.remoteInstances.page.field.modeManaged')}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="managed">{t('settings.remoteInstances.page.field.modeManaged')}</SelectItem>
@@ -2099,8 +2366,40 @@ export const RemoteInstancesPage: React.FC = () => {
             </Select>
           </div>
 
+      </SettingsSection>
+
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger className="mt-6 w-auto justify-start gap-1.5">
+          <span className={SETTINGS_SECTION_TITLE_CLASS}>{t('settings.remoteInstances.page.section.advanced')}</span>
+          <Icon name={advancedOpen ? 'arrow-up-s' : 'arrow-down-s'} className="h-4 w-4 text-muted-foreground" />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <p className="px-2 pb-2 typography-micro text-muted-foreground">{t('settings.remoteInstances.page.section.advancedHint')}</p>
+          <div className="flex flex-col gap-1.5 px-2 py-1.5 md:flex-row md:items-center md:gap-8">
+            <span className="typography-ui-label text-foreground w-56 shrink-0">{t('settings.remoteInstances.page.field.connectionTimeoutSeconds')}</span>
+            <NumberInput
+              containerClassName="w-fit"
+              min={5}
+              max={240}
+              step={1}
+              className={cn(SETTINGS_NUMBER_INPUT_CLASS, 'tabular-nums')}
+              value={draft.connectionTimeoutSec}
+              onValueChange={(next) => {
+                updateDraft((current) => ({
+                  ...current,
+                  connectionTimeoutSec: Number.isFinite(next) ? next : current.connectionTimeoutSec,
+                }));
+              }}
+            />
+          </div>
+
+      <SettingsSection
+        title={t('settings.remoteInstances.page.section.remoteServer')}
+        info={t('settings.remoteInstances.page.section.remoteServerDescription')}
+        contentClassName="space-y-3"
+      >
           <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
-            <div className="w-56 shrink-0">
+            <div className="w-56 shrink-0" ref={remotePortRef}>
                 <HintLabel
                   label={t('settings.remoteInstances.page.field.preferredRemotePort')}
                   hint={t('settings.remoteInstances.page.field.preferredRemotePortHint')}
@@ -2111,7 +2410,7 @@ export const RemoteInstancesPage: React.FC = () => {
               min={1}
               max={65535}
               step={1}
-              className="w-20 tabular-nums"
+              className={cn(SETTINGS_NUMBER_INPUT_CLASS, 'tabular-nums')}
               value={draft.remoteOpenchamber.preferredPort}
               onValueChange={(next) => {
                 updateDraft((current) => ({
@@ -2150,24 +2449,55 @@ export const RemoteInstancesPage: React.FC = () => {
                     ...current,
                     remoteOpenchamber: {
                       ...current.remoteOpenchamber,
-                      installMethod:
-                        value === 'npm' || value === 'download_release' || value === 'upload_bundle'
-                          ? value
-                          : 'bun',
+                      installMethod: value === 'npm' || value === 'bun' ? value : 'auto',
                     },
                   }))
                 }
               >
-                <SelectTrigger size={SETTINGS_SELECT_SIZE} className="w-fit min-w-[140px]">
-                  <SelectValue placeholder={t('settings.remoteInstances.page.field.selectInstallMethodPlaceholder')} />
+                <SelectTrigger className="w-fit min-w-[140px]">
+                  <SelectValue>
+                    {draft.remoteOpenchamber.installMethod === 'auto'
+                      ? t('settings.remoteInstances.page.field.installMethodAuto')
+                      : draft.remoteOpenchamber.installMethod}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="auto">{t('settings.remoteInstances.page.field.installMethodAuto')}</SelectItem>
                   <SelectItem value="bun">bun</SelectItem>
                   <SelectItem value="npm">npm</SelectItem>
-                  <SelectItem value="download_release">{t('settings.remoteInstances.page.field.installMethodDownloadRelease')}</SelectItem>
-                  <SelectItem value="upload_bundle">{t('settings.remoteInstances.page.field.installMethodUploadBundle')}</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+          ) : null}
+
+          {isManagedMode ? (
+            <div className="py-1.5">
+              <div className="flex flex-col gap-1.5 md:flex-row md:items-center md:gap-8">
+                <div className="w-56 shrink-0">
+                  <HintLabel
+                    label={t('settings.remoteInstances.page.field.remoteLanAccess')}
+                    hint={t('settings.remoteInstances.page.field.remoteLanAccessHint')}
+                  />
+                </div>
+                <Switch
+                  checked={remoteLanExposed}
+                  onCheckedChange={(checked) =>
+                    updateDraft((current) => ({
+                      ...current,
+                      remoteOpenchamber: {
+                        ...current.remoteOpenchamber,
+                        bindHost: checked ? '0.0.0.0' : '127.0.0.1',
+                      },
+                    }))
+                  }
+                  aria-label={t('settings.remoteInstances.page.field.remoteLanAccess')}
+                />
+              </div>
+              {remoteLanExposed ? (
+                <p className="mt-2 typography-micro text-[var(--status-warning)] md:ps-[16rem]">
+                  {t('settings.remoteInstances.page.field.remoteLanAccessWarning')}
+                </p>
+              ) : null}
             </div>
           ) : null}
 
@@ -2227,13 +2557,19 @@ export const RemoteInstancesPage: React.FC = () => {
                 }));
               }}
             >
-              <SelectTrigger size={SETTINGS_SELECT_SIZE} className="w-fit min-w-[140px]">
-                <SelectValue placeholder={t('settings.remoteInstances.page.field.selectBindHostPlaceholder')} />
+              <SelectTrigger className="w-fit min-w-[240px]">
+                <SelectValue>
+                  {draft.localForward.bindHost === 'localhost'
+                    ? t('settings.remoteInstances.page.field.bindHostOption.localhost')
+                    : draft.localForward.bindHost === '0.0.0.0'
+                      ? t('settings.remoteInstances.page.field.bindHostOption.lan')
+                      : t('settings.remoteInstances.page.field.bindHostOption.loopback')}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="127.0.0.1">127.0.0.1</SelectItem>
-                <SelectItem value="localhost">localhost</SelectItem>
-                <SelectItem value="0.0.0.0">0.0.0.0</SelectItem>
+                <SelectItem value="127.0.0.1">{t('settings.remoteInstances.page.field.bindHostOption.loopback')}</SelectItem>
+                <SelectItem value="localhost">{t('settings.remoteInstances.page.field.bindHostOption.localhost')}</SelectItem>
+                <SelectItem value="0.0.0.0">{t('settings.remoteInstances.page.field.bindHostOption.lan')}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -2251,7 +2587,7 @@ export const RemoteInstancesPage: React.FC = () => {
                 min={1}
                 max={65535}
                 step={1}
-                className="w-20 tabular-nums"
+                className={cn(SETTINGS_NUMBER_INPUT_CLASS, 'tabular-nums')}
                 value={draft.localForward.preferredLocalPort}
                 onValueChange={(next) => {
                   updateDraft((current) => ({
@@ -2293,6 +2629,13 @@ export const RemoteInstancesPage: React.FC = () => {
               </Button>
             </div>
           </div>
+
+          <div className="space-y-1 pt-1">
+            <p className="typography-micro text-muted-foreground">{t('settings.remoteInstances.page.tunnelPreview.caption')}</p>
+            <p dir="ltr" className="typography-micro font-mono text-foreground/80 break-all">
+              {`${draft.localForward.bindHost}:${draft.localForward.preferredLocalPort || 'auto'} → ${draft.sshParsed?.destination || draft.nickname || 'remote'}:${draft.remoteOpenchamber.preferredPort || 'auto'}`}
+            </p>
+          </div>
       </SettingsSection>
 
       <SettingsSection
@@ -2301,7 +2644,12 @@ export const RemoteInstancesPage: React.FC = () => {
         contentClassName="space-y-3"
       >
           <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
-            <span className="typography-ui-label text-foreground w-56 shrink-0">{t('settings.remoteInstances.page.field.sshPasswordOptional')}</span>
+            <div className="w-56 shrink-0">
+              <HintLabel
+                label={t('settings.remoteInstances.page.field.sshPasswordOptional')}
+                hint={t('settings.remoteInstances.page.field.sshPasswordHint')}
+              />
+            </div>
             <Input
               className="h-7 md:max-w-sm"
               type="password"
@@ -2324,10 +2672,21 @@ export const RemoteInstancesPage: React.FC = () => {
           </div>
 
           <div className="flex flex-col gap-1.5 py-1.5 md:flex-row md:items-center md:gap-8">
-            <span className="typography-ui-label text-foreground w-56 shrink-0">{t('settings.remoteInstances.page.field.uiPasswordOptional')}</span>
+            <div className="w-56 shrink-0">
+              <HintLabel
+                label={remoteLanExposed
+                  ? t('settings.remoteInstances.page.field.uiPasswordRequired')
+                  : t('settings.remoteInstances.page.field.uiPasswordOptional')}
+                hint={isManagedMode
+                  ? t('settings.remoteInstances.page.field.uiPasswordHintManaged')
+                  : t('settings.remoteInstances.page.field.uiPasswordHintExternal')}
+              />
+            </div>
             <Input
-              className="h-7 md:max-w-sm"
+              className={cn('h-7 md:max-w-sm', uiPasswordMissing && 'border-[var(--status-error)]')}
               type="password"
+              ref={uiPasswordRef}
+              aria-invalid={uiPasswordMissing}
               value={draft.auth.openchamberPassword?.value || ''}
               onChange={(event) =>
                 updateDraft((current) => ({
@@ -2345,6 +2704,11 @@ export const RemoteInstancesPage: React.FC = () => {
               placeholder={t('settings.remoteInstances.page.field.uiPasswordPlaceholder')}
             />
           </div>
+          {uiPasswordMissing ? (
+            <p className="typography-micro text-[var(--status-error)] md:ps-[16rem]">
+              {t('settings.remoteInstances.page.field.uiPasswordMissingForLan')}
+            </p>
+          ) : null}
       </SettingsSection>
 
       <SettingsSection
@@ -2353,7 +2717,7 @@ export const RemoteInstancesPage: React.FC = () => {
         contentClassName="space-y-2"
       >
           {draft.portForwards.length === 0 ? (
-            <p className="typography-micro text-muted-foreground/80">{t('settings.remoteInstances.page.empty.noExtraForwards')}</p>
+            <p className="typography-micro text-muted-foreground">{t('settings.remoteInstances.page.empty.noExtraForwards')}</p>
           ) : null}
 
           {draft.portForwards.map((forward, index) => {
@@ -2404,7 +2768,7 @@ export const RemoteInstancesPage: React.FC = () => {
                     <CollapsibleTrigger className="flex items-center gap-2 group">
                       <Icon name="arrow-down-s" className={`h-4 w-4 text-muted-foreground transition-transform ${isForwardOpen ? 'rotate-180' : ''}`} />
                       <span className="typography-ui-label text-foreground truncate">{buildForwardLabel(forward)}</span>
-                      <span className="typography-micro text-muted-foreground/70 shrink-0">{typeLabel}</span>
+                      <span className="typography-micro text-muted-foreground shrink-0">{typeLabel}</span>
                     </CollapsibleTrigger>
                   </div>
                   <div className="flex items-center gap-2">
@@ -2448,8 +2812,14 @@ export const RemoteInstancesPage: React.FC = () => {
                           }))
                         }
                       >
-                        <SelectTrigger size={SETTINGS_SELECT_SIZE} className="w-fit min-w-[140px]">
-                          <SelectValue placeholder={t('settings.remoteInstances.page.field.typePlaceholder')} />
+                        <SelectTrigger className="w-fit min-w-[140px]">
+                          <SelectValue>
+                            {forward.type === 'remote'
+                              ? t('settings.remoteInstances.page.forwardType.remote')
+                              : forward.type === 'dynamic'
+                                ? t('settings.remoteInstances.page.forwardType.dynamic')
+                                : t('settings.remoteInstances.page.forwardType.local')}
+                          </SelectValue>
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="local">{t('settings.remoteInstances.page.forwardType.local')}</SelectItem>
@@ -2481,7 +2851,7 @@ export const RemoteInstancesPage: React.FC = () => {
                           min={1}
                           max={65535}
                           step={1}
-                          className="w-16 tabular-nums"
+                          className={cn(SETTINGS_NUMBER_INPUT_CLASS, 'tabular-nums')}
                           value={forward.localPort}
                           onValueChange={(next) => {
                             updateForward((item) => ({
@@ -2523,7 +2893,7 @@ export const RemoteInstancesPage: React.FC = () => {
                             min={1}
                             max={65535}
                             step={1}
-                            className="w-16 tabular-nums"
+                            className={cn(SETTINGS_NUMBER_INPUT_CLASS, 'tabular-nums')}
                             value={forward.remotePort}
                             onValueChange={(next) => {
                               updateForward((item) => ({
@@ -2544,7 +2914,7 @@ export const RemoteInstancesPage: React.FC = () => {
                     ) : null}
 
                     <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-[var(--surface-subtle)] p-2">
-                      <div className="flex flex-wrap items-center gap-1 typography-micro text-muted-foreground/80">
+                      <div className="flex flex-wrap items-center gap-1 typography-micro text-muted-foreground">
                         {forward.type === 'dynamic' ? (
                           <>
                             <Icon name="computer" className="h-3.5 w-3.5" />
@@ -2621,6 +2991,9 @@ export const RemoteInstancesPage: React.FC = () => {
           </Button>
       </SettingsSection>
 
+        </CollapsibleContent>
+      </Collapsible>
+
       <div className="mt-8 border-t border-[var(--interactive-border)] pt-3">
         <div className="flex items-center gap-2">
           <Button type="button" size="xs" className="!font-normal" onClick={() => void handleSave()} disabled={!hasChanges || isSaving}>
@@ -2650,7 +3023,7 @@ export const RemoteInstancesPage: React.FC = () => {
                 size="xs"
                 className="!font-normal"
                 onClick={() => {
-                  void handleOpenCurrentInstance();
+                  if (draft) void openInstance(draft.id);
                 }}
               >
                 <Icon name="external-link" className="h-3.5 w-3.5" />
@@ -2658,9 +3031,11 @@ export const RemoteInstancesPage: React.FC = () => {
               </Button>
             </>
           ) : null}
-          {error ? <div className="ml-auto typography-meta text-[var(--status-error)]">{error}</div> : null}
+          {error ? <div className="ms-auto typography-meta text-[var(--status-error)]">{error}</div> : null}
         </div>
       </div>
+
+      {sshConfirmationDialog}
 
       <Dialog open={logDialogOpen} onOpenChange={setLogDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
@@ -2685,9 +3060,9 @@ export const RemoteInstancesPage: React.FC = () => {
           ) : logDialogError ? (
             <div className="typography-meta text-[var(--status-error)]">{logDialogError}</div>
           ) : (
-            <pre className="max-h-[55vh] overflow-auto rounded-md border border-[var(--interactive-border)] bg-[var(--surface-elevated)] p-3 typography-micro text-foreground whitespace-pre-wrap break-words">
+            <ScrollableOverlay as="pre" outerClassName="max-h-[55vh] oc-tile-inset rounded-md" className="p-3 typography-micro text-foreground whitespace-pre-wrap break-words" disableHorizontal>
               {logDialogLines.length > 0 ? logDialogLines.join('\n') : t('settings.remoteInstances.page.logsDialog.empty')}
-            </pre>
+            </ScrollableOverlay>
           )}
         </DialogContent>
       </Dialog>

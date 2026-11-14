@@ -4,20 +4,32 @@
  * Captures mono audio via getUserMedia, taps it with a ScriptProcessorNode
  * (universally supported, including iOS WKWebView), resamples Float32 to
  * 16 kHz PCM16LE, and emits ~1-second base64 chunks plus a normalized RMS
- * volume for the level meter.
+ * level for the waveform.
+ *
+ * The level is delivered by subscription rather than React state: it updates
+ * on every audio callback (~12 Hz), and routing that through state re-rendered
+ * the whole dictation overlay at the same rate.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 export interface DictationAudioSourceConfig {
     onPcmSegment: (base64Pcm: string) => void;
     onError?: (error: Error) => void;
 }
 
+export type DictationLevelListener = (level: number) => void;
+
 export interface DictationAudioSource {
-    start: () => Promise<void>;
+    /**
+     * Resolves true when this call started capture, false when it did not:
+     * capture was already running, or stop() retired it while the microphone
+     * prompt was open. A retired start never rejects.
+     */
+    start: () => Promise<boolean>;
     stop: () => Promise<void>;
-    volume: number;
+    /** Subscribe to the normalized (0..1) mic level. Returns an unsubscribe. */
+    subscribeLevel: (listener: DictationLevelListener) => () => void;
 }
 
 const OUTPUT_RATE = 16000;
@@ -114,6 +126,16 @@ const safeDisconnect = (node: AudioNode | null): void => {
     }
 };
 
+const stopTracks = (stream: MediaStream | null): void => {
+    stream?.getTracks().forEach((track) => {
+        try {
+            track.stop();
+        } catch {
+            // no-op
+        }
+    });
+};
+
 export const isDictationCaptureSupported = (): boolean => {
     if (typeof navigator === 'undefined' || typeof window === 'undefined') {
         return false;
@@ -125,7 +147,18 @@ export const isDictationCaptureSupported = (): boolean => {
 };
 
 export function useDictationAudioSource(config: DictationAudioSourceConfig): DictationAudioSource {
-    const [volume, setVolume] = useState(0);
+    const levelListenersRef = useRef(new Set<DictationLevelListener>());
+    const emitLevel = useCallback((level: number) => {
+        for (const listener of levelListenersRef.current) {
+            listener(level);
+        }
+    }, []);
+    const subscribeLevel = useCallback((listener: DictationLevelListener) => {
+        levelListenersRef.current.add(listener);
+        return () => {
+            levelListenersRef.current.delete(listener);
+        };
+    }, []);
 
     const onPcmSegmentRef = useRef(config.onPcmSegment);
     const onErrorRef = useRef(config.onError);
@@ -136,9 +169,9 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
 
     const graphRef = useRef<CaptureGraph>(emptyGraph());
 
-    const start = useCallback(async () => {
-        if (graphRef.current.started) {
-            return;
+    const start = useCallback(async (): Promise<boolean> => {
+        if (graphRef.current.started || graphRef.current.context) {
+            return false;
         }
 
         if (
@@ -154,19 +187,34 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
             throw new Error('AudioContext unavailable');
         }
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                channelCount: 1,
-                noiseSuppression: true,
-                echoCancellation: true,
-                autoGainControl: true,
-            },
-        });
-
+        // Create and resume the context while still inside the user's click:
+        // iOS Safari and WKWebView keep a context created after the
+        // microphone prompt suspended, and capture then delivers no audio.
         const context = new AudioContextCtor();
+        const graph = emptyGraph();
+        graph.context = context;
+        graphRef.current = graph;
         try {
-            if (context.state === 'suspended') {
-                await context.resume().catch(() => undefined);
+            const resumed = context.state === 'suspended'
+                ? context.resume().catch(() => undefined)
+                : Promise.resolve();
+            const acquired = navigator.mediaDevices.getUserMedia({
+                audio: {
+                    channelCount: 1,
+                    noiseSuppression: true,
+                    echoCancellation: true,
+                    autoGainControl: true,
+                },
+            }).then((stream) => {
+                graph.stream = stream;
+                return stream;
+            });
+            const [stream] = await Promise.all([acquired, resumed]);
+            // Stopped while the microphone prompt was open: stop() has closed
+            // the context, but the stream arrived after it and is released here.
+            if (graphRef.current !== graph) {
+                stopTracks(stream);
+                return false;
             }
 
             const source = context.createMediaStreamSource(stream);
@@ -174,18 +222,12 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
             const gain = context.createGain();
             gain.gain.value = 0;
 
-            graphRef.current = {
-                stream,
-                context,
-                source,
-                processor,
-                gain,
-                pending: new Int16Array(0),
-                started: true,
-            };
+            graph.source = source;
+            graph.processor = processor;
+            graph.gain = gain;
+            graph.started = true;
 
             processor.onaudioprocess = (event) => {
-                const graph = graphRef.current;
                 if (!graph.started) {
                     return;
                 }
@@ -196,7 +238,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
                     sumSquares += input[i] * input[i];
                 }
                 const rms = Math.sqrt(sumSquares / Math.max(1, input.length));
-                setVolume(Math.min(1, Math.max(0, rms * 2)));
+                emitLevel(Math.min(1, Math.max(0, rms * 2)));
 
                 const next = resampleToPcm16(input, context.sampleRate, OUTPUT_RATE);
                 graph.pending = concatInt16(graph.pending, next);
@@ -211,28 +253,29 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
             source.connect(processor);
             processor.connect(gain);
             gain.connect(context.destination);
+            return true;
         } catch (error) {
-            stream.getTracks().forEach((track) => {
-                try {
-                    track.stop();
-                } catch {
-                    // no-op
-                }
-            });
-            try {
-                await context.close();
-            } catch {
-                // no-op
+            graph.started = false;
+            stopTracks(graph.stream);
+            // A capture stopped meanwhile has nobody left to report to.
+            if (graphRef.current !== graph) {
+                return false;
             }
             graphRef.current = emptyGraph();
+            // Not awaited: a Cancel or unmount during a slow close must not
+            // find this start still pending and get its error afterwards.
+            void context.close().catch(() => undefined);
             throw error instanceof Error ? error : new Error(String(error));
         }
-    }, []);
+    }, [emitLevel]);
 
     const stop = useCallback(async () => {
         const graph = graphRef.current;
+        // Retire the graph at once, including a start still waiting for the
+        // microphone, so its late stream is stopped and a new start is free.
+        graphRef.current = emptyGraph();
         graph.started = false;
-        setVolume(0);
+        emitLevel(0);
 
         if (graph.processor) {
             try {
@@ -244,35 +287,20 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
         safeDisconnect(graph.processor);
         safeDisconnect(graph.source);
         safeDisconnect(graph.gain);
-        if (graph.stream) {
-            graph.stream.getTracks().forEach((track) => {
-                try {
-                    track.stop();
-                } catch {
-                    // no-op
-                }
-            });
-        }
+        stopTracks(graph.stream);
         const pending = graph.pending;
         graph.pending = new Int16Array(0);
         if (pending.length > 0) {
             onPcmSegmentRef.current(int16ToBase64(pending));
         }
 
+        // The microphone is off and the tail is flushed. Closing the context
+        // can take about a second on mobile, so it does not hold up the
+        // transcription or the next start.
         if (graph.context) {
-            try {
-                await graph.context.close();
-            } catch {
-                // no-op
-            }
+            void graph.context.close().catch(() => undefined);
         }
-
-        // A new capture may have started while the old context was closing;
-        // only clear the ref if it still points at the graph we tore down.
-        if (graphRef.current === graph) {
-            graphRef.current = emptyGraph();
-        }
-    }, []);
+    }, [emitLevel]);
 
     useEffect(() => {
         return () => {
@@ -286,7 +314,7 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
         () => ({
             start: async () => {
                 try {
-                    await start();
+                    return await start();
                 } catch (err) {
                     const normalized = err instanceof Error ? err : new Error(String(err));
                     onErrorRef.current?.(normalized);
@@ -294,8 +322,8 @@ export function useDictationAudioSource(config: DictationAudioSourceConfig): Dic
                 }
             },
             stop,
-            volume,
+            subscribeLevel,
         }),
-        [start, stop, volume],
+        [start, stop, subscribeLevel],
     );
 }

@@ -3,13 +3,16 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
-import { copyTextToClipboard } from '@/lib/clipboard';
-import { openExternalUrl } from '@/lib/url';
-import { isVSCodeRuntime } from '@/lib/desktop';
 import {
+  selectMcpServersForDirectory,
   useMcpConfigStore,
   envRecordToArray,
+  MCP_PROTOCOLS,
+  MCP_CODEMODE_CHOICES,
+  codemodeChoiceOf,
+  type McpCodemodeChoice,
   type McpDraft,
+  type McpProtocol,
   type McpScope,
 } from '@/stores/useMcpConfigStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -18,23 +21,32 @@ import {
   applyImportedMcpToDraft,
 } from './mcpImport';
 import { useMcpStore } from '@/stores/useMcpStore';
-import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { McpOAuthSignIn } from './McpOAuthSignIn';
+import { getMcpOAuthMethods } from './mcpOAuthIntegration';
+import { useMcpOAuthIntegration } from './useMcpOAuthIntegration';
+import { MCP_DRAFT_OAUTH_UNSET, normalizeMcpServerName, readCarriedOAuth, type McpOAuthCarried } from './mcpDraft';
+import { useIntegrationPolicyBlock } from '@/components/sections/shared/useIntegrationPolicyBlock';
+import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
 import { cn } from '@/lib/utils';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
+import { SettingsBackButton } from '@/components/sections/shared/SettingsCards';
+import { McpGrid } from './McpGrid';
+import { SettingsLegacyFormatNote } from '@/components/sections/shared/SettingsLegacyFormatNote';
+import {
+  useAutosave,
+  AUTOSAVE_SAVED,
+  AUTOSAVE_UNCHANGED,
+  autosaveFailed,
+  type AutosaveResult,
+} from '@/components/sections/shared/SettingsAutosave';
 import {
   SettingsSection,
   SettingsFieldRow,
   SettingsCheckboxRow,
-  SettingsStackedField,
-  SettingsChipGroup,
   SettingsGroupTitle,
-  SETTINGS_SELECT_SIZE,
   SETTINGS_FIELD_LABEL_CLASS,
 } from '@/components/sections/shared/SettingsSection';
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
-import { MCP_OAUTH_CALLBACK_PATH, parseMcpOAuthCallbackContext, parseMcpOAuthCallbackStateKey } from '@/components/sections/mcp/mcpOAuth';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Dialog,
@@ -51,7 +63,59 @@ import {
   SelectTrigger,
 } from '@/components/ui/select';
 import { Icon } from "@/components/icon/Icon";
+import { SortableTabsStrip, type SortableTabsStripItem } from '@/components/ui/sortable-tabs-strip';
 import { useI18n } from '@/lib/i18n';
+import type { McpServerStatus } from '@/lib/opencode/model';
+import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
+
+/** A stored millisecond value as the form shows it; empty means "not set". */
+const msField = (value: number | undefined): string =>
+  value === undefined ? '' : String(value);
+
+/**
+ * A timeout field as the collapsed summary shows it: whole seconds read better
+ * than four digits of milliseconds, anything else stays exact.
+ */
+const formatDuration = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const ms = Number(trimmed);
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
+};
+
+/** Message keys for the protocol options; the raw values are config spellings. */
+const MCP_PROTOCOL_LABEL_KEYS = {
+  legacy: 'settings.mcp.page.advanced.protocolOption.legacy',
+  auto: 'settings.mcp.page.advanced.protocolOption.auto',
+  '2026-07-28': 'settings.mcp.page.advanced.protocolOption.revision20260728',
+} as const satisfies Record<McpProtocol, string>;
+
+/** Message keys for the Code Mode choices. */
+const MCP_CODEMODE_LABEL_KEYS = {
+  default: 'settings.mcp.page.advanced.codemodeOption.default',
+  on: 'settings.mcp.page.advanced.codemodeOption.on',
+  off: 'settings.mcp.page.advanced.codemodeOption.off',
+} as const satisfies Record<McpCodemodeChoice, string>;
+
+/**
+ * The authorization-server metadata document has to be fetchable, so anything
+ * that is not an absolute http(s) address is rejected before it is saved.
+ */
+const isAbsoluteHttpUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+/** A v2 MCP server reports its state as a nested discriminated union. */
+const readMcpStatusName = (server: McpServerStatus | undefined): string | undefined => server?.status.status;
+
+const readMcpStatusError = (server: McpServerStatus | undefined): string | undefined =>
+  server?.status.status === 'failed' || server?.status.status === 'needs_auth' ? server.status.error : undefined;
 
 // ─────────────────────────────────────────────────────────────
 // CommandTextarea  — one arg per line, paste-friendly
@@ -59,11 +123,9 @@ import { useI18n } from '@/lib/i18n';
 interface CommandTextareaProps {
   value: string[];
   onChange: (v: string[]) => void;
-  pasteCommandTitle: string;
-  pasteCommandLabel: string;
-  pasteSuccess: (count: number) => string;
-  clipboardReadFailed: string;
   preview: (count: number) => string;
+  /** Called when the text is plainly a link rather than a command. */
+  onDetectUrl?: (url: string) => void;
 }
 
 /**
@@ -90,45 +152,11 @@ function parseShellCommand(raw: string): string[] {
   return args;
 }
 
-function extractAuthorizationResponse(raw: string): {
-  code: string | null;
-  context: { name: string; directory: string | null } | null;
-  stateKey: string | null;
-} {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return { code: null, context: null, stateKey: null };
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    const code = parsed.searchParams.get('code');
-    if (typeof code === 'string' && code.trim()) {
-      return {
-        code: code.trim(),
-        context: parseMcpOAuthCallbackContext(parsed.searchParams),
-        stateKey: parseMcpOAuthCallbackStateKey(parsed.searchParams),
-      };
-    }
-  } catch {
-    // Fall through to treating the pasted value as a raw authorization code.
-  }
-
-  return {
-    code: trimmed,
-    context: null,
-    stateKey: null,
-  };
-}
-
 const CommandTextarea: React.FC<CommandTextareaProps> = ({
   value,
   onChange,
-  pasteCommandTitle,
-  pasteCommandLabel,
-  pasteSuccess,
-  clipboardReadFailed,
   preview,
+  onDetectUrl,
 }) => {
   // Internal: one arg per line
   const [text, setText] = React.useState(() => value.join('\n'));
@@ -144,42 +172,38 @@ const CommandTextarea: React.FC<CommandTextareaProps> = ({
 
   const commit = (raw: string) => {
     const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+    // A single line that is nothing but a URL is a hosted server, not a
+    // command to run — the page switches kind rather than making the user say.
+    if (onDetectUrl && lines.length === 1 && /^https?:\/\/\S+$/i.test(lines[0].trim())) {
+      onDetectUrl(lines[0].trim());
+      return;
+    }
     onChange(lines);
   };
 
-  const handlePasteFromClipboard = async () => {
-    try {
-      const raw = await navigator.clipboard.readText();
-      const trimmed = raw.trim();
-      // If it looks like a multi-line list, keep as-is; otherwise parse as shell command
-      const lines = trimmed.includes('\n')
-        ? trimmed.split('\n').filter((l) => l.trim())
-        : parseShellCommand(trimmed);
-      setText(lines.join('\n'));
-      onChange(lines);
-      toast.success(pasteSuccess(lines.length));
-    } catch {
-      toast.error(clipboardReadFailed);
-    }
+  /**
+   * Pasting a whole command line splits it into arguments here, in the field
+   * the user pasted into. The old approach — a button that read the clipboard
+   * itself — fails outright wherever the runtime denies clipboard reads.
+   */
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const raw = event.clipboardData.getData('text');
+    const trimmed = raw.trim();
+    // Only take over a paste that replaces the whole field with one command
+    // line; anything else is ordinary editing and belongs to the browser.
+    if (!trimmed || trimmed.includes('\n') || !/\s/.test(trimmed)) return;
+    const target = event.currentTarget;
+    if (target.selectionStart !== 0 || target.selectionEnd !== target.value.length) return;
+    event.preventDefault();
+    const lines = parseShellCommand(trimmed);
+    setText(lines.join('\n'));
+    onChange(lines);
   };
 
   return (
     <div className="space-y-2" data-bwignore="true" data-1p-ignore="true" data-lpignore="true">
-      <div className="flex items-center justify-end gap-2">
-        <Button
-          variant="ghost"
-          size="xs"
-          className="!font-normal gap-1 text-muted-foreground"
-          onClick={handlePasteFromClipboard}
-          type="button"
-          title={pasteCommandTitle}
-        >
-          <Icon name="clipboard" className="h-3 w-3" />
-          {pasteCommandLabel}
-        </Button>
-      </div>
-
       <Textarea
+        onPaste={handlePaste}
         value={text}
         onChange={(e) => {
           setText(e.target.value);
@@ -198,26 +222,26 @@ const CommandTextarea: React.FC<CommandTextareaProps> = ({
           'npx\n-y\n@modelcontextprotocol/server-postgres\npostgresql://user:pass@host/db'
         }
         rows={Math.max(4, value.length + 1)}
-        className="font-mono typography-meta resize-y min-h-[80px]"
+        className="font-mono typography-meta min-h-[80px]"
         spellCheck={false}
       />
 
       {/* Formatted preview of what will be saved */}
       {value.length > 0 && (
         <details className="group">
-          <summary className="typography-micro text-muted-foreground/60 cursor-pointer select-none hover:text-muted-foreground">
+          <summary className="typography-micro text-muted-foreground cursor-pointer select-none hover:text-foreground">
             {preview(value.length)}
           </summary>
-          <div className="mt-1 rounded-md bg-[var(--surface-elevated)] px-3 py-2 overflow-x-auto">
+          <ScrollableOverlay outerClassName="overlay-scrollbar-wrapper--no-gutter mt-1 rounded-md bg-[var(--surface-elevated)]" fillContainer={false} className="px-3 py-2">
             <code className="typography-micro text-foreground/80 whitespace-pre">
               {value.map((a, i) => (
                 <span key={i} className="block">
-                  <span className="text-muted-foreground select-none mr-2">[{i}]</span>
+                  <span className="text-muted-foreground select-none me-2">[{i}]</span>
                   {a}
                 </span>
               ))}
             </code>
-          </div>
+          </ScrollableOverlay>
         </details>
       )}
     </div>
@@ -232,6 +256,11 @@ interface EnvEntry { key: string; value: string; }
 interface EnvEditorProps {
   value: EnvEntry[];
   onChange: (v: EnvEntry[]) => void;
+  /**
+   * Called for edits that have no field to leave — removing a row, importing a
+   * clipboard block — so the page can write them straight away.
+   */
+  onCommit?: () => void;
   keyTransform?: (value: string) => string;
   keyPlaceholder?: string;
   keyInputClassName?: string;
@@ -255,9 +284,10 @@ const normalizeEnvKey = (value: string): string => value.toUpperCase().replace(/
 const EnvEditor: React.FC<EnvEditorProps> = ({
   value,
   onChange,
+  onCommit,
   keyTransform = normalizeEnvKey,
   keyPlaceholder = 'API_KEY',
-  keyInputClassName = 'w-36 shrink-0 font-mono typography-meta uppercase',
+  keyInputClassName = 'font-mono typography-meta uppercase',
   pasteLabel = 'Paste .env',
   pasteTitle = 'Paste KEY=VALUE lines from clipboard',
   noPairsFoundError,
@@ -278,6 +308,7 @@ const EnvEditor: React.FC<EnvEditorProps> = ({
 
   const removeRow = (idx: number) => {
     onChange(value.filter((_, i) => i !== idx));
+    onCommit?.();
     setRevealedKeys((prev) => {
       const next = new Set(prev);
       next.delete(idx);
@@ -329,6 +360,7 @@ const EnvEditor: React.FC<EnvEditorProps> = ({
         else merged.push(p);
       }
       onChange(merged);
+      onCommit?.();
       toast.success(importSuccess(parsed.length));
     } catch {
       toast.error(clipboardReadFailed);
@@ -337,50 +369,52 @@ const EnvEditor: React.FC<EnvEditorProps> = ({
 
   const hasSensitiveValues = value.some((e) => e.value.length > 0);
 
+  // Keys share a prefix (PLAYWRIGHT_MCP_…), so the key column grows to the
+  // longest key, in monospace `ch`, up to half the editor; a longer key
+  // scrolls in its field and shows whole in the tooltip.
+  const longestKey = value.reduce((max, e) => Math.max(max, e.key.length), keyPlaceholder.length);
+  const keyWidth = `min(max(9rem, calc(${longestKey + 1}ch + 1.25rem)), 50cqw)`;
+
   return (
     <div className="space-y-2">
-      {/* Header row */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3">
-          <span className="typography-micro text-muted-foreground w-32 shrink-0">{keyLabel}</span>
+      <div className="@container grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1.5">
+        <span className="typography-micro text-muted-foreground mb-0.5">{keyLabel}</span>
+        <div className="col-span-2 mb-0.5 flex min-w-0 flex-wrap items-center justify-between gap-x-2">
           <span className="typography-micro text-muted-foreground">{valueLabel}</span>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="!font-normal gap-1 text-muted-foreground"
+            onClick={handlePasteDotEnv}
+            type="button"
+            title={pasteTitle}
+          >
+            <Icon name="clipboard" className="h-3 w-3" />
+            {pasteLabel}
+          </Button>
         </div>
-        <Button
-          variant="ghost"
-          size="xs"
-          className="!font-normal gap-1 text-muted-foreground"
-          onClick={handlePasteDotEnv}
-          type="button"
-          title={pasteTitle}
-        >
-          <Icon name="clipboard" className="h-3 w-3" />
-          {pasteLabel}
-        </Button>
-      </div>
 
-      {/* Rows */}
-      <div className="space-y-1.5">
         {value.map((entry, idx) => (
-          <div key={idx} className="flex items-center gap-2">
-            {/* KEY — fixed narrow width */}
+          <React.Fragment key={idx}>
             <Input
               value={entry.key}
               onChange={(e) => updateRow(idx, 'key', keyTransform(e.target.value))}
               placeholder={keyPlaceholder}
               className={keyInputClassName}
+              style={{ width: keyWidth }}
+              title={entry.key || undefined}
               data-bwignore="true"
               data-1p-ignore="true"
               data-lpignore="true"
               spellCheck={false}
             />
-            {/* VALUE — takes remaining space */}
-            <div className="relative flex-1 flex items-center">
+            <div className="relative flex items-center">
               <Input
                 type={revealedKeys.has(idx) ? 'text' : 'password'}
                 value={entry.value}
                 onChange={(e) => updateRow(idx, 'value', e.target.value)}
                 placeholder={valuePlaceholder}
-                className="font-mono typography-meta pr-8 w-full"
+                className="font-mono typography-meta pe-8 w-full"
                 autoComplete="new-password"
                 data-bwignore="true"
                 data-1p-ignore="true"
@@ -390,7 +424,7 @@ const EnvEditor: React.FC<EnvEditorProps> = ({
               <button
                 type="button"
                 onClick={() => toggleReveal(idx)}
-                className="absolute right-2 text-muted-foreground/60 hover:text-muted-foreground"
+                className="absolute inset-e-2 text-muted-foreground hover:text-foreground"
                 title={revealedKeys.has(idx) ? hideValueTitle : showValueTitle}
               >
                 {revealedKeys.has(idx)
@@ -398,16 +432,15 @@ const EnvEditor: React.FC<EnvEditorProps> = ({
                   : <Icon name="eye" className="h-3.5 w-3.5" />}
               </button>
             </div>
-            {/* Remove */}
             <Button size="sm"
               variant="ghost"
-              className="h-7 w-7 px-0 shrink-0 text-muted-foreground hover:text-[var(--status-error)]"
+              className="h-7 w-7 px-0 text-muted-foreground hover:text-[var(--status-error)]"
               onClick={() => removeRow(idx)}
               aria-label={removeVariableAria}
             >
               <Icon name="delete-bin" className="h-3.5 w-3.5" />
             </Button>
-          </div>
+          </React.Fragment>
         ))}
       </div>
 
@@ -423,7 +456,7 @@ const EnvEditor: React.FC<EnvEditorProps> = ({
       </Button>
 
       {hasSensitiveValues && (
-        <p className="typography-micro text-muted-foreground/60">
+        <p className="typography-micro text-muted-foreground">
           {plainTextWarning}
         </p>
       )}
@@ -447,7 +480,7 @@ const StatusBadge: React.FC<{
     connected: { text: 'text-[var(--status-success)]', bg: 'bg-[var(--status-success)]/10' },
     failed: { text: 'text-[var(--status-error)]', bg: 'bg-[var(--status-error)]/10' },
     needs_auth: { text: 'text-[var(--status-warning)]', bg: 'bg-[var(--status-warning)]/10' },
-    needs_client_registration: { text: 'text-[var(--status-warning)]', bg: 'bg-[var(--status-warning)]/10' },
+    blocked: { text: 'text-[var(--status-warning)]', bg: 'bg-[var(--status-warning)]/10' },
   };
 
   const colors = colorClassMap[status] ?? { text: 'text-muted-foreground', bg: '' };
@@ -478,11 +511,11 @@ const getStatusDescription = (
     case 'failed':
       return error?.trim() || t('settings.mcp.page.status.description.failedDefault');
     case 'needs_auth':
-      return t('settings.mcp.page.status.description.needsAuth');
-    case 'needs_client_registration':
-      return error?.trim() || t('settings.mcp.page.status.description.needsClientRegistrationDefault');
+      return error?.trim() || t('settings.mcp.page.status.description.needsAuth');
     case 'disabled':
       return t('settings.mcp.page.status.description.disabled');
+    case 'blocked':
+      return t('settings.mcp.page.status.description.blockedByPolicy');
     default:
       return t('settings.mcp.page.status.description.default');
   }
@@ -491,95 +524,19 @@ const getStatusDescription = (
 const statusCardClass = (status: string | undefined): string => {
   switch (status) {
     case 'failed':
-      return 'border-[var(--status-error-border)] bg-[var(--status-error-background)]';
+      return 'bg-[var(--status-error-background)]';
     case 'needs_auth':
-    case 'needs_client_registration':
-      return 'border-[var(--status-warning-border)] bg-[var(--status-warning-background)]';
+    case 'blocked':
+      return 'bg-[var(--status-warning-background)]';
     default:
-      return 'border-[var(--interactive-border)] bg-[var(--surface-elevated)]';
+      return 'oc-tile';
   }
 };
 
-const shouldShowFullStatusCard = (status: string | undefined, authUrl: string | null, needsAuthorization: boolean, isAuthPolling: boolean): boolean => {
-  // Only show full card for error/warning states or when auth is in progress
-  if (status === 'failed' || status === 'needs_auth' || status === 'needs_client_registration') return true;
-  if (authUrl) return true;
-  if (needsAuthorization || isAuthPolling) return true;
-  return false;
-};
-
-const buildMcpOAuthRedirectUri = (name?: string | null, directory?: string | null): string | null => {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  const url = new URL(MCP_OAUTH_CALLBACK_PATH, getRuntimeApiBaseUrl() || window.location.origin);
-  if (typeof name === 'string' && name.trim()) {
-    url.searchParams.set('server', name.trim());
-  }
-  if (typeof directory === 'string' && directory.trim()) {
-    url.searchParams.set('directory', directory.trim());
-  }
-  return url.toString();
-};
-
-const queuePendingMcpAuthContext = async (input: {
-  state: string;
-  name: string;
-  directory?: string | null;
-}): Promise<void> => {
-  const response = await runtimeFetch('/api/mcp/auth/pending', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      state: input.state,
-      name: input.name,
-      directory: typeof input.directory === 'string' && input.directory.trim() ? input.directory.trim() : null,
-    }),
-  });
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new Error(payload?.error || 'Failed to prepare MCP authorization callback');
-  }
-};
-
-const getPendingMcpAuthContext = async (stateKey: string): Promise<{ name: string; directory: string | null } | null> => {
-  const response = await runtimeFetch(`/api/mcp/auth/pending?state=${encodeURIComponent(stateKey)}`);
-  if (!response.ok) {
-    return null;
-  }
-
-  const payload = await response.json().catch(() => null) as { name?: string; directory?: string | null } | null;
-  if (!payload?.name?.trim()) {
-    return null;
-  }
-
-  return {
-    name: payload.name.trim(),
-    directory: typeof payload.directory === 'string' && payload.directory.trim() ? payload.directory.trim() : null,
-  };
-};
-
-const clearPendingMcpAuthContext = async (stateKey: string | null | undefined): Promise<void> => {
-  if (typeof stateKey !== 'string' || !stateKey.trim()) {
-    return;
-  }
-
-  await runtimeFetch(`/api/mcp/auth/pending?state=${encodeURIComponent(stateKey.trim())}`, { method: 'DELETE' }).catch(() => undefined);
-};
-
-const normalizeMcpAuthErrorMessage = (
-  error: unknown,
-  fallback: string,
-  t: (key: string, params?: Record<string, unknown>) => string
-): string => {
-  const message = error instanceof Error ? error.message : fallback;
-  if (/oauth state required/i.test(message)) {
-    return t('settings.mcp.page.toast.authSessionExpired');
-  }
-  return message;
-};
+// Only error/warning states get the full card; a healthy server needs no
+// explanation beyond the badge next to its name.
+const shouldShowFullStatusCard = (status: string | undefined): boolean =>
+  status === 'failed' || status === 'needs_auth' || status === 'blocked';
 
 const buildMcpRuntimeActionKey = (name: string | null, directory?: string | null): string => {
   const normalizedDirectory = typeof directory === 'string' && directory.trim()
@@ -599,7 +556,6 @@ export const McpPage: React.FC = () => {
   );
   const {
     selectedMcpName,
-    mcpServers,
     mcpDraft,
     setMcpDraft,
     setSelectedMcp,
@@ -609,7 +565,6 @@ export const McpPage: React.FC = () => {
     deleteMcp,
   } = useMcpConfigStore(useShallow((s) => ({
     selectedMcpName: s.selectedMcpName,
-    mcpServers: s.mcpServers,
     mcpDraft: s.mcpDraft,
     setMcpDraft: s.setMcpDraft,
     setSelectedMcp: s.setSelectedMcp,
@@ -619,19 +574,29 @@ export const McpPage: React.FC = () => {
     deleteMcp: s.deleteMcp,
   })));
 
-  const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
-  const isVSCodeAuthRuntime = React.useMemo(() => isVSCodeRuntime(), []);
-  const mcpStatus = useMcpStore((state) => state.getStatusForDirectory(currentDirectory ?? null));
-  const mcpDiagnostics = useMcpStore((state) => state.getDiagnosticForDirectory(currentDirectory ?? null));
+  // Settings browses whichever project its own selector points at; the app
+  // stays where it is.
+  const currentDirectory = useSettingsDirectory();
+  const isBlocked = useIntegrationPolicyBlock(currentDirectory);
+
+  // The page opens on the server grid. A selection made before it mounts (the
+  // settings search, the mobile "add server" shortcut) still opens that server;
+  // leaving the page drops it so the next visit starts at the grid again.
+  React.useEffect(() => () => {
+    const store = useMcpConfigStore.getState();
+    store.setSelectedMcp(null);
+    store.setMcpDraft(null);
+  }, []);
+
+  const mcpStatus = useMcpStore((state) => state.getStatusForDirectory(currentDirectory));
+  const mcpDiagnostics = useMcpStore((state) => state.getDiagnosticForDirectory(currentDirectory));
   const refreshStatus = useMcpStore((state) => state.refresh);
   const connectMcp = useMcpStore((state) => state.connect);
   const disconnectMcp = useMcpStore((state) => state.disconnect);
-  const startAuthMcp = useMcpStore((state) => state.startAuth);
-  const completeAuthMcp = useMcpStore((state) => state.completeAuth);
-  const clearAuthMcp = useMcpStore((state) => state.clearAuth);
   const testConnectionMcp = useMcpStore((state) => state.testConnection);
 
-  const selectedServer = selectedMcpName ? getMcpByName(selectedMcpName) : null;
+  const mcpServers = useMcpConfigStore((state) => selectMcpServersForDirectory(state, currentDirectory));
+  const selectedServer = selectedMcpName ? getMcpByName(selectedMcpName, currentDirectory) : null;
   const isNewServer = Boolean(mcpDraft && mcpDraft.name === selectedMcpName && !selectedServer);
 
   // ── form state ──
@@ -642,28 +607,20 @@ export const McpPage: React.FC = () => {
   const [url, setUrl] = React.useState('');
   const [envEntries, setEnvEntries] = React.useState<Array<{ key: string; value: string }>>([]);
   const [headerEntries, setHeaderEntries] = React.useState<Array<{ key: string; value: string }>>([]);
-  const [oauthEnabled, setOauthEnabled] = React.useState(true);
-  const [oauthClientId, setOauthClientId] = React.useState('');
-  const [oauthClientSecret, setOauthClientSecret] = React.useState('');
-  const [oauthScope, setOauthScope] = React.useState('');
-  const [oauthRedirectUri, setOauthRedirectUri] = React.useState('');
-  const [timeout, setTimeoutValue] = React.useState('');
+  const [timeoutStartup, setTimeoutStartup] = React.useState('');
+  const [timeoutCatalog, setTimeoutCatalog] = React.useState('');
+  const [timeoutExecution, setTimeoutExecution] = React.useState('');
+  const [codemode, setCodemode] = React.useState<McpCodemodeChoice>('default');
+  const [protocol, setProtocol] = React.useState<McpProtocol>('legacy');
+  const [oauthAuthServerMetadataUrl, setOauthAuthServerMetadataUrl] = React.useState('');
+  const [carriedOAuth, setCarriedOAuth] = React.useState<McpOAuthCarried>(MCP_DRAFT_OAUTH_UNSET);
   const [enabled, setEnabled] = React.useState(true);
-  const [isSaving, setIsSaving] = React.useState(false);
+  const [isCreating, setIsCreating] = React.useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false);
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [isConnecting, setIsConnecting] = React.useState(false);
 
-  const [isAuthorizing, setIsAuthorizing] = React.useState(false);
-  const [isClearingAuth, setIsClearingAuth] = React.useState(false);
   const [isTestingConnection, setIsTestingConnection] = React.useState(false);
-  const [isCompletingAuth, setIsCompletingAuth] = React.useState(false);
-  const [authUrl, setAuthUrl] = React.useState<string | null>(null);
-  const [authStateKey, setAuthStateKey] = React.useState<string | null>(null);
-  const [authCallbackInput, setAuthCallbackInput] = React.useState('');
-  const [isAuthPolling, setIsAuthPolling] = React.useState(false);
-  const authPollAttemptsRef = React.useRef(0);
-  const authPollStartsFromNeedsAuthRef = React.useRef(false);
   const [isAdvancedRemoteOptionsOpen, setIsAdvancedRemoteOptionsOpen] = React.useState(false);
   const [showImportDialog, setShowImportDialog] = React.useState(false);
   const [importJsonText, setImportJsonText] = React.useState('');
@@ -674,30 +631,33 @@ export const McpPage: React.FC = () => {
   );
   const runtimeActionKeyRef = React.useRef(runtimeActionKey);
 
-  const initialRef = React.useRef<{
+  // What the server's config entry currently holds; a save writes only the
+  // difference, and the form only follows the store when the server moved away
+  // from it.
+  const savedRef = React.useRef<{
     mcpType: 'local' | 'remote'; command: string[]; url: string;
     envEntries: Array<{ key: string; value: string }>;
     headerEntries: Array<{ key: string; value: string }>;
-    oauthEnabled: boolean;
-    oauthClientId: string;
-    oauthClientSecret: string;
-    oauthScope: string;
-    oauthRedirectUri: string;
-    timeout: string;
+    timeoutStartup: string;
+    timeoutCatalog: string;
+    timeoutExecution: string;
+    codemode: McpCodemodeChoice;
+    protocol: McpProtocol;
+    oauthAuthServerMetadataUrl: string;
     enabled: boolean;
   } | null>(null);
 
-  const resetTransientAuthState = React.useCallback(() => {
-    setAuthUrl(null);
-    setAuthStateKey(null);
-    setAuthCallbackInput('');
-    setIsAuthPolling(false);
-    authPollAttemptsRef.current = 0;
-    setIsCompletingAuth(false);
-    setIsAuthorizing(false);
-    setIsClearingAuth(false);
-    authPollStartsFromNeedsAuthRef.current = false;
-  }, []);
+  const selectionKey = JSON.stringify([selectedMcpName, currentDirectory, isNewServer]);
+  const selectionRef = React.useRef(selectionKey);
+  selectionRef.current = selectionKey;
+  const hydratedSelectionRef = React.useRef<string | null>(null);
+  const currentForm = {
+    mcpType, command, url, envEntries, headerEntries, timeoutStartup, timeoutCatalog,
+    timeoutExecution, codemode, protocol,
+    oauthAuthServerMetadataUrl: mcpType === 'remote' ? oauthAuthServerMetadataUrl : '', enabled,
+  };
+  const currentFormRef = React.useRef(currentForm);
+  currentFormRef.current = currentForm;
 
   const handleOpenImportDialog = React.useCallback(() => {
     setImportJsonText('');
@@ -730,30 +690,31 @@ export const McpPage: React.FC = () => {
       url,
       environment: envEntries,
       headers: headerEntries,
-      oauthEnabled,
-      oauthClientId,
-      oauthClientSecret,
-      oauthScope,
-      oauthRedirectUri,
-      timeout,
-      enabled,
+      timeoutStartup,
+      timeoutCatalog,
+      timeoutExecution,
+      codemode,
+      disabled: !enabled,
+      protocol,
+      oauthAuthServerMetadataUrl,
     };
 
     const next = applyImportedMcpToDraft(outcome, partial, { isNewServer });
 
     setDraftName(next.name);
+    // SAFETY: the importer only ever reports one of the two transports.
     setMcpType(next.type as 'local' | 'remote');
     setCommand(next.command ?? []);
     setUrl(next.url ?? '');
     setEnvEntries(next.environment ?? []);
     setHeaderEntries(next.headers ?? []);
-    setOauthEnabled(next.oauthEnabled ?? false);
-    setOauthClientId(next.oauthClientId ?? '');
-    setOauthClientSecret(next.oauthClientSecret ?? '');
-    setOauthScope(next.oauthScope ?? '');
-    setOauthRedirectUri(next.oauthRedirectUri ?? '');
-    setTimeoutValue(next.timeout ?? '');
-    setEnabled(next.enabled ?? true);
+    setTimeoutStartup(next.timeoutStartup ?? '');
+    setTimeoutCatalog(next.timeoutCatalog ?? '');
+    setTimeoutExecution(next.timeoutExecution ?? '');
+    setCodemode(next.codemode ?? 'default');
+    setEnabled(next.disabled !== true);
+    setProtocol(next.protocol ?? 'legacy');
+    setOauthAuthServerMetadataUrl(next.oauthAuthServerMetadataUrl ?? '');
 
     setShowImportDialog(false);
     setImportJsonText('');
@@ -769,12 +730,12 @@ export const McpPage: React.FC = () => {
     url,
     envEntries,
     headerEntries,
-    oauthEnabled,
-    oauthClientId,
-    oauthClientSecret,
-    oauthScope,
-    oauthRedirectUri,
-    timeout,
+    protocol,
+    oauthAuthServerMetadataUrl,
+    timeoutStartup,
+    timeoutCatalog,
+    timeoutExecution,
+    codemode,
     enabled,
     isNewServer,
     t,
@@ -783,6 +744,7 @@ export const McpPage: React.FC = () => {
   // Populate form when selection changes
   React.useEffect(() => {
     if (isNewServer && mcpDraft) {
+      hydratedSelectionRef.current = null;
       setDraftName(mcpDraft.name);
       setDraftScope(mcpDraft.scope || 'user');
       setMcpType(mcpDraft.type);
@@ -790,107 +752,217 @@ export const McpPage: React.FC = () => {
       setUrl(mcpDraft.url);
       setEnvEntries(mcpDraft.environment);
       setHeaderEntries(mcpDraft.headers);
-      setOauthEnabled(mcpDraft.oauthEnabled);
-      setOauthClientId(mcpDraft.oauthClientId);
-      setOauthClientSecret(mcpDraft.oauthClientSecret);
-      setOauthScope(mcpDraft.oauthScope);
-      setOauthRedirectUri(mcpDraft.oauthRedirectUri);
-      setTimeoutValue(mcpDraft.timeout);
-      setEnabled(mcpDraft.enabled);
-      setIsAdvancedRemoteOptionsOpen(false);
-      initialRef.current = {
-        mcpType: mcpDraft.type, command: mcpDraft.command,
-        url: mcpDraft.url,
-        envEntries: mcpDraft.environment,
-        headerEntries: mcpDraft.headers,
+      setTimeoutStartup(mcpDraft.timeoutStartup);
+      setTimeoutCatalog(mcpDraft.timeoutCatalog);
+      setTimeoutExecution(mcpDraft.timeoutExecution);
+      setCodemode(mcpDraft.codemode);
+      setProtocol(mcpDraft.protocol);
+      setOauthAuthServerMetadataUrl(mcpDraft.oauthAuthServerMetadataUrl);
+      setCarriedOAuth({
         oauthEnabled: mcpDraft.oauthEnabled,
         oauthClientId: mcpDraft.oauthClientId,
         oauthClientSecret: mcpDraft.oauthClientSecret,
         oauthScope: mcpDraft.oauthScope,
         oauthRedirectUri: mcpDraft.oauthRedirectUri,
-        timeout: mcpDraft.timeout,
-        enabled: mcpDraft.enabled,
+        oauthCallbackPort: mcpDraft.oauthCallbackPort,
+      });
+      setEnabled(!mcpDraft.disabled);
+      setIsAdvancedRemoteOptionsOpen(false);
+      savedRef.current = {
+        mcpType: mcpDraft.type, command: mcpDraft.command,
+        url: mcpDraft.url,
+        envEntries: mcpDraft.environment,
+        headerEntries: mcpDraft.headers,
+        timeoutStartup: mcpDraft.timeoutStartup,
+        timeoutCatalog: mcpDraft.timeoutCatalog,
+        timeoutExecution: mcpDraft.timeoutExecution,
+        codemode: mcpDraft.codemode,
+        protocol: mcpDraft.protocol,
+        oauthAuthServerMetadataUrl: mcpDraft.oauthAuthServerMetadataUrl,
+        enabled: !mcpDraft.disabled,
       };
       return;
     }
     if (selectedServer) {
       setDraftScope(selectedServer.scope === 'project' ? 'project' : 'user');
       const envArr = envRecordToArray(selectedServer.environment);
-      const remoteServer = selectedServer.type === 'remote'
-        ? selectedServer as typeof selectedServer & {
-            headers?: Record<string, string>;
-            oauth?: {
-              clientId?: string;
-              clientSecret?: string;
-              scope?: string;
-              redirectUri?: string;
-            } | false;
-            timeout?: number;
-          }
-        : null;
+      // SAFETY: `type` discriminates the union the MCP route answers with.
+      const remoteServer = selectedServer.type === 'remote' ? selectedServer : null;
       const headersArr = envRecordToArray(remoteServer?.headers);
-      const oauth = remoteServer?.oauth;
-      const oauthConfig = oauth && typeof oauth === 'object' ? oauth : null;
-      const nextOauthEnabled = oauth !== false;
       const serverType = selectedServer.type;
-      const cmd = serverType === 'local' ? ((selectedServer as { command?: string[] }).command ?? []) : [];
-      const u = serverType === 'remote' ? ((selectedServer as { url?: string }).url ?? '') : '';
-      const nextTimeout = typeof remoteServer?.timeout === 'number' && Number.isFinite(remoteServer.timeout)
-        ? String(remoteServer.timeout)
+      const cmd = serverType === 'local' ? (selectedServer.command ?? []) : [];
+      const u = remoteServer?.url ?? '';
+      const nextStartup = msField(selectedServer.timeout?.startup);
+      const nextCatalog = msField(selectedServer.timeout?.catalog);
+      const nextExecution = msField(selectedServer.timeout?.execution);
+      const nextCodemode = codemodeChoiceOf(selectedServer.codemode);
+      // An entry without the key is what OpenCode calls `legacy`.
+      const nextProtocol = selectedServer.protocol ?? 'legacy';
+      const nextCarriedOAuth = readCarriedOAuth(remoteServer?.oauth);
+      const nextAuthServerMetadataUrl = remoteServer && remoteServer.oauth
+        ? remoteServer.oauth.auth_server_metadata_url ?? ''
         : '';
+      const nextEnabled = selectedServer.disabled !== true;
+      setCarriedOAuth(nextCarriedOAuth);
+      // Keep local edits when a completed write refreshes the same server.
+      const dirty = savedRef.current !== null && JSON.stringify(savedRef.current) !== JSON.stringify(currentFormRef.current);
+      if (hydratedSelectionRef.current === selectionKey && dirty) return;
+      hydratedSelectionRef.current = selectionKey;
+
       setMcpType(serverType);
       setCommand(cmd);
       setUrl(u);
       setEnvEntries(envArr);
       setHeaderEntries(headersArr);
-      setOauthEnabled(nextOauthEnabled);
-      setOauthClientId(nextOauthEnabled ? (oauthConfig?.clientId ?? '') : '');
-      setOauthClientSecret(nextOauthEnabled ? (oauthConfig?.clientSecret ?? '') : '');
-      setOauthScope(nextOauthEnabled ? (oauthConfig?.scope ?? '') : '');
-      setOauthRedirectUri(nextOauthEnabled ? (oauthConfig?.redirectUri ?? '') : '');
-      setTimeoutValue(nextTimeout);
-      setEnabled(selectedServer.enabled);
+      setTimeoutStartup(nextStartup);
+      setTimeoutCatalog(nextCatalog);
+      setTimeoutExecution(nextExecution);
+      setCodemode(nextCodemode);
+      setProtocol(nextProtocol);
+      setOauthAuthServerMetadataUrl(nextAuthServerMetadataUrl);
+      setEnabled(nextEnabled);
       setIsAdvancedRemoteOptionsOpen(false);
-      initialRef.current = {
+      savedRef.current = {
         mcpType: serverType,
         command: cmd,
         url: u,
         envEntries: envArr,
         headerEntries: headersArr,
-        oauthEnabled: nextOauthEnabled,
-        oauthClientId: nextOauthEnabled ? (oauthConfig?.clientId ?? '') : '',
-        oauthClientSecret: nextOauthEnabled ? (oauthConfig?.clientSecret ?? '') : '',
-        oauthScope: nextOauthEnabled ? (oauthConfig?.scope ?? '') : '',
-        oauthRedirectUri: nextOauthEnabled ? (oauthConfig?.redirectUri ?? '') : '',
-        timeout: nextTimeout,
-        enabled: selectedServer.enabled,
+        timeoutStartup: nextStartup,
+        timeoutCatalog: nextCatalog,
+        timeoutExecution: nextExecution,
+        codemode: nextCodemode,
+        protocol: nextProtocol,
+        oauthAuthServerMetadataUrl: nextAuthServerMetadataUrl,
+        enabled: nextEnabled,
       };
     }
-  }, [selectedServer, isNewServer, mcpDraft]);
+  }, [selectedServer, selectedMcpName, currentDirectory, isNewServer, mcpDraft, selectionKey]);
 
-  const isDirty = React.useMemo(() => {
-    const init = initialRef.current;
-    if (!init) return false;
-    return (
-      mcpType !== init.mcpType ||
-      enabled !== init.enabled ||
-      JSON.stringify(command) !== JSON.stringify(init.command) ||
-      url !== init.url ||
-      JSON.stringify(envEntries) !== JSON.stringify(init.envEntries) ||
-      JSON.stringify(headerEntries) !== JSON.stringify(init.headerEntries) ||
-      oauthEnabled !== init.oauthEnabled ||
-      oauthClientId !== init.oauthClientId ||
-      oauthClientSecret !== init.oauthClientSecret ||
-      oauthScope !== init.oauthScope ||
-      oauthRedirectUri !== init.oauthRedirectUri ||
-      timeout !== init.timeout
-    );
-  }, [mcpType, command, url, envEntries, headerEntries, oauthEnabled, oauthClientId, oauthClientSecret, oauthScope, oauthRedirectUri, timeout, enabled]);
+  /** Empty is fine — the field is optional; anything else must be fetchable. */
+  const authServerMetadataUrlError = React.useMemo(() => {
+    const trimmed = oauthAuthServerMetadataUrl.trim();
+    if (!trimmed || isAbsoluteHttpUrl(trimmed)) return null;
+    return t('settings.mcp.page.advanced.oauthMetadataUrlInvalid');
+  }, [oauthAuthServerMetadataUrl, t]);
 
-  const handleSave = async () => {
-    const name = isNewServer ? draftName.trim() : selectedMcpName ?? '';
+  const advancedSummary = React.useMemo(() => {
+    const parts: string[] = [];
+    if (mcpType === 'remote' && headerEntries.length > 0) {
+      parts.push(`${headerEntries.length} ${t('settings.mcp.page.advanced.headers')}`);
+    }
+    const startup = mcpType === 'local' ? formatDuration(timeoutStartup) : null;
+    if (startup) parts.push(t('settings.mcp.page.advanced.summary.startup', { value: startup }));
+    const catalog = formatDuration(timeoutCatalog);
+    if (catalog) parts.push(t('settings.mcp.page.advanced.summary.catalog', { value: catalog }));
+    const execution = formatDuration(timeoutExecution);
+    if (execution) parts.push(t('settings.mcp.page.advanced.summary.execution', { value: execution }));
+    // `default` leaves the choice to OpenCode, so naming it here would be noise.
+    if (codemode === 'on') parts.push(t('settings.mcp.page.advanced.summary.codemodeOn'));
+    if (codemode === 'off') parts.push(t('settings.mcp.page.advanced.summary.codemodeOff'));
+    // `legacy` is the default, so naming it here would be noise.
+    if (protocol !== 'legacy') parts.push(t(MCP_PROTOCOL_LABEL_KEYS[protocol]));
+    return parts.join(' · ');
+  }, [codemode, headerEntries.length, mcpType, protocol, t, timeoutCatalog, timeoutExecution, timeoutStartup]);
+
+  // What the user has is either a command they were given or a link. Which of
+  // the two decides the transport, so the page reads it off the text instead of
+  // asking — and lets them correct it when the text alone cannot say.
+  const connectionKindTabs = React.useMemo<SortableTabsStripItem[]>(() => [
+    {
+      id: 'local',
+      label: t('settings.mcp.page.connection.kindCommand'),
+      icon: <Icon name="terminal" className="h-3.5 w-3.5" />,
+    },
+    {
+      id: 'remote',
+      label: t('settings.mcp.page.connection.kindLink'),
+      icon: <Icon name="global" className="h-3.5 w-3.5" />,
+    },
+  ], [t]);
+
+  const handleDetectedUrl = React.useCallback((candidate: string) => {
+    setMcpType('remote');
+    setUrl(candidate);
+    setCommand([]);
+  }, []);
+
+  const handleUrlChange = React.useCallback((next: string) => {
+    setUrl(next);
+    // A command pasted into the link field is still a command.
+    const trimmed = next.trim();
+    if (trimmed && !/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) && /\s/.test(trimmed)) {
+      setMcpType('local');
+      setCommand(parseShellCommand(trimmed));
+      setUrl('');
+    }
+  }, []);
+
+  // The OAuth credentials the page cannot edit ride along untouched: the store
+  // rebuilds the whole `oauth` block from the draft on every save.
+  const buildDraft = (name: string): McpDraft => ({
+    name,
+    scope: draftScope,
+    type: mcpType,
+    command,
+    url,
+    environment: envEntries,
+    headers: headerEntries,
+    ...carriedOAuth,
+    oauthAuthServerMetadataUrl: mcpType === 'remote' ? oauthAuthServerMetadataUrl : '',
+    protocol,
+    timeoutStartup,
+    timeoutCatalog,
+    timeoutExecution,
+    codemode,
+    disabled: !enabled,
+  });
+
+  // An existing server writes itself; a new one is only created once the user
+  // confirms it, so an abandoned draft never reaches disk.
+  const save = async (): Promise<AutosaveResult> => {
+    const saved = savedRef.current;
+    if (isNewServer || !saved || !selectedMcpName) return AUTOSAVE_UNCHANGED;
+    if (JSON.stringify(saved) === JSON.stringify({
+      mcpType, command, url, envEntries, headerEntries, timeoutStartup, timeoutCatalog,
+      timeoutExecution, codemode, protocol,
+      oauthAuthServerMetadataUrl: mcpType === 'remote' ? oauthAuthServerMetadataUrl : '', enabled,
+    })) return AUTOSAVE_UNCHANGED;
+
+    if (mcpType === 'local' && command.filter(Boolean).length === 0) {
+      return autosaveFailed(t('settings.mcp.page.toast.localCommandRequired'));
+    }
+    if (mcpType === 'remote' && !url.trim()) {
+      return autosaveFailed(t('settings.mcp.page.toast.remoteUrlRequired'));
+    }
+    if (mcpType === 'remote' && authServerMetadataUrlError) {
+      return autosaveFailed(authServerMetadataUrlError);
+    }
+
+    const result = await updateMcp(selectedMcpName, buildDraft(selectedMcpName), currentDirectory);
+    if (!result.ok) return autosaveFailed(t('settings.mcp.page.toast.saveFailed'));
+    if (selectionRef.current !== selectionKey) return AUTOSAVE_SAVED;
+
+    savedRef.current = {
+      mcpType, command, url, envEntries, headerEntries,
+      timeoutStartup, timeoutCatalog, timeoutExecution, codemode, protocol,
+      oauthAuthServerMetadataUrl: mcpType === 'remote' ? oauthAuthServerMetadataUrl : '',
+      enabled,
+    };
+    await refreshStatus({ directory: currentDirectory, silent: true });
+    if (result.reloadFailed) {
+      return autosaveFailed(result.warning || result.message || t('settings.mcp.page.toast.savedReloadFailed'));
+    }
+    return AUTOSAVE_SAVED;
+  };
+
+  const autosave = useAutosave(save);
+  const { requestSave } = autosave;
+
+  const handleCreate = async () => {
+    const name = draftName.trim();
     if (!name) { toast.error(t('settings.mcp.page.toast.nameRequired')); return; }
-    if (isNewServer && mcpServers.some((s) => s.name === name)) {
+    if (mcpServers.some((s) => s.name === name)) {
       toast.error(t('settings.mcp.page.toast.serverNameExists')); return;
     }
     if (mcpType === 'local' && command.filter(Boolean).length === 0) {
@@ -899,59 +971,41 @@ export const McpPage: React.FC = () => {
     if (mcpType === 'remote' && !url.trim()) {
       toast.error(t('settings.mcp.page.toast.remoteUrlRequired')); return;
     }
+    if (mcpType === 'remote' && authServerMetadataUrlError) {
+      toast.error(authServerMetadataUrlError); return;
+    }
 
-    const draft: McpDraft = {
-      name,
-      scope: draftScope,
-      type: mcpType,
-      command,
-      url,
-      environment: envEntries,
-      headers: headerEntries,
-      oauthEnabled,
-      oauthClientId,
-      oauthClientSecret,
-      oauthScope,
-      oauthRedirectUri,
-      timeout,
-      enabled,
-    };
-    setIsSaving(true);
+    setIsCreating(true);
     try {
-      const result = isNewServer ? await createMcp(draft) : await updateMcp(name, draft);
-      if (result.ok) {
-        await clearPendingMcpAuthContext(authStateKey);
-        resetTransientAuthState();
-        if (isNewServer) { setMcpDraft(null); setSelectedMcp(name); }
-        await refreshStatus({ directory: currentDirectory, silent: true });
-        if (result.reloadFailed) {
-          toast.warning(result.message || (isNewServer
-            ? t('settings.mcp.page.toast.serverCreatedReloadFailed')
-            : t('settings.mcp.page.toast.savedReloadFailed')), {
-            description: result.warning || t('settings.mcp.page.toast.retryRefreshHint'),
-          });
-        } else {
-          toast.success(result.message || (isNewServer
-            ? t('settings.mcp.page.toast.serverCreatedReloading')
-            : t('settings.mcp.page.toast.savedReloading')));
-        }
+      // A rejected create throws with the server's reason, shown by the catch below.
+      const result = await createMcp(buildDraft(name), currentDirectory);
+      setMcpDraft(null);
+      setSelectedMcp(name);
+      await refreshStatus({ directory: currentDirectory, silent: true });
+      if (result.reloadFailed) {
+        toast.warning(result.message || t('settings.mcp.page.toast.serverCreatedReloadFailed'), {
+          description: result.warning || t('settings.mcp.page.toast.retryRefreshHint'),
+        });
       } else {
-        toast.error(t('settings.mcp.page.toast.saveFailed'));
+        toast.success(result.message || t('settings.mcp.page.toast.serverCreatedReloading'));
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('settings.mcp.page.toast.unexpectedError'));
     } finally {
-      setIsSaving(false);
+      setIsCreating(false);
     }
+  };
+
+  const handleCancelCreate = () => {
+    setMcpDraft(null);
+    setSelectedMcp(null);
   };
 
   const handleDelete = async () => {
     if (!selectedMcpName) return;
     setIsDeleting(true);
-    const result = await deleteMcp(selectedMcpName);
+    const result = await deleteMcp(selectedMcpName, currentDirectory);
     if (result.ok) {
-      await clearPendingMcpAuthContext(authStateKey);
-      resetTransientAuthState();
       if (result.reloadFailed) {
         toast.warning(result.message || t('settings.mcp.page.toast.serverDeletedReloadFailed', { name: selectedMcpName }), {
           description: result.warning || t('settings.mcp.page.toast.refreshListIfStale'),
@@ -964,26 +1018,64 @@ export const McpPage: React.FC = () => {
     setIsDeleting(false);
   };
 
+  /**
+   * A `failed` server with an OAuth sign-in is often one whose stored token
+   * the service rejected; Connect would only send it again. Its header button
+   * becomes "Sign in again", and each press mounts a fresh sign-in that
+   * starts on its own and shows only its progress in the status card.
+   */
+  const runtimeFailed = selectedMcpName ? readMcpStatusName(mcpStatus[selectedMcpName]) === 'failed' : false;
+  // The integration decides whether a sign-in exists, not the runtime status:
+  // a connected transport can still serve tools that wait on the user's
+  // authorization, so a configured remote OAuth server loads its integration
+  // whatever status reports (#5934).
+  const oauthConfigured = selectedServer?.type === 'remote' && selectedServer.oauth !== false;
+  const oauthIntegration = useMcpOAuthIntegration(
+    selectedMcpName ?? '',
+    currentDirectory,
+    runtimeFailed || oauthConfigured,
+  );
+  const [signInAgain, setSignInAgain] = React.useState<{ server: string; run: number } | null>(null);
+  React.useEffect(() => {
+    setSignInAgain(null);
+  }, [selectedMcpName]);
+  /** A sign-in in progress keeps the status card while the server reconnects. */
+  const [oauthSignInActive, setOAuthSignInActive] = React.useState(false);
+
+  /**
+   * OpenCode has stored the OAuth credential; the server itself is still in
+   * `needs_auth` or `failed` until it is connected again with that credential.
+   */
+  const handleOAuthConnected = async () => {
+    if (!selectedMcpName) return;
+    setSignInAgain(null);
+    try {
+      await connectMcp(selectedMcpName, currentDirectory);
+      toast.success(t('settings.mcp.page.toast.connected'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('settings.mcp.page.toast.connectionTestFailed'));
+    }
+  };
+
   const handleToggleConnect = async () => {
     if (!selectedMcpName) return;
     setIsConnecting(true);
     try {
-      const isConnected = mcpStatus[selectedMcpName]?.status === 'connected';
+      const isConnected = readMcpStatusName(mcpStatus[selectedMcpName]) === 'connected';
       if (isConnected) {
         await disconnectMcp(selectedMcpName, currentDirectory);
         toast.success(t('settings.mcp.page.toast.disconnected'));
       } else {
         await connectMcp(selectedMcpName, currentDirectory);
         await refreshStatus({ directory: currentDirectory, silent: true });
-        const nextStatus = useMcpStore.getState().getStatusForDirectory(currentDirectory ?? null)[selectedMcpName];
-        if (nextStatus?.status === 'connected') {
+        const nextStatus = useMcpStore.getState().getStatusForDirectory(currentDirectory)[selectedMcpName];
+        const nextStatusName = readMcpStatusName(nextStatus);
+        if (nextStatusName === 'connected') {
           toast.success(t('settings.mcp.page.toast.connected'));
-        } else if (nextStatus?.status === 'needs_auth') {
+        } else if (nextStatusName === 'needs_auth') {
           toast.message(t('settings.mcp.page.toast.connectionNeedsAuthorization'));
-        } else if (nextStatus?.status === 'needs_client_registration') {
-          toast.message(t('settings.mcp.page.toast.connectionNeedsClientRegistration'));
-        } else if (nextStatus?.status === 'failed') {
-          toast.error(nextStatus.error || t('settings.mcp.page.toast.connectionFailed'));
+        } else if (nextStatusName === 'failed') {
+          toast.error(readMcpStatusError(nextStatus) || t('settings.mcp.page.toast.connectionFailed'));
         } else {
           toast.message(t('settings.mcp.page.toast.connectionAttemptFinished'));
         }
@@ -1002,12 +1094,8 @@ export const McpPage: React.FC = () => {
       toast.error(t('settings.mcp.page.toast.createServerBeforeLiveActions'));
       return false;
     }
-    if (isDirty) {
-      toast.error(t('settings.mcp.page.toast.saveBeforeLiveActions'));
-      return false;
-    }
     return true;
-  }, [isDirty, isNewServer, t]);
+  }, [isNewServer, t]);
 
   const handleRefreshRuntimeStatus = React.useCallback(async (silent = false) => {
     try {
@@ -1027,184 +1115,7 @@ export const McpPage: React.FC = () => {
     runtimeActionKeyRef.current = runtimeActionKey;
     setIsConnecting(false);
     setIsTestingConnection(false);
-    resetTransientAuthState();
-  }, [resetTransientAuthState, runtimeActionKey]);
-
-  const handleStartAuthorization = React.useCallback(async () => {
-    if (!selectedMcpName || mcpType !== 'remote' || !requireSavedConfig()) return;
-
-    setIsAuthorizing(true);
-    const actionKey = runtimeActionKey;
-    let queuedStateKey: string | null = null;
-    try {
-      const currentStatus = useMcpStore.getState().getStatusForDirectory(currentDirectory ?? null)[selectedMcpName]?.status;
-      authPollStartsFromNeedsAuthRef.current = currentStatus === 'needs_auth' || currentStatus === 'needs_client_registration';
-
-      const redirectUri = buildMcpOAuthRedirectUri(selectedMcpName, currentDirectory);
-      if (!redirectUri) {
-        throw new Error(t('settings.mcp.page.toast.oauthRedirectUrlBuildFailed'));
-      }
-
-      if (!oauthRedirectUri.trim() && !isVSCodeAuthRuntime) {
-        const saved = await updateMcp(selectedMcpName, {
-          oauthEnabled,
-          oauthClientId,
-          oauthClientSecret,
-          oauthScope,
-          oauthRedirectUri: redirectUri,
-        });
-
-        if (!saved.ok) {
-          throw new Error(t('settings.mcp.page.toast.oauthBrowserCallbackSaveFailed'));
-        }
-
-        if (saved.reloadFailed) {
-          throw new Error(saved.warning || saved.message || t('settings.mcp.page.toast.openCodeReloadFailedAfterCallbackSave'));
-        }
-
-        if (runtimeActionKeyRef.current !== actionKey) {
-          return;
-        }
-
-        setOauthRedirectUri(redirectUri);
-        initialRef.current = initialRef.current
-          ? { ...initialRef.current, oauthRedirectUri: redirectUri }
-          : initialRef.current;
-      }
-
-      const nextAuthUrl = await startAuthMcp(selectedMcpName, currentDirectory);
-      const stateKey = parseMcpOAuthCallbackStateKey(new URL(nextAuthUrl).searchParams);
-      if (stateKey) {
-        queuedStateKey = stateKey;
-        await queuePendingMcpAuthContext({
-          state: stateKey,
-          name: selectedMcpName,
-          directory: currentDirectory,
-        });
-      }
-
-      if (runtimeActionKeyRef.current !== actionKey) {
-        return;
-      }
-
-      setAuthUrl(nextAuthUrl);
-      setAuthStateKey(stateKey ?? null);
-      setIsAuthPolling(true);
-      authPollAttemptsRef.current = 0;
-
-      const opened = await openExternalUrl(nextAuthUrl);
-      if (runtimeActionKeyRef.current !== actionKey) {
-        return;
-      }
-
-      if (opened) {
-        toast.message(
-          isVSCodeAuthRuntime
-            ? t('settings.mcp.page.toast.completeAuthorizationInBrowserWithPaste')
-            : t('settings.mcp.page.toast.completeAuthorizationInBrowser'),
-        );
-      } else {
-        toast.error(t('settings.mcp.page.toast.openAuthorizationUrlFailed'));
-      }
-    } catch (err) {
-      await clearPendingMcpAuthContext(queuedStateKey);
-      if (runtimeActionKeyRef.current === actionKey) {
-        toast.error(normalizeMcpAuthErrorMessage(err, t('settings.mcp.page.toast.authorizationStartFailed'), tUnsafe));
-      }
-    } finally {
-      if (runtimeActionKeyRef.current === actionKey) {
-        setIsAuthorizing(false);
-      }
-    }
-  }, [currentDirectory, isVSCodeAuthRuntime, mcpType, oauthClientId, oauthClientSecret, oauthEnabled, oauthRedirectUri, oauthScope, requireSavedConfig, runtimeActionKey, selectedMcpName, startAuthMcp, t, tUnsafe, updateMcp]);
-
-  const handleClearAuthorization = React.useCallback(async () => {
-    if (!selectedMcpName || !requireSavedConfig()) return;
-
-    setIsClearingAuth(true);
-    const actionKey = runtimeActionKey;
-    try {
-      await clearAuthMcp(selectedMcpName, currentDirectory);
-
-      if (runtimeActionKeyRef.current !== actionKey) {
-        return;
-      }
-
-      setAuthUrl(null);
-      setAuthStateKey(null);
-      setAuthCallbackInput('');
-      setIsAuthPolling(false);
-      authPollAttemptsRef.current = 0;
-      await clearPendingMcpAuthContext(authStateKey);
-      toast.success(t('settings.mcp.page.toast.savedAuthorizationRemoved'));
-    } catch (err) {
-      if (runtimeActionKeyRef.current === actionKey) {
-        toast.error(normalizeMcpAuthErrorMessage(err, t('settings.mcp.page.toast.clearAuthorizationFailed'), tUnsafe));
-      }
-    } finally {
-      if (runtimeActionKeyRef.current === actionKey) {
-        setIsClearingAuth(false);
-      }
-    }
-  }, [authStateKey, clearAuthMcp, currentDirectory, requireSavedConfig, runtimeActionKey, selectedMcpName, t, tUnsafe]);
-
-  const handleCopyAuthUrl = React.useCallback(async () => {
-    if (!authUrl) return;
-    const result = await copyTextToClipboard(authUrl);
-    if (result.ok) {
-      toast.success(t('settings.mcp.page.toast.authorizationUrlCopied'));
-      return;
-    }
-    toast.error(t('settings.mcp.page.toast.authorizationUrlCopyFailed'));
-  }, [authUrl, t]);
-
-  const handleCompleteAuthorization = React.useCallback(async () => {
-    const response = extractAuthorizationResponse(authCallbackInput);
-    if (!response.code) {
-      toast.error(t('settings.mcp.page.toast.pasteCallbackOrCodeFirst'));
-      return;
-    }
-
-    const pendingContext = response.stateKey ? await getPendingMcpAuthContext(response.stateKey) : null;
-    const resolvedContext = response.context ?? pendingContext;
-    const targetName = resolvedContext?.name ?? selectedMcpName;
-    const targetDirectory = resolvedContext?.directory ?? currentDirectory;
-
-    if (!targetName) {
-      toast.error(t('settings.mcp.page.toast.missingServerDetails'));
-      return;
-    }
-
-    if (!resolvedContext && !requireSavedConfig()) return;
-
-    setIsCompletingAuth(true);
-    const actionKey = runtimeActionKey;
-    try {
-      await completeAuthMcp(targetName, response.code, targetDirectory);
-      await clearPendingMcpAuthContext(response.stateKey ?? authStateKey);
-
-      if (runtimeActionKeyRef.current !== actionKey) {
-        return;
-      }
-
-      setAuthCallbackInput('');
-      setAuthUrl(null);
-      setAuthStateKey(null);
-      setIsAuthPolling(false);
-      authPollAttemptsRef.current = 0;
-      toast.success(targetName === selectedMcpName
-        ? t('settings.mcp.page.toast.authorizationCompleted')
-        : t('settings.mcp.page.toast.authorizationCompletedFor', { name: targetName }));
-    } catch (err) {
-      if (runtimeActionKeyRef.current === actionKey) {
-        toast.error(normalizeMcpAuthErrorMessage(err, t('settings.mcp.page.toast.authorizationCompleteFailed'), tUnsafe));
-      }
-    } finally {
-      if (runtimeActionKeyRef.current === actionKey) {
-        setIsCompletingAuth(false);
-      }
-    }
-  }, [authCallbackInput, authStateKey, completeAuthMcp, currentDirectory, requireSavedConfig, runtimeActionKey, selectedMcpName, t, tUnsafe]);
+  }, [runtimeActionKey]);
 
   const handleTestConnection = React.useCallback(async () => {
     if (!selectedMcpName || !requireSavedConfig()) return;
@@ -1216,18 +1127,16 @@ export const McpPage: React.FC = () => {
     setIsTestingConnection(true);
     try {
       const result = await testConnectionMcp(selectedMcpName, currentDirectory);
-      const nextStatus = result.status?.status;
+      const nextStatusName = readMcpStatusName(result.status);
 
       if (result.warning) {
         toast.warning(result.warning);
-      } else if (nextStatus === 'connected') {
+      } else if (nextStatusName === 'connected') {
         toast.success(t('settings.mcp.page.toast.connectionTestSucceeded'));
-      } else if (nextStatus === 'needs_auth') {
+      } else if (nextStatusName === 'needs_auth') {
         toast.message(t('settings.mcp.page.toast.connectionNeedsAuthorization'));
-      } else if (nextStatus === 'needs_client_registration') {
-        toast.message(t('settings.mcp.page.toast.connectionNeedsClientRegistration'));
-      } else if (nextStatus === 'failed') {
-        toast.error(result.status?.error || result.error || t('settings.mcp.page.toast.connectionTestFailed'));
+      } else if (nextStatusName === 'failed') {
+        toast.error(readMcpStatusError(result.status) || result.error || t('settings.mcp.page.toast.connectionTestFailed'));
       } else if (result.error) {
         toast.error(result.error);
       } else {
@@ -1240,83 +1149,33 @@ export const McpPage: React.FC = () => {
     }
   }, [currentDirectory, enabled, requireSavedConfig, selectedMcpName, t, testConnectionMcp]);
 
-  React.useEffect(() => {
-    if (!isAuthPolling || !selectedMcpName) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void (async () => {
-        authPollAttemptsRef.current += 1;
-        await refreshStatus({ directory: currentDirectory, silent: true });
-        const nextStatus = useMcpStore.getState().getStatusForDirectory(currentDirectory ?? null)[selectedMcpName];
-
-        if (!nextStatus) {
-          return;
-        }
-
-        if (
-          authPollStartsFromNeedsAuthRef.current
-          && nextStatus.status !== 'needs_auth'
-          && nextStatus.status !== 'needs_client_registration'
-        ) {
-          setIsAuthPolling(false);
-          authPollAttemptsRef.current = 0;
-          authPollStartsFromNeedsAuthRef.current = false;
-          setAuthUrl(null);
-          setAuthCallbackInput('');
-          if (nextStatus.status === 'connected') {
-            toast.success(t('settings.mcp.page.toast.authorizationCompleted'));
-          }
-          return;
-        }
-
-        if (!authPollStartsFromNeedsAuthRef.current && nextStatus.status === 'failed') {
-          setIsAuthPolling(false);
-          authPollAttemptsRef.current = 0;
-          authPollStartsFromNeedsAuthRef.current = false;
-          toast.error(nextStatus.error || t('settings.mcp.page.toast.authorizationFailed'));
-          return;
-        }
-
-        if (authPollAttemptsRef.current >= 30) {
-          setIsAuthPolling(false);
-          authPollAttemptsRef.current = 0;
-          authPollStartsFromNeedsAuthRef.current = false;
-          toast.message(t('settings.mcp.page.toast.authorizationStillInProgress'));
-        }
-      })();
-    }, 2000);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [currentDirectory, isAuthPolling, refreshStatus, selectedMcpName, t]);
-
-  // ── Empty state ──
+  // ── Browse ──
   if (!selectedMcpName) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-center text-muted-foreground">
-          <Icon name="plug" className="mx-auto mb-3 h-12 w-12 opacity-50" />
-          <p className="typography-body">{t('settings.mcp.page.empty.selectServer')}</p>
-          <p className="typography-meta mt-1 opacity-75">{t('settings.mcp.page.empty.addNewOne')}</p>
-        </div>
-      </div>
-    );
+    return <McpGrid />;
   }
 
   const runtimeStatus = mcpStatus[selectedMcpName];
   const runtimeDiagnostic = selectedMcpName ? mcpDiagnostics[selectedMcpName] : undefined;
-  const effectiveRuntimeStatus = runtimeStatus ?? runtimeDiagnostic;
-  const isConnected = runtimeStatus?.status === 'connected';
-  const needsAuthorization = runtimeStatus?.status === 'needs_auth' || runtimeStatus?.status === 'needs_client_registration';
-  const suggestedRedirectUri = isVSCodeAuthRuntime ? null : buildMcpOAuthRedirectUri(selectedMcpName, currentDirectory);
-  const runtimeDescription = getStatusDescription(
-    effectiveRuntimeStatus?.status,
-    tUnsafe,
-    effectiveRuntimeStatus && 'error' in effectiveRuntimeStatus ? effectiveRuntimeStatus.error : undefined,
-  );
+  // The runtime's own report wins; the store's diagnostic is the fallback for a
+  // server OpenCode never reported on.
+  // A server a policy blocks never reaches OpenCode's list, so any status it
+  // had is stale; `blocked` is this page's own state for it.
+  const blocked = selectedMcpName ? isBlocked(`mcp:${selectedMcpName}`) : false;
+  const effectiveStatusName = blocked
+    ? 'blocked'
+    : runtimeStatus ? readMcpStatusName(runtimeStatus) : runtimeDiagnostic?.status;
+  const effectiveStatusError = runtimeStatus ? readMcpStatusError(runtimeStatus) : runtimeDiagnostic?.error;
+  const isConnected = readMcpStatusName(runtimeStatus) === 'connected';
+  const offersSignInAgain = effectiveStatusName === 'failed' && oauthIntegration !== null;
+  // An OAuth entry on a connected server still needs user authorization:
+  // authorize it here instead of only on needs_auth or failed (#5934).
+  const offersAuthorize = Boolean(oauthIntegration)
+    && !offersSignInAgain
+    && effectiveStatusName !== 'needs_auth'
+    && effectiveStatusName !== 'blocked';
+  const signInAgainRun = signInAgain?.server === selectedMcpName ? signInAgain.run : 0;
+
+  const runtimeDescription = getStatusDescription(effectiveStatusName, tUnsafe, effectiveStatusError);
   const getStatusLabel = (status: string) => {
     switch (status) {
       case 'connected':
@@ -1325,8 +1184,8 @@ export const McpPage: React.FC = () => {
         return t('settings.mcp.page.status.label.failed');
       case 'needs_auth':
         return t('settings.mcp.page.status.label.needsAuth');
-      case 'needs_client_registration':
-        return t('settings.mcp.page.status.label.needsRegistration');
+      case 'blocked':
+        return t('settings.mcp.grid.status.blockedByPolicy');
       default:
         return status;
     }
@@ -1336,48 +1195,58 @@ export const McpPage: React.FC = () => {
     <>
       <SettingsPageLayout
         title={isNewServer ? t('settings.mcp.page.header.newServer') : selectedMcpName}
+        titleLeading={(
+          <SettingsBackButton
+            label={t('settings.mcp.page.back')}
+            onClick={() => {
+              setMcpDraft(null);
+              setSelectedMcp(null);
+            }}
+          />
+        )}
         titleAccessory={!isNewServer ? (
-          <StatusBadge status={effectiveRuntimeStatus?.status} enabled={enabled} getStatusLabel={getStatusLabel} variant="pill" />
+          <StatusBadge
+            status={effectiveStatusName}
+            enabled={enabled}
+            getStatusLabel={getStatusLabel}
+            variant="pill"
+          />
         ) : undefined}
         description={isNewServer
           ? t('settings.mcp.page.header.configureNewServer')
           : t('settings.mcp.page.header.transport', { type: mcpType === 'local' ? t('settings.mcp.page.transport.local') : t('settings.mcp.page.transport.remote') })}
         headerEnd={!isNewServer ? (
           <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant={isConnected ? 'outline' : 'default'}
-            size="xs"
-            className="!font-normal"
-            onClick={handleToggleConnect}
-            disabled={isConnecting || !enabled}
-          >
-            {isConnecting ? t('settings.mcp.page.actions.working') : isConnected ? t('settings.mcp.page.actions.disconnect') : t('settings.mcp.page.actions.connect')}
-          </Button>
-          {mcpType === 'remote' && (
-            <>
-              <Button
-                variant={needsAuthorization ? 'default' : 'outline'}
-                size="xs"
-                className="!font-normal"
-                onClick={() => void handleStartAuthorization()}
-                disabled={isAuthorizing || !enabled}
-              >
-                {isAuthorizing
-                  ? t('settings.mcp.page.actions.starting')
-                  : needsAuthorization
-                    ? t('settings.mcp.page.actions.authorize')
-                    : t('settings.mcp.page.actions.reauthorize')}
-              </Button>
-              <Button
-                variant="ghost"
-                size="xs"
-                className="!font-normal gap-1 text-muted-foreground"
-                onClick={() => void handleClearAuthorization()}
-                disabled={isClearingAuth || !enabled}
-              >
-                {isClearingAuth ? t('settings.mcp.page.actions.clearing') : t('settings.mcp.page.actions.clearAuth')}
-              </Button>
-            </>
+          {offersSignInAgain ? (
+            <Button
+              size="xs"
+              className="!font-normal"
+              onClick={() => setSignInAgain({ server: selectedMcpName, run: signInAgainRun + 1 })}
+              disabled={!enabled}
+            >
+              {t('settings.mcp.page.actions.signInAgain')}
+            </Button>
+          ) : (
+            <Button
+              variant={isConnected ? 'outline' : 'default'}
+              size="xs"
+              className="!font-normal"
+              onClick={handleToggleConnect}
+              disabled={isConnecting || !enabled || blocked}
+            >
+              {isConnecting ? t('settings.mcp.page.actions.working') : isConnected ? t('settings.mcp.page.actions.disconnect') : t('settings.mcp.page.actions.connect')}
+            </Button>
+          )}
+          {offersAuthorize && (
+            <Button
+              variant="outline"
+              size="xs"
+              className="!font-normal"
+              onClick={() => setSignInAgain({ server: selectedMcpName, run: signInAgainRun + 1 })}
+              disabled={!enabled}
+            >
+              {t('settings.mcp.page.actions.authorize')}
+            </Button>
           )}
           {isConnected && (
             <Button
@@ -1392,137 +1261,123 @@ export const McpPage: React.FC = () => {
           )}
         </div>
       ) : undefined}
-      showSaveStatus={false}
+      onBlurCapture={autosave.onBlurCapture}
     >
 
 
 
-        {/* Runtime Status - Simplified for connected, expanded for errors */}
-        {!isNewServer && shouldShowFullStatusCard(effectiveRuntimeStatus?.status, authUrl, needsAuthorization, isAuthPolling) && (
-          <SettingsSection divider={false}>
-            <div className={cn('rounded-lg border p-3', statusCardClass(effectiveRuntimeStatus?.status))}>
+        {!isNewServer && selectedServer && (
+          <SettingsLegacyFormatNote legacy={selectedServer.legacy === true} path={selectedServer.path} />
+        )}
+
+        {/* Runtime Status - Simplified for connected, expanded for errors; a started authorize flow needs the card too */}
+        {!isNewServer && (shouldShowFullStatusCard(effectiveStatusName) || signInAgainRun > 0 || oauthSignInActive) && (
+          <SettingsSection>
+            <div className={cn('rounded-lg p-3', statusCardClass(effectiveStatusName))}>
               <div className="space-y-4">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.status.runtimeStatus')}</span>
-                    <StatusBadge status={effectiveRuntimeStatus?.status} enabled={enabled} getStatusLabel={getStatusLabel} />
+                    <StatusBadge status={effectiveStatusName} enabled={enabled} getStatusLabel={getStatusLabel} />
+                    {!isConnected && (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        className="!font-normal ms-auto"
+                        onClick={() => void handleTestConnection()}
+                        disabled={isTestingConnection || !enabled || blocked}
+                      >
+                        {isTestingConnection ? t('settings.mcp.page.actions.testing') : t('settings.mcp.page.actions.testConnection')}
+                      </Button>
+                    )}
                   </div>
                   <p className="typography-meta text-muted-foreground">{runtimeDescription}</p>
-                  <p className="typography-micro text-muted-foreground/80">
+                  <p className="typography-micro text-muted-foreground">
                     {draftScope === 'project'
                       ? t('settings.mcp.page.status.projectScopedTo', { directory: currentDirectory ?? t('settings.mcp.page.status.activeProject') })
                       : t('settings.mcp.page.status.userScoped')}
                   </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  {!isConnected && (
-                    <Button
-                      variant="outline"
-                      size="xs"
-                      className="!font-normal"
-                      onClick={() => void handleTestConnection()}
-                      disabled={isTestingConnection || !enabled}
-                    >
-                      {isTestingConnection ? t('settings.mcp.page.actions.testing') : t('settings.mcp.page.actions.testConnection')}
-                    </Button>
-                  )}
-                </div>
-
-                {authUrl && (
-                  <div className="rounded-md border border-[var(--interactive-border)] bg-[var(--surface-background)] px-3 py-2">
-                    <div className="space-y-2">
-                      <div className="typography-micro text-muted-foreground">{t('settings.mcp.page.auth.authorizationUrl')}</div>
-                      <div className="break-all typography-micro text-foreground font-mono">{authUrl}</div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button variant="outline" size="xs" className="!font-normal" onClick={() => void openExternalUrl(authUrl)}>
-                          <Icon name="external-link" className="h-3.5 w-3.5" />
-                          {t('settings.mcp.page.actions.openInBrowser')}
-                        </Button>
-                        <Button variant="outline" size="xs" className="!font-normal" onClick={() => void handleCopyAuthUrl()}>
-                          <Icon name="clipboard" className="h-3.5 w-3.5" />
-                          {t('settings.mcp.page.actions.copyLink')}
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
+                {selectedMcpName && (effectiveStatusName === 'needs_auth' || signInAgainRun > 0 || oauthSignInActive) && (
+                  <McpOAuthSignIn
+                    key={signInAgainRun}
+                    serverName={selectedMcpName}
+                    directory={currentDirectory}
+                    onConnected={handleOAuthConnected}
+                    onActiveChange={setOAuthSignInActive}
+                    autoStart={signInAgainRun > 0}
+                    showStartButton={signInAgainRun === 0 || getMcpOAuthMethods(oauthIntegration ?? undefined).length > 1}
+                    // On `needs_auth` the header's Connect only retries the
+                    // connection; this button signs in, so it must not read
+                    // "Connect" as well.
+                    connectLabel={signInAgainRun === 0 ? t('settings.mcp.page.actions.signIn') : undefined}
+                  />
                 )}
 
-                {mcpType === 'remote' && (needsAuthorization || isAuthPolling || authUrl) && (
-                  <div className="rounded-md border border-[var(--interactive-border)] bg-[var(--surface-background)] px-3 py-3">
-                    <div className="space-y-2">
-                      <div>
-                        <SettingsGroupTitle as="div">{t('settings.mcp.page.auth.manualFallbackTitle')}</SettingsGroupTitle>
-                        <p className="mt-1 typography-micro text-muted-foreground">
-                          {t('settings.mcp.page.auth.manualFallbackDescription')}
-                        </p>
-                      </div>
-                      <Textarea
-                        value={authCallbackInput}
-                        onChange={(event) => setAuthCallbackInput(event.target.value)}
-                        placeholder={t('settings.mcp.page.auth.callbackInputPlaceholder')}
-                        rows={3}
-                        className="font-mono typography-meta resize-y"
-                        data-bwignore="true"
-                        data-1p-ignore="true"
-                        spellCheck={false}
-                      />
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          className="!font-normal"
-                          onClick={() => void handleCompleteAuthorization()}
-                          disabled={isCompletingAuth}
-                        >
-                          {isCompletingAuth ? t('settings.mcp.page.actions.completing') : t('settings.mcp.page.actions.completeAuthorization')}
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                )}
               </div>
-
-              {isAuthPolling && (
-                <p className="mt-4 typography-micro text-muted-foreground">
-                  {t('settings.mcp.page.auth.waitingForOpenCode')}
-                </p>
-              )}
             </div>
           </SettingsSection>
         )}
 
         <SettingsSection
           title={t('settings.mcp.page.server.title')}
-          divider={false}
           settingsItem="mcp.server"
           contentClassName="space-y-0"
+          titleAccessory={isNewServer ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              className="!font-normal gap-1.5 text-muted-foreground"
+              onClick={handleOpenImportDialog}
+              type="button"
+              title={t('settings.mcp.page.server.importJsonTitle')}
+            >
+              <Icon name="file-code" className="h-3.5 w-3.5" />
+              {t('settings.mcp.page.server.importJson')}
+            </Button>
+          ) : null}
         >
 
             {isNewServer && (
-              <SettingsFieldRow label={t('settings.mcp.page.server.name')}>
+              <SettingsFieldRow
+                label={t('settings.mcp.page.server.name')}
+                // The scope select carries words now, not a lone icon, so the
+                // control cluster has to be allowed to bound itself and wrap.
+                // Left at its default (fit-width, no shrink) the pair ran past
+                // the edge of the settings pane in a narrow dialog.
+                controlClassName="flex-wrap @xl:w-auto @xl:flex-1"
+              >
                   <Input
                     value={draftName}
-                    onChange={(e) => setDraftName(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '-'))}
+                    onChange={(e) => setDraftName(normalizeMcpServerName(e.target.value))}
                     placeholder={t('settings.mcp.page.server.namePlaceholder')}
-                    className="h-7 w-48 font-mono px-2"
+                    className="h-7 w-48 min-w-0 max-w-full shrink font-mono px-2"
                     autoFocus
                   />
                   <Select value={draftScope} onValueChange={(value) => setDraftScope(value as McpScope)}>
-                    <SelectTrigger size={SETTINGS_SELECT_SIZE} className="!h-7 !w-7 !min-w-0 !px-0 !py-0 justify-center [&>svg:last-child]:hidden" title={draftScope === 'user' ? t('settings.common.scope.global') : t('settings.common.scope.project')}>
-                      {draftScope === 'user' ? <Icon name="user-3" className="h-3.5 w-3.5" /> : <Icon name="folder" className="h-3.5 w-3.5" />}
+                    <SelectTrigger className="!h-7 min-w-0 max-w-full gap-1.5 px-2">
+                      <Icon
+                        name={draftScope === 'user' ? 'user-3' : 'folder'}
+                        className="h-3.5 w-3.5 shrink-0"
+                      />
+                      <span className="truncate">
+                        {draftScope === 'user'
+                          ? t('settings.mcp.page.scope.everywhere')
+                          : t('settings.mcp.page.scope.thisProject')}
+                      </span>
                     </SelectTrigger>
                     <SelectContent align="end">
                       <SelectItem value="user">
                         <div className="flex items-center gap-2">
                           <Icon name="user-3" className="h-3.5 w-3.5" />
-                          <span>{t('settings.common.scope.global')}</span>
+                          <span>{t('settings.mcp.page.scope.everywhere')}</span>
                         </div>
                       </SelectItem>
                       <SelectItem value="project">
                         <div className="flex items-center gap-2">
                           <Icon name="folder" className="h-3.5 w-3.5" />
-                          <span>{t('settings.common.scope.project')}</span>
+                          <span>{t('settings.mcp.page.scope.thisProject')}</span>
                         </div>
                       </SelectItem>
                     </SelectContent>
@@ -1530,70 +1385,72 @@ export const McpPage: React.FC = () => {
               </SettingsFieldRow>
             )}
 
-            {/* Import JSON - prominent placement for new servers */}
-            {isNewServer && (
-              <div className="py-1.5">
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className="!font-normal gap-1.5"
-                  onClick={handleOpenImportDialog}
-                  type="button"
-                  title={t('settings.mcp.page.server.importJsonTitle')}
-                >
-                  <Icon name="file-code" className="h-3.5 w-3.5" />
-                  {t('settings.mcp.page.server.importJson')}
-                </Button>
-              </div>
-            )}
-
             <SettingsCheckboxRow
               checked={enabled}
-              onChange={setEnabled}
+              onChange={(next) => {
+                setEnabled(next);
+                requestSave();
+              }}
               label={t('settings.mcp.page.server.enable')}
               ariaLabel={t('settings.mcp.page.server.enableAria')}
             />
 
-            <SettingsStackedField label={t('settings.mcp.page.server.transportMode')}>
-              <SettingsChipGroup
-                aria-label={t('settings.mcp.page.server.transportMode')}
-                value={mcpType}
-                onChange={setMcpType}
-                options={[
-                  { value: 'local', label: t('settings.mcp.page.transport.local') },
-                  { value: 'remote', label: t('settings.mcp.page.transport.remote') },
-                ]}
-              />
-            </SettingsStackedField>
-
         </SettingsSection>
 
         <SettingsSection
-          title={mcpType === 'local' ? t('settings.mcp.page.connection.command') : t('settings.mcp.page.connection.serverUrl')}
+          title={t('settings.mcp.page.connection.title')}
+          description={t('settings.mcp.page.connection.description')}
           settingsItem="mcp.command"
+          // The section's content wrapper carries no spacing of its own, so the
+          // kind tabs, the field and its hint would otherwise sit flush.
+          contentClassName="space-y-3"
         >
+            {/* Pasting a link or a command still flips this for you, but the
+                choice is a control you can see and press. As one sentence with
+                an inline link it was, in practice, undiscoverable. */}
+            {/* Sized by its two labels, like any segmented choice: stretched
+                across the pane each half read as a wide empty bar. */}
+            <div className="flex">
+              <SortableTabsStrip
+                items={connectionKindTabs}
+                activeId={mcpType}
+                onSelect={(id) => {
+                  setMcpType(id as 'local' | 'remote');
+                  requestSave();
+                }}
+                layoutMode="scrollable"
+                intrinsicWidth
+                variant="active-pill"
+                pillSize="form"
+                activePillButtonClassName="px-3"
+                className="h-8 flex-none"
+              />
+            </div>
+
             {mcpType === 'local' ? (
               <CommandTextarea
                 value={command}
                 onChange={setCommand}
-                pasteCommandTitle={t('settings.mcp.page.connection.pasteCommandTitle')}
-                pasteCommandLabel={t('settings.mcp.page.connection.pasteCommand')}
-                pasteSuccess={(count) => t('settings.mcp.page.toast.pastedArgumentsCount', { count })}
-                clipboardReadFailed={t('settings.mcp.page.toast.clipboardReadFailed')}
                 preview={(count) => t('settings.mcp.page.connection.previewArgs', { count })}
+                onDetectUrl={handleDetectedUrl}
               />
             ) : (
               <Input
                 value={url}
-                onChange={(e) => setUrl(e.target.value)}
+                onChange={(e) => handleUrlChange(e.target.value)}
                 placeholder={t('settings.mcp.page.connection.serverUrlPlaceholder')}
                 className="font-mono typography-meta"
               />
             )}
+
+            <p className="typography-micro text-muted-foreground">
+              {mcpType === 'local'
+                ? t('settings.mcp.page.connection.hintCommand')
+                : t('settings.mcp.page.connection.hintLink')}
+            </p>
         </SettingsSection>
 
-        {mcpType === 'remote' && (
-          <SettingsSection
+        <SettingsSection
             title={t('settings.mcp.page.advanced.title')}
             settingsItem="mcp.advanced"
           >
@@ -1602,11 +1459,15 @@ export const McpPage: React.FC = () => {
                 onOpenChange={setIsAdvancedRemoteOptionsOpen}
               >
                 <CollapsibleTrigger className="flex w-full items-center justify-between py-0.5 group">
-                  <div className="flex items-center gap-1.5 text-left">
+                  <div className="flex items-center gap-1.5 text-start">
                     <span className="typography-ui-label font-normal text-foreground">{t('settings.mcp.page.advanced.configure')}</span>
-                    <span className="typography-micro text-muted-foreground">
-                      ({oauthEnabled ? t('settings.mcp.page.advanced.autoDetect') : t('settings.mcp.page.advanced.custom')} · {headerEntries.length} {t('settings.mcp.page.advanced.headers')}{timeout ? ` · ${timeout}ms` : ''})
-                    </span>
+                    {/* What is actually set, so a collapsed section is never a
+                        blank promise. Everything at its default says nothing. */}
+                    {advancedSummary && (
+                      <span className="typography-micro text-muted-foreground">
+                        ({advancedSummary})
+                      </span>
+                    )}
                   </div>
                   {isAdvancedRemoteOptionsOpen ? (
                     <Icon name="arrow-down-s" className="h-4 w-4 text-muted-foreground group-hover:text-foreground transition-colors" />
@@ -1616,41 +1477,143 @@ export const McpPage: React.FC = () => {
                 </CollapsibleTrigger>
                 <CollapsibleContent className="pt-2">
                   <div className="space-y-4">
+                    <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center @xl:gap-8">
+                      <div className="flex min-w-0 flex-row items-center gap-1 @xl:w-56 shrink-0">
+                        <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.advanced.protocol')}</span>
+                        <SettingsInfoHint>{t('settings.mcp.page.advanced.protocolHint')}</SettingsInfoHint>
+                      </div>
+                      <Select
+                        value={protocol}
+                        onValueChange={(value) => {
+                          const next = MCP_PROTOCOLS.find((option) => option === value);
+                          if (!next) return;
+                          setProtocol(next);
+                          requestSave();
+                        }}
+                      >
+                        <SelectTrigger
+                          className="!h-7 w-fit max-w-[16rem] px-2"
+                          aria-label={t('settings.mcp.page.advanced.protocol')}
+                        >
+                          <span className="truncate">{t(MCP_PROTOCOL_LABEL_KEYS[protocol])}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {MCP_PROTOCOLS.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {t(MCP_PROTOCOL_LABEL_KEYS[option])}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
                     <div className="space-y-2">
-                      <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center @xl:gap-8">
-                        <div className="flex min-w-0 flex-row items-center gap-1 @xl:w-56 shrink-0">
-                          <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.advanced.timeoutMs')}</span>
-                          <SettingsInfoHint>{t('settings.mcp.page.advanced.timeoutHint')}</SettingsInfoHint>
-                        </div>
-                        <div className="flex items-center gap-2">
+                      {mcpType === 'local' && (
+                        <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center @xl:gap-8">
+                          <div className="flex min-w-0 flex-row items-center gap-1 @xl:w-56 shrink-0">
+                            <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.advanced.timeoutStartupMs')}</span>
+                            <SettingsInfoHint>{t('settings.mcp.page.advanced.timeoutStartupHint')}</SettingsInfoHint>
+                          </div>
                           <Input
                             type="number"
                             min="1"
                             step="1"
-                            value={timeout}
-                            onChange={(e) => setTimeoutValue(e.target.value)}
+                            value={timeoutStartup}
+                            onChange={(e) => setTimeoutStartup(e.target.value)}
                             placeholder="5000"
                             className="h-7 w-32 font-mono px-2"
                             data-bwignore="true"
                             data-1p-ignore="true"
                           />
                         </div>
+                      )}
+
+                      <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center @xl:gap-8">
+                        <div className="flex min-w-0 flex-row items-center gap-1 @xl:w-56 shrink-0">
+                          <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.advanced.timeoutCatalogMs')}</span>
+                          <SettingsInfoHint>{t('settings.mcp.page.advanced.timeoutCatalogHint')}</SettingsInfoHint>
+                        </div>
+                        <Input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={timeoutCatalog}
+                          onChange={(e) => setTimeoutCatalog(e.target.value)}
+                          placeholder="30000"
+                          className="h-7 w-32 font-mono px-2"
+                          data-bwignore="true"
+                          data-1p-ignore="true"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center @xl:gap-8">
+                        <div className="flex min-w-0 flex-row items-center gap-1 @xl:w-56 shrink-0">
+                          <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.advanced.timeoutExecutionMs')}</span>
+                          <SettingsInfoHint>{t('settings.mcp.page.advanced.timeoutExecutionHint')}</SettingsInfoHint>
+                        </div>
+                        <Input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={timeoutExecution}
+                          onChange={(e) => setTimeoutExecution(e.target.value)}
+                          placeholder="30000"
+                          className="h-7 w-32 font-mono px-2"
+                          data-bwignore="true"
+                          data-1p-ignore="true"
+                        />
                       </div>
                     </div>
 
+                    <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center @xl:gap-8">
+                      <div className="flex min-w-0 flex-row items-center gap-1 @xl:w-56 shrink-0">
+                        <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.advanced.codemode')}</span>
+                        <SettingsInfoHint>
+                          {t('settings.mcp.page.advanced.codemodeHint')}
+                          {' '}
+                          {t('settings.mcp.page.advanced.codemodeDefaultHint')}
+                        </SettingsInfoHint>
+                      </div>
+                      <Select
+                        value={codemode}
+                        onValueChange={(value) => {
+                          const next = MCP_CODEMODE_CHOICES.find((option) => option === value);
+                          if (!next) return;
+                          setCodemode(next);
+                          requestSave();
+                        }}
+                      >
+                        <SelectTrigger
+                          className="!h-7 w-fit max-w-[16rem] px-2"
+                          aria-label={t('settings.mcp.page.advanced.codemode')}
+                        >
+                          <span className="truncate">{t(MCP_CODEMODE_LABEL_KEYS[codemode])}</span>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {MCP_CODEMODE_CHOICES.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {t(MCP_CODEMODE_LABEL_KEYS[option])}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {mcpType === 'remote' && (
                     <div>
                       <SettingsGroupTitle as="div" className="mb-2">
                         {t('settings.mcp.page.advanced.requestHeaders')}
                         {headerEntries.length > 0 && (
-                          <span className="ml-1.5 typography-micro text-muted-foreground font-normal">({headerEntries.length})</span>
+                          <span className="ms-1.5 typography-micro text-muted-foreground font-normal">({headerEntries.length})</span>
                         )}
                       </SettingsGroupTitle>
                       <EnvEditor
                         value={headerEntries}
                         onChange={setHeaderEntries}
+                        onCommit={requestSave}
                         keyTransform={(value) => value.trimStart()}
                         keyPlaceholder={t('settings.mcp.page.advanced.headerNamePlaceholder')}
-                        keyInputClassName="w-36 shrink-0 font-mono typography-meta"
+                        keyInputClassName="font-mono typography-meta"
                         pasteLabel={t('settings.mcp.page.advanced.pasteHeaders')}
                         pasteTitle={t('settings.mcp.page.advanced.pasteHeadersTitle')}
                         noPairsFoundError={t('settings.mcp.page.toast.noKeyValuePairsFound')}
@@ -1666,70 +1629,48 @@ export const McpPage: React.FC = () => {
                         removeVariableAria={t('settings.mcp.page.env.removeVariableAria')}
                       />
                     </div>
+                    )}
 
-                    <div className="space-y-3">
-                      <SettingsCheckboxRow
-                        checked={oauthEnabled}
-                        onChange={setOauthEnabled}
-                        label={t('settings.mcp.page.advanced.oauthAutoDetection')}
-                        ariaLabel={t('settings.mcp.page.advanced.oauthAutoDetectionAria')}
-                        info={t('settings.mcp.page.advanced.oauthHint')}
-                      />
-
-                      <div className="grid gap-3 @xl:grid-cols-2">
-                        <Input
-                          value={oauthClientId}
-                          onChange={(e) => setOauthClientId(e.target.value)}
-                          placeholder={t('settings.mcp.page.advanced.oauthClientIdPlaceholder')}
-                          className="font-mono typography-meta"
-                          disabled={!oauthEnabled}
-                          data-bwignore="true"
-                          data-1p-ignore="true"
-                        />
-                        <Input
-                          value={oauthClientSecret}
-                          onChange={(e) => setOauthClientSecret(e.target.value)}
-                          placeholder={t('settings.mcp.page.advanced.oauthClientSecretPlaceholder')}
-                          className="font-mono typography-meta"
-                          disabled={!oauthEnabled}
-                          data-bwignore="true"
-                          data-1p-ignore="true"
-                        />
-                        <Input
-                          value={oauthScope}
-                          onChange={(e) => setOauthScope(e.target.value)}
-                          placeholder={t('settings.mcp.page.advanced.oauthScopesPlaceholder')}
-                          className="font-mono typography-meta"
-                          disabled={!oauthEnabled}
-                          data-bwignore="true"
-                          data-1p-ignore="true"
-                        />
-                        <Input
-                          value={oauthRedirectUri}
-                          onChange={(e) => setOauthRedirectUri(e.target.value)}
-                          placeholder={t('settings.mcp.page.advanced.oauthRedirectUriPlaceholder')}
-                          className="font-mono typography-meta"
-                          disabled={!oauthEnabled}
-                          data-bwignore="true"
-                          data-1p-ignore="true"
-                        />
+                    {mcpType === 'remote' && (
+                    <div>
+                      <SettingsGroupTitle as="div" className="mb-2">
+                        {t('settings.mcp.page.advanced.oauth')}
+                      </SettingsGroupTitle>
+                      <div className="flex flex-col gap-2 @xl:flex-row @xl:items-center @xl:gap-8">
+                        <div className="flex min-w-0 flex-row items-center gap-1 @xl:w-56 shrink-0">
+                          <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.mcp.page.advanced.oauthMetadataUrl')}</span>
+                          <SettingsInfoHint>{t('settings.mcp.page.advanced.oauthMetadataUrlHint')}</SettingsInfoHint>
+                        </div>
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <Input
+                            type="url"
+                            value={oauthAuthServerMetadataUrl}
+                            onChange={(e) => setOauthAuthServerMetadataUrl(e.target.value)}
+                            placeholder={t('settings.mcp.page.advanced.oauthMetadataUrlPlaceholder')}
+                            aria-label={t('settings.mcp.page.advanced.oauthMetadataUrl')}
+                            aria-invalid={authServerMetadataUrlError ? true : undefined}
+                            className="h-7 w-full max-w-[24rem] font-mono typography-meta px-2"
+                            data-bwignore="true"
+                            data-1p-ignore="true"
+                          />
+                          {/* A validation error has to stay readable while the
+                              field is being corrected, so it is not behind the hint. */}
+                          {authServerMetadataUrlError && (
+                            <p className="typography-micro text-[var(--status-error)]">{authServerMetadataUrlError}</p>
+                          )}
+                        </div>
                       </div>
-
-                      {suggestedRedirectUri && (
-                        <p className="typography-micro text-muted-foreground">
-                          {t('settings.mcp.page.advanced.oauthCallbackHint')}
-                          <span className="mt-1 block break-all font-mono text-foreground/80">{suggestedRedirectUri}</span>
-                        </p>
-                      )}
                     </div>
+                    )}
+
                   </div>
                 </CollapsibleContent>
               </Collapsible>
-          </SettingsSection>
-        )}
+        </SettingsSection>
 
         <SettingsSection
           title={t('settings.mcp.page.env.title')}
+          description={t('settings.mcp.page.env.description')}
           titleAccessory={
             envEntries.length > 0 ? (
               <span className="typography-micro text-muted-foreground font-normal">
@@ -1753,6 +1694,7 @@ export const McpPage: React.FC = () => {
               <EnvEditor
                 value={envEntries}
                 onChange={setEnvEntries}
+                onCommit={requestSave}
                 keyPlaceholder={t('settings.mcp.page.env.keyPlaceholder')}
                 pasteLabel={t('settings.mcp.page.env.pasteEnv')}
                 pasteTitle={t('settings.mcp.page.env.pasteEnvTitle')}
@@ -1772,14 +1714,27 @@ export const McpPage: React.FC = () => {
         </SettingsSection>
 
         <div className="flex items-center gap-2 pb-8">
-          <Button
-            onClick={handleSave}
-            disabled={isSaving || (!isDirty && !isNewServer)}
-            size="xs"
-            className="!font-normal"
-          >
-            {isSaving ? t('settings.common.actions.saving') : isNewServer ? t('settings.common.actions.create') : t('settings.common.actions.saveChanges')}
-          </Button>
+          {isNewServer && (
+            <>
+              <Button
+                onClick={() => void handleCreate()}
+                disabled={isCreating || !draftName.trim()}
+                size="xs"
+                className="!font-normal"
+              >
+                {isCreating ? t('settings.common.actions.saving') : t('settings.common.actions.create')}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={handleCancelCreate}
+                disabled={isCreating}
+                size="xs"
+                className="!font-normal"
+              >
+                {t('settings.common.actions.cancel')}
+              </Button>
+            </>
+          )}
           {!isNewServer && (
             <Button
               variant="destructive"
@@ -1814,6 +1769,7 @@ export const McpPage: React.FC = () => {
 
           <div className="space-y-3">
             <Textarea
+              dir="ltr"
               value={importJsonText}
               onChange={(e) => {
                 setImportJsonText(e.target.value);
@@ -1821,7 +1777,7 @@ export const McpPage: React.FC = () => {
               }}
               placeholder={'{\n  "mcpServers": {\n    "postgres": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-postgres"]\n    }\n  }\n}'}
               rows={8}
-              className="font-mono typography-meta resize-y"
+              className="font-mono typography-meta"
               spellCheck={false}
               data-bwignore="true"
               data-1p-ignore="true"

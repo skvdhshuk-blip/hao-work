@@ -2,16 +2,19 @@
  * Streaming dictation state machine.
  *
  * Status flow: idle -> recording -> uploading -> idle | failed.
- * While recording, mic PCM chunks stream to the server, which sends back live
- * partial transcripts. Confirm finalizes and resolves the full text; failed
- * dictations retain their audio segments so retry can replay them.
+ * While recording, mic PCM chunks stream to the server, which transcribes them
+ * segment by segment; confirm finalizes and resolves the full text. Nothing is
+ * shown while recording — `partialTranscript` holds whatever the server has
+ * transcribed so far and exists only so a failed dictation can be salvaged
+ * instead of losing minutes of speech. Failed dictations also retain their
+ * audio segments so retry can replay them.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { dictationClient, type DictationStartOptions } from '@/lib/dictation/dictation-client';
 import { DictationStreamSender } from '@/lib/dictation/dictation-stream-sender';
-import { useDictationAudioSource } from '@/lib/dictation/use-dictation-audio-source';
+import { useDictationAudioSource, type DictationLevelListener } from '@/lib/dictation/use-dictation-audio-source';
 import { useConfigStore } from '@/stores/useConfigStore';
 
 export type DictationStatus = 'idle' | 'recording' | 'uploading' | 'failed';
@@ -26,8 +29,10 @@ export interface UseDictationResult {
     status: DictationStatus;
     isRecording: boolean;
     isProcessing: boolean;
+    /** Server-side transcript so far; recovery only, never shown while recording. */
     partialTranscript: string;
-    volume: number;
+    /** Subscribe to the normalized (0..1) mic level for the waveform. */
+    subscribeLevel: (listener: DictationLevelListener) => () => void;
     duration: number;
     error: string | null;
     errorReason: string | null;
@@ -44,23 +49,26 @@ const DURATION_TICK_MS = 1000;
 const toError = (value: unknown): Error =>
     value instanceof Error ? value : new Error(String(value));
 
-const getDictationStartOptions = (): DictationStartOptions => {
+export const getDictationStartOptions = (): DictationStartOptions => {
     const state = useConfigStore.getState();
     const language = state.sttLanguage?.trim();
+    const correct = state.sttCorrectTranscript ? { correct: true } : {};
     if (state.sttProvider === 'openai-compatible') {
         return {
             provider: 'openai-compatible',
             ...(language ? { language } : {}),
+            ...correct,
             openaiCompatible: {
                 baseUrl: state.sttServerUrl,
                 model: state.sttModel,
-                ...(state.sttApiKey ? { apiKey: state.sttApiKey } : {}),
+                endpointPath: state.sttEndpointPath || undefined,
             },
         };
     }
     return {
         provider: 'local',
         ...(language ? { language } : {}),
+        ...correct,
         localModel: state.sttLocalModel,
     };
 };
@@ -133,7 +141,8 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
         setPartialTranscript('');
     }, []);
 
-    // Live partial transcripts for the active dictation.
+    // Transcripts of segments the server has already committed. Not rendered
+    // while recording; kept so a failed dictation can be salvaged.
     useEffect(() => {
         return dictationClient.onPartial((dictationId, text) => {
             const activeDictationId = senderRef.current?.getDictationId();
@@ -221,9 +230,14 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
         clearStreamingState();
 
         try {
-            await audio.start();
+            // Cancel, Finish or unmount while the microphone prompt was open
+            // already ended this recording: nothing is left to time or stream.
+            if (!(await audio.start())) {
+                return;
+            }
             startDurationTracking();
-            // Open the stream eagerly so partials start flowing immediately.
+            // Open the stream eagerly so audio uploads while the user speaks
+            // and only the tail is left to transcribe on stop.
             await senderRef.current?.restartStream().catch((err) => {
                 // Non-fatal: segments buffer locally and finish() retries the
                 // start, but surface the reason (e.g. model downloading) so
@@ -394,7 +408,7 @@ export function useDictation(options: UseDictationOptions = {}): UseDictationRes
         isRecording: status === 'recording',
         isProcessing: status === 'uploading',
         partialTranscript,
-        volume: audio.volume,
+        subscribeLevel: audio.subscribeLevel,
         duration,
         error,
         errorReason,

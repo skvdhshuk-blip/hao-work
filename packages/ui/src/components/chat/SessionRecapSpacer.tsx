@@ -8,9 +8,17 @@ interface SessionRecapNoteProps {
   isMobile: boolean;
 }
 
-// Quiet one-paragraph recap of the agent's last reply, rendered right under
-// the last message (above the reserved bottom gap). Appears only after the
-// 1-minute quiet window, so the layout shift happens off-screen in practice.
+// The model marks up its recap now and then; the note is plain text.
+const plainRecap = (recap: string): string => recap
+  .replace(/`([^`]+)`/g, '$1')
+  .replace(/\*\*([^*]+)\*\*/g, '$1');
+
+// Quiet one-paragraph recap of the agent's last reply. A hint about the
+// current state rather than part of the transcript: it lies over the empty
+// band the transcript keeps above the composer, right under the last
+// answer's footer (ChatContainer's tail spacer), and simply vanishes in place
+// once a new message makes it stale. Appears only after the 1-minute quiet
+// window.
 export const SessionRecapNote: React.FC<SessionRecapNoteProps> = React.memo(({ sessionId, directory, isMobile }) => {
   const { visibleRecap } = useSessionAssistState(sessionId, directory);
   const { t } = useI18n();
@@ -20,14 +28,11 @@ export const SessionRecapNote: React.FC<SessionRecapNoteProps> = React.memo(({ s
   }
 
   return (
-    <div className="chat-message-column">
-      {/* The last assistant turn carries pb-8 — pull the recap up into that gap. */}
-      <div aria-label={t('chat.recap.aria')}>
-        <span className={`typography-meta text-muted-foreground/70 ${isMobile ? 'line-clamp-4' : 'line-clamp-2'}`}>
-          <span className="italic text-muted-foreground/50">{t('chat.recap.label')} </span>
-          {visibleRecap}
-        </span>
-      </div>
+    <div aria-label={t('chat.recap.aria')}>
+      <span className={`typography-meta text-muted-foreground ${isMobile ? 'line-clamp-3' : 'line-clamp-2'}`}>
+        <span className="italic text-muted-foreground">{t('chat.recap.label')} </span>
+        {plainRecap(visibleRecap)}
+      </span>
     </div>
   );
 });

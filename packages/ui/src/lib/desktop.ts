@@ -1,15 +1,11 @@
-import type { ProjectEntry, TerminalShell } from '@/lib/api/types';
+import { z } from 'zod';
+import type { RuntimeAPIs } from '@/lib/api/types';
 import { getInjectedBootOutcome } from '@/lib/desktopBoot';
-import type { DraftStarterRef } from '@/lib/draftStarters';
-import type { MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
+import { getRuntimeBearerTokenSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
-
-type ManagedRemoteTunnelPreset = {
-  id: string;
-  name: string;
-  hostname: string;
-};
+import { isVSCodeBootstrapPresent } from '@/lib/vscodeBootstrap';
+import { isUpdateChannel, type UpdateChannel } from '@/lib/updateChannel';
 
 export type UpdateInfo = {
   available: boolean;
@@ -23,6 +19,18 @@ export type UpdateInfo = {
   // Web-specific fields
   packageManager?: string;
   updateCommand?: string;
+  /**
+   * The server cannot install this update itself. `service-manager`: run
+   * `updateCommand` by hand. `manual-install`: no package manager installed
+   * this copy, so the new version is installed the way this one was.
+   * `desktop-host`: a desktop installed from a Linux package asks for the
+   * administrator password on its own screen, so it updates only there.
+   * `opencode-version`: the new version needs OpenCode
+   * `requiredOpenCodeVersion`, newer than the server's `openCodeVersion`.
+   */
+  installBlocked?: 'service-manager' | 'manual-install' | 'desktop-host' | 'opencode-version';
+  requiredOpenCodeVersion?: string;
+  openCodeVersion?: string;
 };
 
 export type UpdateProgress = {
@@ -30,13 +38,7 @@ export type UpdateProgress = {
   total?: number;
 };
 
-export type SkillCatalogConfig = {
-  id: string;
-  label: string;
-  source: string;
-  subpath?: string;
-  gitIdentityId?: string;
-};
+export type { SkillCatalogConfig } from '@/lib/settings/parsers';
 
 export type DesktopWindowControlsPosition = 'left' | 'right';
 export type DesktopWindowControlsSide = 'left' | 'right';
@@ -44,186 +46,23 @@ export type DesktopWindowControlAction = 'close' | 'minimize' | 'maximize';
 // No fixed-width constant: control width depends on the style (classic vs traffic-lights).
 export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
 
-export type DesktopSettings = {
-  themeId?: string;
-  useSystemTheme?: boolean;
-  themeVariant?: 'light' | 'dark';
-  lightThemeId?: string;
-  darkThemeId?: string;
-  splashBgLight?: string;
-  splashFgLight?: string;
-  splashBgDark?: string;
-  splashFgDark?: string;
-  lastDirectory?: string;
-  homeDirectory?: string;
-  // Optional absolute path to `opencode` binary.
-  opencodeBinary?: string;
-  desktopLanAccessEnabled?: boolean;
-  desktopKeepAwakeEnabled?: boolean;
-  desktopMinimizeToTrayEnabled?: boolean;
-  desktopMacMenuBarEnabled?: boolean;
-  desktopUiPassword?: string;
-  projects?: ProjectEntry[];
-  activeProjectId?: string;
-  securityScopedBookmarks?: string[];
-  pinnedDirectories?: string[];
-  showReasoningTraces?: boolean;
-  collapsibleThinkingBlocks?: boolean;
-  showDeletionDialog?: boolean;
-  nativeNotificationsEnabled?: boolean;
-  notificationMode?: 'always' | 'hidden-only';
-  notifyOnSubtasks?: boolean;
+// The settings document is defined once, in the registry, and re-exported here
+// so the many existing importers keep their path.
+export type { DesktopSettings } from '@/lib/settings/registry';
 
-  // Event toggles (which events trigger notifications)
-  notifyOnCompletion?: boolean;
-  notifyOnError?: boolean;
-  notifyOnQuestion?: boolean;
-
-  // Per-event notification templates
-  notificationTemplates?: {
-    completion: { title: string; message: string };
-    error: { title: string; message: string };
-    question: { title: string; message: string };
-    subtask: { title: string; message: string };
-  };
-
-  // Summarization settings
-  summarizeLastMessage?: boolean;
-  summaryThreshold?: number;
-  summaryLength?: number;
-  maxLastMessageLength?: number;
-
-  usageAutoRefresh?: boolean;
-  usageRefreshIntervalMs?: number;
-  usageDisplayMode?: 'usage' | 'remaining';
-  usageShowPredValues?: boolean;
-  usageDropdownProviders?: string[];
-  usageSelectedModels?: Record<string, string[]>;  // Map of providerId -> selected model names
-  usageCollapsedFamilies?: Record<string, string[]>;  // Map of providerId -> collapsed family IDs (UsagePage)
-  usageExpandedFamilies?: Record<string, string[]>;  // Map of providerId -> EXPANDED family IDs (header dropdown - inverted)
-  usageModelGroups?: Record<string, {
-    customGroups?: Array<{id: string; label: string; models: string[]; order: number}>;
-    modelAssignments?: Record<string, string>;  // modelName -> groupId
-    renamedGroups?: Record<string, string>;  // groupId -> custom label
-  }>;  // Per-provider custom model groups configuration
-  autoDeleteEnabled?: boolean;
-  autoSaveEnabled?: boolean;
-  autoDeleteAfterDays?: number;
-  sessionRetentionAction?: 'archive' | 'delete';
-  tunnelProvider?: string;
-  tunnelMode?: 'quick' | 'managed-remote' | 'managed-local';
-  tunnelBootstrapTtlMs?: number | null;
-  tunnelSessionTtlMs?: number;
-  managedLocalTunnelConfigPath?: string | null;
-  managedRemoteTunnelHostname?: string;
-  managedRemoteTunnelToken?: string | null;
-  hasManagedRemoteTunnelToken?: boolean;
-  managedRemoteTunnelPresets?: ManagedRemoteTunnelPreset[];
-  managedRemoteTunnelSelectedPresetId?: string;
-  managedRemoteTunnelPresetTokens?: Record<string, string>;
-  defaultModel?: string; // format: "provider/model"
-  defaultVariant?: string;
-  defaultAgent?: string;
-  smallModelUseDefault?: boolean;
-  sessionRecapEnabled?: boolean;
-  sessionSuggestionEnabled?: boolean;
-  sessionGoalEnabled?: boolean;
-  sessionGoalDefaultBudgetEnabled?: boolean;
-  sessionGoalDefaultBudget?: number;
-  smallModelOverride?: string; // format: "provider/model"
-  defaultGitIdentityId?: string; // ''/undefined = unset, 'global' or profile id
-  openInAppId?: string;
-  autoCreateWorktree?: boolean;
-  followUpBehavior?: 'steer' | 'queue';
-  queueModeEnabled?: boolean;
-  gitmojiEnabled?: boolean;
-  defaultFileViewerPreview?: boolean;
-  zenModel?: string;
-  gitProviderId?: string;
-  gitModelId?: string;
-  pwaAppName?: string;
-  pwaOrientation?: 'system' | 'portrait' | 'landscape';
-  mobileKeyboardMode?: MobileKeyboardMode;
-  desktopWindowControlsPosition?: DesktopWindowControlsPosition;
-  desktopWindowControlsStyle?: DesktopWindowControlsStyle;
-  inputSpellcheckEnabled?: boolean;
-  showOpenCodeUpdateNotifications?: boolean;
-  agentControlToolEnabled?: boolean;
-  optimizeSystemPrompt?: boolean;
-  openCodeUpdateToastDismissedVersion?: string;
-  showToolFileIcons?: boolean;
-  codeBlockLineWrap?: boolean;
-  showTurnChangedFiles?: boolean;
-  showExpandedBashTools?: boolean;
-  showExpandedEditTools?: boolean;
-  timeFormatPreference?: 'auto' | '12h' | '24h';
-  weekStartPreference?: 'auto' | 'sunday' | 'monday';
-  chatRenderMode?: 'sorted' | 'live';
-  messageStreamTransport?: 'auto' | 'ws' | 'sse';
-  activityRenderMode?: 'collapsed' | 'summary';
-  mermaidRenderingMode?: 'svg' | 'ascii';
-  userMessageRenderingMode?: 'markdown' | 'plain';
-  collapsibleUserMessages?: boolean;
-  stickyUserHeader?: boolean;
-  promptNavigatorEnabled?: boolean;
-  expandedEditorToolbar?: boolean;
-  wideChatLayoutEnabled?: boolean;
-  showSplitAssistantMessageActions?: boolean;
-  fontSize?: number;
-  terminalFontSize?: number;
-  terminalShell?: TerminalShell;
-  terminalLoginShells?: TerminalShell[];
-  editorFontSize?: number;
-  uiFont?: string;
-  monoFont?: string;
-  padding?: number;
-  cornerRadius?: number;
-  inputBarOffset?: number;
-  shortcutOverrides?: Record<string, string>;
-
-  favoriteModels?: Array<{ providerID: string; modelID: string }>;
-  hiddenModels?: Array<{ providerID: string; modelID: string }>;
-  collapsedModelProviders?: string[];
-  recentModels?: Array<{ providerID: string; modelID: string }>;
-  recentAgents?: string[];
-  recentEfforts?: Record<string, string[]>;
-  diffLayoutPreference?: 'dynamic' | 'inline' | 'side-by-side';
-  gitChangesViewMode?: 'flat' | 'tree';
-  directoryShowHidden?: boolean;
-  filesViewShowGitignored?: boolean;
-
-  // Message limit — controls fetch, trim, and Load More chunk size (default: 200)
-  messageLimit?: number;
-
-  // User-added skills catalogs (persisted to ~/.config/openchamber/settings.json)
-  skillCatalogs?: SkillCatalogConfig[];
-  // Opt-in to send anonymous usage reports for update checks (default: true)
-  reportUsage?: boolean;
-
-  // Global behavior prompt — synced to ~/.config/opencode/AGENTS.md
-  globalBehaviorPrompt?: string;
-  responseStyleEnabled?: boolean;
-  responseStylePreset?: 'concise' | 'detailed' | 'mentor' | 'pushback' | 'noFiller' | 'matchEnergy' | 'warmPeer' | 'custom';
-  responseStyleCustomInstructions?: string;
-  dictationEnabled?: boolean;
-  sttProvider?: 'local' | 'openai-compatible';
-  sttServerUrl?: string;
-  sttModel?: string;
-  sttLocalModel?: string;
-  sttLanguage?: string;
-  // Global draft welcome starters (pinned commands/skills), persisted to settings.json
-  draftStarters?: DraftStarterRef[];
-  draftStartersVisible?: boolean;
-  // One-time migration marker: Craft a Goal was offered in the starter row.
-  draftStartersCraftGoalAdded?: boolean;
-  draftStartersScheduleTaskAdded?: boolean;
+type DesktopClipboardBridge = {
+  readSelection?: () => Promise<string>;
+  writeSelection?: (text: string) => Promise<boolean>;
 };
 
 type DesktopBridgeGlobal = {
+  pickThemeFile?: () => Promise<unknown>;
+  clipboard?: DesktopClipboardBridge;
   invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
   openDialog?: (options: Record<string, unknown>) => Promise<unknown>;
   grantFileAccess?: (path: string) => Promise<unknown>;
   openExternal?: (url: string) => Promise<unknown>;
+  pathForFile?: (file: File) => string;
   listen?: (
     event: string,
     handler: (evt: { payload?: unknown }) => void,
@@ -233,9 +72,9 @@ type DesktopBridgeGlobal = {
 type ElectronRuntimeGlobal = {
   runtime?: string;
   arch?: string;
-  macVibrancy?: boolean;
-  macVibrancySupported?: boolean;
   trayEnabled?: boolean;
+  /** Linux window with the desktop environment's own title bar (opt-in). */
+  nativeFrame?: boolean;
 };
 
 const getElectronRuntime = (): ElectronRuntimeGlobal | null => {
@@ -250,7 +89,7 @@ const getDesktopBridge = (): DesktopBridgeGlobal | null => {
 
 export const isElectronShell = (): boolean => getElectronRuntime()?.runtime === 'electron';
 
-export const getElectronPlatform = (): string | null => {
+const getElectronPlatform = (): string | null => {
   if (typeof window === 'undefined') return null;
   const platform = (window as unknown as { __OPENCHAMBER_PLATFORM__?: string }).__OPENCHAMBER_PLATFORM__;
   return typeof platform === 'string' ? platform : null;
@@ -263,7 +102,8 @@ export const DEFAULT_DESKTOP_WINDOW_CONTROLS_POSITION: DesktopWindowControlsPosi
 export const usesFramelessElectronChrome = (): boolean => {
   if (!isElectronShell()) return false;
   const platform = getElectronPlatform();
-  return platform === 'win32' || platform === 'linux';
+  if (platform === 'linux') return getElectronRuntime()?.nativeFrame !== true;
+  return platform === 'win32';
 };
 
 /** Normalize a stored preference; legacy `auto` maps to the right-side default. */
@@ -304,10 +144,70 @@ export const hasDesktopInvoke = (): boolean => {
 
 export const canUseElectronDesktopIPC = (): boolean => isElectronShell() && hasDesktopInvoke();
 
+/** Linux's PRIMARY buffer is reachable only through the local Electron bridge. */
+export const createDesktopClipboardAPI = (): RuntimeAPIs['clipboard'] => {
+  const bridge = getDesktopBridge()?.clipboard;
+  if (!bridge?.readSelection || !bridge.writeSelection) return undefined;
+  const { readSelection, writeSelection } = bridge;
+  return {
+    selection: {
+      readText: async () => z.string().parse(await readSelection()),
+      writeText: async (text) => {
+        z.literal(true).parse(await writeSelection(text));
+      },
+    },
+  };
+};
+
+export const createDesktopThemeFileAPI = (): RuntimeAPIs['themeFiles'] => {
+  // Preload exposes this capability only to trusted local UI pages. Unlike the
+  // active API endpoint, that page identity stays local during remote connections.
+  if (!getDesktopBridge()?.pickThemeFile) return undefined;
+  return {
+    async pick() {
+      const pick = getDesktopBridge()?.pickThemeFile;
+      if (!pick) return { status: 'unsupported' };
+      const file = z.object({ name: z.string(), size: z.number().nonnegative(), text: z.string() }).nullable().parse(await pick());
+      return { status: 'picked', file };
+    },
+  };
+};
+
 export const invokeDesktop = async <T = unknown>(command: string, args?: Record<string, unknown>): Promise<T | null> => {
   const bridge = getDesktopBridge();
   if (typeof bridge?.invoke !== 'function') return null;
   return bridge.invoke(command, args ?? {}) as Promise<T>;
+};
+
+/** Removes the session's delivered native notifications from Notification Center (macOS only). */
+export const clearDesktopSessionNotifications = (sessionId: string): void => {
+  if (getElectronPlatform() !== 'darwin' || !canUseElectronDesktopIPC()) return;
+  void invokeDesktop('desktop_clear_session_notifications', { sessionId }).catch(() => {});
+};
+
+/**
+ * The runtime a Mini Chat window must continue on: the instance its parent
+ * window is showing, not the default host. `runtimeKey` names the parent's
+ * instance (`local` or `host:<id>`); main turns a relay-capable host into the
+ * relay transport, since such a host has no HTTP base to inject.
+ */
+export const getMiniChatRuntimeArgs = (): { apiBaseUrl: string; clientToken: string | null; runtimeKey: string } => ({
+  apiBaseUrl: getRuntimeApiBaseUrl(),
+  clientToken: getRuntimeBearerTokenSync(),
+  runtimeKey: getRuntimeKey(),
+});
+
+// This reads the current native CLI preflight, never a persisted boot hint. Compare the
+// endpoint again after IPC so a runtime switch cannot reuse another host's state.
+export const hasCompatibleManagedDesktopOpenCode = async (): Promise<boolean> => {
+  if (!isDesktopShell() || !isDesktopLocalOriginActive()) return false;
+  const apiBaseUrl = getRuntimeApiBaseUrl();
+  try {
+    const result = z.boolean().safeParse(await invokeDesktop('desktop_managed_opencode_compatible', { apiBaseUrl }));
+    return result.success && result.data && apiBaseUrl === getRuntimeApiBaseUrl();
+  } catch {
+    return false;
+  }
 };
 
 type LaunchAtLoginStatus = {
@@ -360,6 +260,41 @@ export const setDesktopLaunchAtLogin = async (enabled: boolean): Promise<LaunchA
   }
 };
 
+// What main answers; the channel is checked, not trusted, like the other statuses.
+type UpdateChannelStatus = { channel?: string };
+
+const parseUpdateChannelStatus = (result: UpdateChannelStatus | null): UpdateChannel | null => (
+  isUpdateChannel(result?.channel) ? result.channel : null
+);
+
+/** The update channel the desktop app follows; null where the app does not update itself. */
+export const getDesktopUpdateChannel = async (): Promise<UpdateChannel | null> => {
+  if (!canUseElectronDesktopIPC() || !isDesktopLocalOriginActive()) {
+    return null;
+  }
+
+  try {
+    return parseUpdateChannelStatus(await invokeDesktop<UpdateChannelStatus>('desktop_get_update_channel'));
+  } catch (error) {
+    console.warn('Failed to get the update channel', error);
+    return null;
+  }
+};
+
+/** Stores the channel; the next update check reads it. Returns the stored channel, or null when it was not saved. */
+export const setDesktopUpdateChannel = async (channel: UpdateChannel): Promise<UpdateChannel | null> => {
+  if (!canUseElectronDesktopIPC() || !isDesktopLocalOriginActive()) {
+    return null;
+  }
+
+  try {
+    return parseUpdateChannelStatus(await invokeDesktop<UpdateChannelStatus>('desktop_set_update_channel', { channel }));
+  } catch (error) {
+    console.warn('Failed to set the update channel', error);
+    return null;
+  }
+};
+
 export const getDesktopMinimizeToTray = async (): Promise<MinimizeToTrayStatus | null> => {
   if (!canUseElectronDesktopIPC() || !isDesktopLocalOriginActive()) {
     return null;
@@ -393,6 +328,96 @@ export const setDesktopMinimizeToTray = async (enabled: boolean): Promise<Minimi
     return null;
   }
 };
+
+type MiniChatGlobalShortcutStatus = {
+  supported: boolean;
+  combo: string | null;
+  active: boolean;
+  // Set when a save was refused; the stored combo is unchanged.
+  error?: 'unsupported-combo';
+};
+
+export const getDesktopMiniChatGlobalShortcut = async (): Promise<MiniChatGlobalShortcutStatus | null> => {
+  if (!canUseElectronDesktopIPC() || !isDesktopLocalOriginActive()) {
+    return null;
+  }
+
+  try {
+    const result = await invokeDesktop<MiniChatGlobalShortcutStatus>('desktop_get_mini_chat_global_shortcut');
+    if (!result || typeof result.supported !== 'boolean' || (result.combo !== null && typeof result.combo !== 'string') || typeof result.active !== 'boolean') {
+      return null;
+    }
+    return result;
+  } catch (error) {
+    console.warn('Failed to get Mini Chat global shortcut status', error);
+    return null;
+  }
+};
+
+export const setDesktopMiniChatGlobalShortcut = async (combo: string | null): Promise<MiniChatGlobalShortcutStatus | null> => {
+  if (!canUseElectronDesktopIPC() || !isDesktopLocalOriginActive()) {
+    return null;
+  }
+
+  try {
+    const result = await invokeDesktop<MiniChatGlobalShortcutStatus>('desktop_set_mini_chat_global_shortcut', { combo });
+    if (!result || typeof result.supported !== 'boolean' || (result.combo !== null && typeof result.combo !== 'string') || typeof result.active !== 'boolean') {
+      return null;
+    }
+    if (result.error !== undefined && result.error !== 'unsupported-combo') {
+      return null;
+    }
+    return result;
+  } catch (error) {
+    console.warn('Failed to set Mini Chat global shortcut', error);
+    return null;
+  }
+};
+
+const quakeModeStatusSchema = z.object({
+  supported: z.boolean(),
+  enabled: z.boolean(),
+  /** Effective combo: the stored one, or the default while Quake is enabled. */
+  combo: z.string().nullable(),
+  /** The stored value before the enabled-default applies: a combo, the unassigned sentinel, or null when nothing is stored. */
+  storedCombo: z.string().nullable(),
+  active: z.boolean(),
+  heightFraction: z.number(),
+  // Set when a shortcut save was refused; the stored combo is unchanged.
+  error: z.literal('unsupported-combo').optional(),
+});
+
+export type QuakeModeStatus = z.infer<typeof quakeModeStatusSchema>;
+
+const invokeQuakeMode = async (
+  command: string,
+  args: Record<string, string | number | boolean | null>,
+  failureMessage: string,
+): Promise<QuakeModeStatus | null> => {
+  if (!canUseElectronDesktopIPC() || !isDesktopLocalOriginActive()) {
+    return null;
+  }
+
+  try {
+    const result = quakeModeStatusSchema.safeParse(await invokeDesktop(command, args));
+    return result.success ? result.data : null;
+  } catch (error) {
+    console.warn(failureMessage, error);
+    return null;
+  }
+};
+
+export const getDesktopQuakeMode = (): Promise<QuakeModeStatus | null> =>
+  invokeQuakeMode('desktop_get_quake_mode', {}, 'Failed to get Quake Mode status');
+
+export const setDesktopQuakeModeEnabled = (enabled: boolean): Promise<QuakeModeStatus | null> =>
+  invokeQuakeMode('desktop_set_quake_mode_enabled', { enabled }, 'Failed to set Quake Mode');
+
+export const setDesktopQuakeModeShortcut = (combo: string | null): Promise<QuakeModeStatus | null> =>
+  invokeQuakeMode('desktop_set_quake_mode_shortcut', { combo }, 'Failed to set Quake Mode shortcut');
+
+export const setDesktopQuakeModeHeight = (heightFraction: number): Promise<QuakeModeStatus | null> =>
+  invokeQuakeMode('desktop_set_quake_mode_height', { heightFraction }, 'Failed to set Quake Mode height');
 
 export const getDesktopKeepAwake = async (): Promise<KeepAwakeStatus | null> => {
   if (!canUseElectronDesktopIPC() || !isDesktopLocalOriginActive()) {
@@ -527,6 +552,145 @@ export const isDesktopShell = (): boolean => {
   return isElectronShell();
 };
 
+/** Native visibility includes minimized and tray-hidden windows, independently of focus. */
+export const getDesktopWindowVisibility = async (): Promise<boolean | null> => {
+  if (!isDesktopShell()) return null;
+  const parsed = z.object({ visible: z.boolean() }).safeParse(await invokeDesktop('desktop_get_current_window_state'));
+  return parsed.success ? parsed.data.visible : null;
+};
+
+/**
+ * Raises the desktop window.
+ *
+ * Used when work finishes somewhere the app cannot be reached from — an MCP
+ * authorization completing in the system browser, for instance. Browsers will
+ * not follow a custom-protocol link back without a user gesture, so the app
+ * brings itself forward instead of asking the page to do it.
+ */
+export const focusDesktopWindow = async (): Promise<boolean> => {
+  if (!isDesktopShell()) return false;
+  try {
+    return Boolean(await invokeDesktop('desktop_focus_window'));
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * A notification click or a session link can name the instance that owns the
+ * session ('local' or 'host:<id>'). When this window shows another instance,
+ * opens the session, and the message when one is named, in a window for the
+ * owning one. Valid from any app window, including one that currently shows
+ * a remote instance; the main process gates the command by sender. Returns
+ * false when the session belongs here or the desktop bridge is not available,
+ * so the caller opens it in this window.
+ */
+export const openSessionInOwningHostWindow = (
+  sessionId: string,
+  runtimeKey: string | null,
+  messageId: string | null = null,
+): boolean => {
+  if (!runtimeKey || runtimeKey === getRuntimeKey()) return false;
+  if (!canUseElectronDesktopIPC()) return false;
+  const args = messageId ? { runtimeKey, sessionId, messageId } : { runtimeKey, sessionId };
+  void invokeDesktop<{ opened: boolean }>('desktop_open_host_session', args)
+    .catch((error) => {
+      console.warn('[desktop] failed to open host session', error);
+    });
+  return true;
+};
+
+export const canRequestNativeDirectoryAccess = (): boolean => (
+  isDesktopShell() && hasDesktopInvoke() && isDesktopLocalOriginActive()
+);
+
+const pendingSessionLinksSchema = z.array(z.object({
+  sessionId: z.string().min(1),
+  messageId: z.string().min(1).optional(),
+  runtimeKey: z.string().min(1).optional(),
+  requireKnownSession: z.boolean().optional(),
+}));
+
+type PendingDesktopSessionLink = { sessionId: string; messageId: string | null; runtimeKey: string | null; requireKnownSession: boolean };
+
+/**
+ * Session links (`openchamber://session/...`) that reached the desktop app
+ * before this window could listen for them — the link that launched the app,
+ * or "open in main window" from a closed main window. A link that names its
+ * host (`?host=<id>`) carries that host's runtime key. Taking them removes
+ * them; outside the desktop local page there are none.
+ */
+/** Install links that launched the app, before any window could listen. */
+export const takePendingDesktopExtensionInstalls = async (): Promise<string[]> => {
+  if (!isDesktopShell()) return [];
+  try {
+    const parsed = z.array(z.string()).safeParse(await invokeDesktop('desktop_take_pending_extension_installs'));
+    return parsed.success ? parsed.data : [];
+  } catch {
+    return [];
+  }
+};
+
+export const takePendingDesktopSessionLinks = async (): Promise<PendingDesktopSessionLink[]> => {
+  if (!isDesktopShell() || !isDesktopLocalOriginActive()) return [];
+  try {
+    const parsed = pendingSessionLinksSchema.safeParse(await invokeDesktop('desktop_take_pending_session_links'));
+    return parsed.success
+      ? parsed.data.map((link) => ({
+        sessionId: link.sessionId,
+        messageId: link.messageId ?? null,
+        runtimeKey: link.runtimeKey ?? null,
+        requireKnownSession: link.requireKnownSession === true,
+      }))
+      : [];
+  } catch (error) {
+    console.warn('Failed to read pending session links', error);
+    return [];
+  }
+};
+
+const pendingHostActionsSchema = z.array(z.discriminatedUnion('type', [
+  z.object({ type: z.literal('pairing'), link: z.string().min(1) }),
+  z.object({ type: z.literal('host'), hostId: z.string().min(1) }),
+]));
+
+type PendingDesktopHostAction = z.infer<typeof pendingHostActionsSchema>[number];
+
+/**
+ * Host work the desktop shell hands to the main window: a pairing link the user
+ * confirmed (`openchamber://connect`), or a relay-capable host to activate
+ * (`openchamber://host/<id>`). Taking them removes them.
+ */
+export const takePendingDesktopHostActions = async (): Promise<PendingDesktopHostAction[]> => {
+  // The shell answers only the main window's local page, whichever instance
+  // that page is connected to; no runtime check here.
+  if (!isDesktopShell()) return [];
+  try {
+    const parsed = pendingHostActionsSchema.safeParse(await invokeDesktop('desktop_take_pending_host_actions'));
+    return parsed.success ? parsed.data : [];
+  } catch (error) {
+    console.warn('Failed to read pending host actions', error);
+    return [];
+  }
+};
+
+/**
+ * On-disk path of a File dropped from the OS onto the desktop app.
+ * Null outside the desktop local origin (browser drops carry no usable path).
+ */
+const droppedFilePathSchema = z.string().min(1);
+
+export const pathForDroppedFile = (file: File): string | null => {
+  if (!canRequestNativeDirectoryAccess()) return null;
+  try {
+    const parsed = droppedFilePathSchema.safeParse(getDesktopBridge()?.pathForFile?.(file));
+    return parsed.success ? parsed.data : null;
+  } catch (error) {
+    console.warn('Failed to resolve dropped file path', error);
+    return null;
+  }
+};
+
 export const startDesktopWindowDrag = async (): Promise<boolean> => {
   if (!isDesktopShell()) {
     return false;
@@ -541,6 +705,12 @@ export const startDesktopWindowDrag = async (): Promise<boolean> => {
 };
 
 export const isVSCodeRuntime = (): boolean => {
+  // Prefer extension-host bootstrap config: it is injected in webview HTML
+  // before any store module evaluates, so startup does not depend on
+  // RuntimeAPIs registration order (see #2359).
+  if (isVSCodeBootstrapPresent()) {
+    return true;
+  }
   const apis = getRegisteredRuntimeAPIs();
   return apis?.runtime?.isVSCode === true;
 };
@@ -558,6 +728,15 @@ export const isWebRuntime = (): boolean => {
   return !isVSCodeRuntime();
 };
 
+/**
+ * Electron reuses the web RuntimeAPIs implementation, so distinguish a browser
+ * client from an Electron renderer with both the runtime descriptor and shell.
+ */
+export const isBrowserClientRuntime = (
+  platform: RuntimeAPIs['runtime']['platform'],
+  desktopShell = isDesktopShell(),
+): boolean => platform === 'web' && !desktopShell;
+
 export const getDesktopHomeDirectory = async (): Promise<string | null> => {
   if (typeof window !== 'undefined') {
     const embedded = window.__OPENCHAMBER_HOME__;
@@ -573,12 +752,13 @@ export const requestDirectoryAccess = async (
   directoryPath: string
 ): Promise<{ success: boolean; path?: string; projectId?: string; error?: string }> => {
   // Desktop shell on local instance: use native folder picker.
-  if (hasDesktopInvoke() && isDesktopLocalOriginActive()) {
+  if (canRequestNativeDirectoryAccess()) {
     try {
       const selected = await getDesktopBridge()?.openDialog?.({
         directory: true,
         multiple: false,
         title: 'Select Working Directory',
+        ...(directoryPath ? { defaultPath: directoryPath } : {}),
       });
       if (!selected || typeof selected !== 'string') {
         return { success: false, error: 'Directory selection cancelled' };
@@ -590,7 +770,7 @@ export const requestDirectoryAccess = async (
     }
   }
 
-  return { success: true, path: directoryPath };
+  return { success: false, error: 'Native directory picker not available' };
 };
 
 const isDesktopFileGrantResult = (
@@ -637,34 +817,6 @@ export const requestFileAccess = async (
   }
 
   return { success: false, error: 'Native file picker not available' };
-};
-
-export const requestExistingFileAccess = async (
-  path: string
-): Promise<{ success: boolean; path?: string; outsideFileGrant?: string; error?: string }> => {
-  const targetPath = typeof path === 'string' ? path.trim() : '';
-  if (!targetPath) {
-    return { success: false, error: 'Path is required' };
-  }
-  if (!hasDesktopInvoke() || !isDesktopLocalOriginActive()) {
-    return { success: false, error: 'Native file access not available' };
-  }
-
-  try {
-    const selected = await getDesktopBridge()?.grantFileAccess?.(targetPath);
-    if (!isDesktopFileGrantResult(selected)) {
-      return { success: false, error: 'File access was not granted' };
-    }
-    const grantedPath = typeof selected.path === 'string' ? selected.path : '';
-    const outsideFileGrant = typeof selected.outsideFileGrant === 'string' ? selected.outsideFileGrant : '';
-    if (!grantedPath || !outsideFileGrant) {
-      return { success: false, error: 'File access was not granted' };
-    }
-    return { success: true, path: grantedPath, outsideFileGrant };
-  } catch (error) {
-    console.warn('Failed to request existing file access', error);
-    return { success: false, error: error instanceof Error ? error.message : String(error) };
-  }
 };
 
 export const startAccessingDirectory = async (
@@ -760,15 +912,11 @@ export const restartToApplyUpdate = async (): Promise<void> => {
     throw new Error('Desktop bridge is not available');
   }
 
-  try {
-    await invokeDesktop('desktop_restart');
-  } catch (error) {
-    // Surface the real main-process reason (e.g. updater capability or
-    // install-location guards) instead of a generic "Local instance" message.
-    const raw = error instanceof Error ? error.message : String(error);
-    const cleaned = raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '');
-    throw new Error(cleaned || raw);
-  }
+  // Unlike a plain restart, an install failure (rejected signature, disabled
+  // updater session) must reach the update dialog instead of being reduced to
+  // a boolean the caller cannot explain.
+  await invokeDesktop('desktop_restart');
+  return true;
 };
 
 export const restartDesktopApp = async (): Promise<boolean> => {
@@ -931,7 +1079,7 @@ export type InstalledDesktopAppInfo = {
   iconDataUrl?: string | null;
 };
 
-export type FetchDesktopInstalledAppsResult = {
+type FetchDesktopInstalledAppsResult = {
   apps: InstalledDesktopAppInfo[];
   success: boolean;
   hasCache: boolean;

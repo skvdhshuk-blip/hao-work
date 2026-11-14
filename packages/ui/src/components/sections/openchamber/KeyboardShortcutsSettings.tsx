@@ -1,288 +1,396 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  SettingsSection,
-  SettingsFieldRow,
-} from '@/components/sections/shared/SettingsSection';
+import { Icon } from '@/components/icon/Icon';
+import { SettingsChipGroup, SettingsFieldRow, SettingsSection } from '@/components/sections/shared/SettingsSection';
 import { useUIStore } from '@/stores/useUIStore';
-import { cn } from '@/lib/utils';
 import { updateDesktopSettings } from '@/lib/persistence';
-import { isVSCodeRuntime } from '@/lib/desktop';
 import {
   formatShortcutForDisplay,
   getCustomizableShortcutActions,
-  getEffectiveShortcutCombo,
-  isRiskyBrowserShortcut,
-  keyToShortcutToken,
+  getEffectiveShortcutBinding,
+  isShortcutAvailable,
+  isSingleChordShortcut,
   normalizeCombo,
+  shortcutMatchesRecordedCombo,
+  shortcutRegistry,
   UNASSIGNED_SHORTCUT,
+  type ShortcutActionId,
   type ShortcutCombo,
+  type CustomizableShortcutAction,
 } from '@/lib/shortcuts';
 import { useI18n } from '@/lib/i18n';
+import { cn } from '@/lib/utils';
+import { shortcutSearchItemId } from '@/lib/settings/search';
+import { getDesktopMiniChatGlobalShortcut, getDesktopQuakeMode, setDesktopMiniChatGlobalShortcut, setDesktopQuakeModeShortcut } from '@/lib/desktop';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog';
+import { ShortcutRecordingDialog, updateShortcutRecordingState } from './ShortcutRecordingDialog';
 
-const MODIFIER_KEYS = new Set(['shift', 'control', 'alt', 'meta']);
 
-const keyboardEventToCombo = (event: React.KeyboardEvent<HTMLInputElement>): ShortcutCombo | null => {
-  if (MODIFIER_KEYS.has(event.key.toLowerCase())) {
-    return null;
-  }
+const CATEGORIES = ['session', 'models', 'panels', 'navigation', 'application'] as const;
 
-  const parts: string[] = [];
+const persistShortcutOverrides = (nextOverrides: Record<string, ShortcutCombo>) => {
+  void updateDesktopSettings({ shortcutOverrides: nextOverrides });
+};
 
-  if (event.metaKey || event.ctrlKey) {
-    parts.push('mod');
-  }
-  if (event.shiftKey) {
-    parts.push('shift');
-  }
-  if (event.altKey) {
-    parts.push('alt');
-  }
-
-  const keyToken = keyToShortcutToken(event.key);
-  if (!keyToken) {
-    return null;
-  }
-
-  parts.push(keyToken);
-  return normalizeCombo(parts.join('+'));
+/**
+ * Shows only while some shortcut differs from its default, since there is
+ * nothing to reset otherwise.
+ */
+const ResetAllShortcutsButton: React.FC = () => {
+  const { t } = useI18n();
+  const hasOverrides = useUIStore((state) => Object.keys(state.shortcutOverrides).length > 0);
+  const resetAllShortcutOverrides = useUIStore((state) => state.resetAllShortcutOverrides);
+  const { confirm, dialog } = useConfirmDialog();
+  // The dialog keeps its place in the tree, so the button vanishing after a
+  // confirmed reset does not remount it mid-close.
+  return (
+    <>
+      {hasOverrides ? <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="shrink-0"
+        onClick={() => {
+          void confirm({
+            title: t('settings.openchamber.keyboardShortcuts.resetAllDialog.title'),
+            message: t('settings.openchamber.keyboardShortcuts.resetAllDialog.message'),
+            action: t('settings.openchamber.keyboardShortcuts.resetAllDialog.action'),
+            destructive: true,
+          }).then((confirmed) => {
+            if (!confirmed) return;
+            resetAllShortcutOverrides();
+            persistShortcutOverrides({});
+          });
+        }}
+      >
+        {t('settings.openchamber.keyboardShortcuts.actions.resetAll')}
+      </Button> : null}
+      {dialog}
+    </>
+  );
 };
 
 export const KeyboardShortcutsSettings: React.FC = () => {
   const { t } = useI18n();
-  const tUnsafe = React.useCallback((key: string) => t(key as Parameters<typeof t>[0]), [t]);
   const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
   const setShortcutOverride = useUIStore((state) => state.setShortcutOverride);
   const clearShortcutOverride = useUIStore((state) => state.clearShortcutOverride);
-  const resetAllShortcutOverrides = useUIStore((state) => state.resetAllShortcutOverrides);
-
-  const actions = React.useMemo(() => {
-    const all = getCustomizableShortcutActions();
-    if (!isVSCodeRuntime()) {
-      return all;
-    }
-    return all.filter((action) => action.id !== 'toggle_prompt_navigator');
+  const [editingAction, setEditingAction] = React.useState<CustomizableShortcutAction | null>(null);
+  const [query, setQuery] = React.useState('');
+  const [assignmentFilter, setAssignmentFilter] = React.useState<'all' | 'assigned' | 'unassigned'>('all');
+  // The key filter is the chords typed so far. It applies on every key press.
+  const [keyFilterChords, setKeyFilterChords] = React.useState<ShortcutCombo[]>([]);
+  const keyFilter = keyFilterChords.length > 0 ? normalizeCombo(keyFilterChords.join(' ')) : null;
+  const [recordingKey, setRecordingKey] = React.useState(false);
+  const [searchFocused, setSearchFocused] = React.useState(false);
+  const capturingKeys = recordingKey && searchFocused;
+  // The second key of a sequence armed before recording dispatches in window
+  // capture, ahead of this field's handlers. Suspending the registry cancels
+  // that pending sequence and keeps recorded keys from running commands.
+  React.useEffect(() => (capturingKeys ? shortcutRegistry.suspend() : undefined), [capturingKeys]);
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+  // The OS-level Mini Chat combo lives in the desktop setting, not in
+  // shortcutOverrides; feed it to the recorder as a conflict source.
+  const [globalMiniChatCombo, setGlobalMiniChatCombo] = React.useState<ShortcutCombo | null>(null);
+  const refreshGlobalMiniChatCombo = React.useCallback(() => {
+    void getDesktopMiniChatGlobalShortcut()
+      .then((status) => setGlobalMiniChatCombo(status?.combo ?? null))
+      .catch(() => {});
   }, []);
-  const actionLabel = React.useCallback((id: string, fallbackLabel: string): string => {
-    const key = `settings.openchamber.keyboardShortcuts.action.${id}.label`;
-    const translated = tUnsafe(key);
-    return translated === key ? fallbackLabel : translated;
-  }, [tUnsafe]);
-
-  const [capturingActionId, setCapturingActionId] = React.useState<string | null>(null);
-  const [draftByAction, setDraftByAction] = React.useState<Record<string, ShortcutCombo>>({});
-  const [errorText, setErrorText] = React.useState<string>('');
-  const [warningText, setWarningText] = React.useState<string>('');
-  const [pendingOverwrite, setPendingOverwrite] = React.useState<{
-    actionId: string;
-    combo: ShortcutCombo;
-    conflictActionId: string;
-  } | null>(null);
-
-  const persistShortcutOverrides = React.useCallback((nextOverrides: Record<string, ShortcutCombo>) => {
-    void updateDesktopSettings({ shortcutOverrides: nextOverrides });
+  React.useEffect(() => {
+    refreshGlobalMiniChatCombo();
+  }, [refreshGlobalMiniChatCombo]);
+  // Same for the OS-level Quake Mode combo: without it as a conflict source,
+  // an in-app action could silently take over the Quake hotkey here.
+  const [globalQuakeCombo, setGlobalQuakeCombo] = React.useState<ShortcutCombo | null>(null);
+  const refreshGlobalQuakeCombo = React.useCallback(() => {
+    void getDesktopQuakeMode()
+      .then((status) => setGlobalQuakeCombo(status?.combo ?? null))
+      .catch(() => {});
   }, []);
+  React.useEffect(() => {
+    refreshGlobalQuakeCombo();
+  }, [refreshGlobalQuakeCombo]);
 
-  const findConflict = React.useCallback((actionId: string, combo: ShortcutCombo): string | null => {
-    const normalized = normalizeCombo(combo);
-    for (const action of actions) {
-      if (action.id === actionId) {
-        continue;
-      }
-      const existing = getEffectiveShortcutCombo(action.id, shortcutOverrides);
-      if (normalizeCombo(existing) === normalized) {
-        return action.id;
-      }
+  const actions = React.useMemo(() => getCustomizableShortcutActions().filter(isShortcutAvailable), []);
+  const persist = persistShortcutOverrides;
+  const save = (
+    actionId: ShortcutActionId,
+    combo: ShortcutCombo,
+    replaceActionId?: ShortcutActionId,
+  ) => {
+    const nextOverrides = { ...shortcutOverrides, [actionId]: combo };
+    setShortcutOverride(actionId, combo);
+    if (replaceActionId === 'mini_chat_global') {
+      // Releasing the OS-level Mini Chat combo goes through the desktop
+      // setting; the overrides only carried it as a conflict source.
+      void setDesktopMiniChatGlobalShortcut(null).then((status) => {
+        if (status) setGlobalMiniChatCombo(status.combo);
+      });
+    } else if (replaceActionId === 'quake_mode_global') {
+      // Same release path for the Quake combo. It is stored as unassigned:
+      // clearing it would bring back the default and take the combo again.
+      void setDesktopQuakeModeShortcut(UNASSIGNED_SHORTCUT).then((status) => {
+        if (status) setGlobalQuakeCombo(status.combo);
+      });
+    } else if (replaceActionId) {
+      nextOverrides[replaceActionId] = UNASSIGNED_SHORTCUT;
+      setShortcutOverride(replaceActionId, UNASSIGNED_SHORTCUT);
     }
-    return null;
-  }, [actions, shortcutOverrides]);
-
-  const saveCombo = React.useCallback((actionId: string, combo: ShortcutCombo) => {
-    const normalized = normalizeCombo(combo);
-    const conflictActionId = findConflict(actionId, normalized);
-    if (conflictActionId) {
-      setPendingOverwrite({ actionId, combo: normalized, conflictActionId });
-      setErrorText('');
-      return;
-    }
-
-    const nextOverrides = { ...shortcutOverrides, [actionId]: normalized };
-    setShortcutOverride(actionId, normalized);
-    persistShortcutOverrides(nextOverrides);
-    setPendingOverwrite(null);
-    setErrorText('');
-    setWarningText(isRiskyBrowserShortcut(normalized) ? t('settings.openchamber.keyboardShortcuts.warning.riskyBrowserShortcut') : '');
-    setDraftByAction((current) => {
-      const rest = { ...current };
-      delete rest[actionId];
-      return rest;
-    });
-  }, [findConflict, persistShortcutOverrides, setShortcutOverride, shortcutOverrides, t]);
-
-  const confirmOverwrite = React.useCallback(() => {
-    if (!pendingOverwrite) {
-      return;
-    }
-
-    const nextOverrides = {
-      ...shortcutOverrides,
-      [pendingOverwrite.conflictActionId]: UNASSIGNED_SHORTCUT,
-      [pendingOverwrite.actionId]: pendingOverwrite.combo,
-    };
-    setShortcutOverride(pendingOverwrite.conflictActionId, UNASSIGNED_SHORTCUT);
-    setShortcutOverride(pendingOverwrite.actionId, pendingOverwrite.combo);
-    persistShortcutOverrides(nextOverrides);
-    setPendingOverwrite(null);
-    setErrorText('');
-    setWarningText(isRiskyBrowserShortcut(pendingOverwrite.combo) ? t('settings.openchamber.keyboardShortcuts.warning.riskyBrowserShortcut') : '');
-    setDraftByAction((current) => {
-      const rest = { ...current };
-      delete rest[pendingOverwrite.actionId];
-      return rest;
-    });
-  }, [pendingOverwrite, persistShortcutOverrides, setShortcutOverride, shortcutOverrides, t]);
-
-  const resetOne = React.useCallback((actionId: string) => {
+    persist(nextOverrides);
+  };
+  const resetOne = (actionId: ShortcutActionId) => {
     const nextOverrides = { ...shortcutOverrides };
     delete nextOverrides[actionId];
     clearShortcutOverride(actionId);
-    persistShortcutOverrides(nextOverrides);
-    setDraftByAction((current) => {
-      const rest = { ...current };
-      delete rest[actionId];
-      return rest;
+    persist(nextOverrides);
+  };
+  const shortcutDisplay = (action: CustomizableShortcutAction): string => {
+    const isPrefixStyle = 'prefixStyle' in action && action.prefixStyle;
+    const combo = getEffectiveShortcutBinding(action, shortcutOverrides);
+    const formatted = formatShortcutForDisplay(
+      combo,
+      t('settings.openchamber.keyboardShortcuts.unassigned'),
+    );
+    if (!isPrefixStyle || !combo || combo === UNASSIGNED_SHORTCUT) return formatted;
+    const suffix = action.id === 'switch_session_tab'
+      ? t('settings.openchamber.keyboardShortcuts.action.switch_session_tab.suffix')
+      : t('settings.openchamber.keyboardShortcuts.action.switch_context_surface.suffix');
+    return `${formatted}${suffix}`;
+  };
+
+  // The desktop global combos join the overrides as conflict sources.
+  const recorderOverrides = { ...shortcutOverrides };
+  if (globalMiniChatCombo) recorderOverrides.mini_chat_global = globalMiniChatCombo;
+  if (globalQuakeCombo) recorderOverrides.quake_mode_global = globalQuakeCombo;
+
+  const isAssigned = React.useCallback((action: CustomizableShortcutAction): boolean => {
+    const combo = getEffectiveShortcutBinding(action, shortcutOverrides);
+    return combo !== '' && combo !== UNASSIGNED_SHORTCUT;
+  }, [shortcutOverrides]);
+
+  const visibleActions = React.useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return actions.filter((action) => {
+      const assigned = isAssigned(action);
+      if (assignmentFilter === 'assigned' && !assigned) return false;
+      if (assignmentFilter === 'unassigned' && assigned) return false;
+      if (keyFilter && !shortcutMatchesRecordedCombo(action, keyFilter, shortcutOverrides)) return false;
+      if (!needle) return true;
+      const label = t(action.settingsLabelKey).toLowerCase();
+      const idText = action.id.replace(/_/g, ' ');
+      const combo = assigned ? getEffectiveShortcutBinding(action, shortcutOverrides).toLowerCase() : '';
+      return label.includes(needle) || idText.includes(needle) || combo.includes(needle);
     });
-    setPendingOverwrite(null);
-    setErrorText('');
-    setWarningText('');
-  }, [clearShortcutOverride, persistShortcutOverrides, shortcutOverrides]);
+  }, [actions, assignmentFilter, isAssigned, keyFilter, query, shortcutOverrides, t]);
+
+  const hasVisibleActions = visibleActions.length > 0;
+  const activeFilterLabel = keyFilter
+    ? formatShortcutForDisplay(keyFilter)
+    : query.trim() || t(`settings.openchamber.keyboardShortcuts.filter.${assignmentFilter}`);
+
+  const visibleCategories = CATEGORIES.filter((category) =>
+    visibleActions.some((action) => action.category === category),
+  );
 
   return (
-    <SettingsSection
-      settingsItem="shortcuts.keyboard-shortcuts"
-      title={t('settings.openchamber.keyboardShortcuts.title')}
-      divider={false}
-      info={t('settings.openchamber.keyboardShortcuts.tooltip')}
-      headerAction={(
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          className="!font-normal"
-          onClick={() => {
-            resetAllShortcutOverrides();
-            persistShortcutOverrides({});
-            setDraftByAction({});
-            setPendingOverwrite(null);
-            setErrorText('');
-            setWarningText('');
-          }}
-        >
-          {t('settings.openchamber.keyboardShortcuts.actions.resetAll')}
-        </Button>
-      )}
-    >
-      {(errorText || warningText || pendingOverwrite) && (
-        <div className="mb-2 space-y-2">
-          {pendingOverwrite && (
-            <div className="rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] p-3 flex flex-col @xl:flex-row @xl:items-center justify-between gap-3">
-              <span className="typography-meta text-foreground">
-                {t('settings.openchamber.keyboardShortcuts.overwritePrompt')}
+    <>
+      {/* Capped where a row's Clear button ends (label column, gap, key tile,
+          Edit, Clear), so the search lines up with the list under it. */}
+      <div className="mb-6 flex flex-col items-start gap-3 @xl:max-w-[30.25rem]">
+        <div className="relative w-full">
+          <Icon
+            name="search"
+            className="pointer-events-none absolute inset-s-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          {keyFilter ? (
+            <kbd className="pointer-events-none absolute inset-s-7 top-1/2 -translate-y-1/2 oc-tile-inset rounded-md px-1.5 py-0.5 typography-micro text-foreground">
+              {formatShortcutForDisplay(keyFilter)}
+            </kbd>
+          ) : null}
+          <Input
+            ref={searchInputRef}
+            value={query}
+            readOnly={recordingKey}
+            onChange={(event) => setQuery(event.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+            onKeyDown={(event) => {
+              if (recordingKey) {
+                // While recording, keys build the chord filter. Stopping the
+                // event also keeps Escape from closing the Settings dialog.
+                event.stopPropagation();
+                if (event.nativeEvent.isComposing || event.repeat) return;
+                event.preventDefault();
+                if (event.key === 'Escape' && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+                  setKeyFilterChords([]);
+                  return;
+                }
+                const next = updateShortcutRecordingState(
+                  { chords: keyFilterChords, livePreview: null, settled: keyFilterChords.length >= 2 },
+                  {
+                    altKey: event.altKey,
+                    code: event.nativeEvent.code,
+                    ctrlKey: event.ctrlKey,
+                    isComposing: event.nativeEvent.isComposing,
+                    key: event.key,
+                    metaKey: event.metaKey,
+                    repeat: event.repeat,
+                    shiftKey: event.shiftKey,
+                  },
+                  'keydown',
+                  2,
+                  { recordBackspace: true },
+                );
+                setKeyFilterChords(next.chords);
+                return;
+              }
+              if (event.key === 'Escape' && query) {
+                event.preventDefault();
+                event.stopPropagation();
+                setQuery('');
+              }
+            }}
+            onKeyUp={(event) => {
+              if (recordingKey) event.stopPropagation();
+            }}
+            placeholder={keyFilter ? '' : t('settings.common.sidebar.searchPlaceholder')}
+            aria-label={t('settings.common.sidebar.searchPlaceholder')}
+            className={cn(keyFilter ? 'ps-24' : 'ps-7', recordingKey ? 'pe-40' : 'pe-16')}
+          />
+          <div className="absolute inset-e-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+            {recordingKey ? (
+              <span className="me-1 rounded-sm bg-muted px-1.5 py-0.5 typography-micro text-muted-foreground">
+                {t('settings.openchamber.keyboardShortcuts.findByKey.recording')}
               </span>
-              <div className="flex gap-2 shrink-0">
-                <Button type="button" size="xs" className="!font-normal" onClick={confirmOverwrite}>{t('settings.openchamber.keyboardShortcuts.actions.overwrite')}</Button>
-                <Button type="button" size="xs" className="!font-normal" variant="ghost" onClick={() => setPendingOverwrite(null)}>{t('settings.common.actions.cancel')}</Button>
-              </div>
-            </div>
-          )}
-          {errorText && (
-            <div className="rounded-lg border border-[var(--status-error-border)] bg-[var(--status-error-background)] p-3 typography-meta text-foreground">
-              {errorText}
-            </div>
-          )}
-          {warningText && (
-            <div className="rounded-lg border border-[var(--status-warning-border)] bg-[var(--status-warning-background)] p-3 typography-meta text-foreground">
-              {warningText}
-            </div>
-          )}
-        </div>
-      )}
-
-      <div>
-        {actions.map((action, index) => {
-          const effective = getEffectiveShortcutCombo(action.id, shortcutOverrides);
-          const draft = draftByAction[action.id];
-          const displayCombo = draft ?? effective;
-          const hasDraft = typeof draft === 'string' && normalizeCombo(draft) !== normalizeCombo(effective);
-
-          return (
-            <div key={action.id} className={cn("py-1.5", index > 0 && "border-t border-border/40")}>
-              <SettingsFieldRow
-                label={actionLabel(action.id, action.label)}
-                alignEnd={false}
+            ) : null}
+            {keyFilter || query ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                className="!font-normal"
+                aria-label={t('settings.common.sidebar.clearSearch')}
+                onClick={() => {
+                  setKeyFilterChords([]);
+                  setQuery('');
+                  searchInputRef.current?.focus();
+                }}
               >
-                <Input
-                  readOnly
-                  value={capturingActionId === action.id ? t('settings.openchamber.keyboardShortcuts.field.pressKeys') : formatShortcutForDisplay(displayCombo)}
-                  onFocus={() => {
-                    setCapturingActionId(action.id);
-                    setErrorText('');
-                  }}
-                  onBlur={() => {
-                    if (capturingActionId === action.id) {
-                      setCapturingActionId(null);
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-
-                    if (event.key === 'Escape') {
-                      setCapturingActionId(null);
-                      return;
-                    }
-
-                    const combo = keyboardEventToCombo(event);
-                    if (!combo) {
-                      return;
-                    }
-
-                    setDraftByAction((current) => ({
-                      ...current,
-                      [action.id]: combo,
-                    }));
-                    setCapturingActionId(null);
-                    setPendingOverwrite(null);
-                    setErrorText('');
-                  }}
-                  className="h-7 w-40 min-w-0 typography-ui-label text-center"
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="xs"
-                  className="!font-normal"
-                  onClick={() => {
-                    const next = draftByAction[action.id];
-                    if (!next) {
-                      setErrorText(t('settings.openchamber.keyboardShortcuts.error.captureFirst'));
-                      return;
-                    }
-                    saveCombo(action.id, next);
-                  }}
-                  disabled={!hasDraft}
-                >
-                  {t('settings.common.actions.saveChanges')}
-                </Button>
-                <Button type="button" size="xs" className="!font-normal" variant="ghost" onClick={() => resetOne(action.id)}>
-                  {t('settings.common.actions.reset')}
-                </Button>
-              </SettingsFieldRow>
-            </div>
-          );
-        })}
+                <Icon name="close" className="size-3.5" aria-hidden />
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              className={cn('!font-normal', recordingKey && 'bg-[var(--interactive-selection)] text-[var(--primary-base)]')}
+              aria-pressed={recordingKey}
+              aria-label={t('settings.openchamber.keyboardShortcuts.findByKey.button')}
+              title={t('settings.openchamber.keyboardShortcuts.findByKey.button')}
+              onClick={() => {
+                // Toggling either way clears the search, so a chord or text
+                // search never carries over into the other mode.
+                setQuery('');
+                setKeyFilterChords([]);
+                setRecordingKey((current) => !current);
+                searchInputRef.current?.focus();
+              }}
+            >
+              <Icon name="keyboard" className="size-3.5" aria-hidden />
+            </Button>
+          </div>
+        </div>
+        <div className="flex w-full items-center justify-between gap-3">
+          <SettingsChipGroup
+            value={assignmentFilter}
+            aria-label={t('settings.openchamber.keyboardShortcuts.title')}
+            onChange={setAssignmentFilter}
+            options={[
+              { value: 'all', label: t('settings.openchamber.keyboardShortcuts.filter.all') },
+              { value: 'assigned', label: t('settings.openchamber.keyboardShortcuts.filter.assigned') },
+              { value: 'unassigned', label: t('settings.openchamber.keyboardShortcuts.filter.unassigned') },
+            ]}
+          />
+          <ResetAllShortcutsButton />
+        </div>
       </div>
-    </SettingsSection>
+      {!hasVisibleActions ? (
+        <p className="px-2 py-6 text-center typography-meta text-muted-foreground">
+          {t('settings.common.sidebar.noMatches', { query: activeFilterLabel })}
+        </p>
+      ) : null}
+      {visibleCategories.map((category, visibleIndex) => {
+        const categoryActions = visibleActions.filter((action) => action.category === category);
+        const isFirstVisible = visibleIndex === 0;
+        return (
+          <SettingsSection
+            key={category}
+            settingsItem={isFirstVisible ? 'shortcuts.keyboard-shortcuts' : undefined}
+            title={t(`settings.openchamber.keyboardShortcuts.category.${category}`)}
+          >
+            <div>
+              {categoryActions.map((action) => (
+                <SettingsFieldRow key={action.id} label={t(action.settingsLabelKey)} settingsItem={shortcutSearchItemId(action.id)} controlClassName="flex-wrap">
+                  <kbd
+                    className="min-w-32 oc-tile-inset rounded-md px-2 py-1 text-center typography-meta text-foreground"
+                  >
+                    {shortcutDisplay(action)}
+                  </kbd>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="xs"
+                    className="!font-normal"
+                    onClick={() => {
+                      refreshGlobalMiniChatCombo();
+                      refreshGlobalQuakeCombo();
+                      setEditingAction(action);
+                    }}
+                  >
+                    {t('settings.openchamber.keyboardShortcuts.actions.edit')}
+                  </Button>
+                  {/* A changed shortcut offers Reset in Clear's place, so the
+                      row keeps one trailing action and its width. */}
+                  {action.id in shortcutOverrides ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      className="!font-normal"
+                      onClick={() => resetOne(action.id)}
+                    >
+                      {t('settings.common.actions.reset')}
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      className="!font-normal"
+                      disabled={!isAssigned(action)}
+                      onClick={() => save(action.id, UNASSIGNED_SHORTCUT)}
+                    >
+                      {t('settings.openchamber.keyboardShortcuts.actions.clear')}
+                    </Button>
+                  )}
+                </SettingsFieldRow>
+              ))}
+            </div>
+          </SettingsSection>
+        );
+      })}
+      <ShortcutRecordingDialog
+        action={editingAction}
+        overrides={recorderOverrides}
+        maxChords={editingAction && isSingleChordShortcut(editingAction) ? 1 : undefined}
+        onSave={save}
+        onOpenChange={(open) => {
+          if (!open) setEditingAction(null);
+        }}
+      />
+    </>
   );
 };

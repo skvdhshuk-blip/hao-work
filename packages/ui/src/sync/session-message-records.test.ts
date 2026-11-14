@@ -1,32 +1,51 @@
 import { describe, expect, test } from 'bun:test';
-import type { Message, Part } from '@opencode-ai/sdk/v2/client';
+import { createStore } from 'zustand/vanilla';
+import type { Message, Part, Session } from '@/lib/opencode/model';
 
-import { buildSessionMessageRecordsSnapshot } from './sync-context';
+import type { DirectoryStore } from './child-store';
+import { buildSessionMessageRecordsSnapshot, readSessionMessageRecordsSnapshot } from './sync-context';
 import { INITIAL_STATE, type State } from './types';
 
-const message = (id: string, role: 'user' | 'assistant', parentID?: string): Message => ({
-  id,
-  role,
-  sessionID: 'ses_1',
-  ...(parentID ? { parentID } : {}),
-  time: { created: 1 },
-} as Message);
+// v2 messages carry no `parentID`; the argument is kept only so the fixtures
+// still read as "this reply belongs to that prompt".
+const message = (id: string, role: 'user' | 'assistant', _parentID?: string, created = 1): Message =>
+  role === 'user'
+    ? { id, role, sessionID: 'ses_1', time: { created } }
+    : { id, role, sessionID: 'ses_1', time: { created }, agent: 'build', providerID: 'provider', modelID: 'model' };
 
 const textPart = (id: string, text: string): Part => ({
   id,
+  sessionID: 'ses_1',
+  messageID: 'msg_1',
   type: 'text',
   text,
-} as Part);
+});
 
 const taskPart = (id: string, sessionId?: string): Part => ({
   id,
+  sessionID: 'ses_1',
+  messageID: 'msg_1',
   type: 'tool',
+  callID: id,
   tool: 'task',
   state: {
     status: 'running',
+    input: {},
+    time: { start: 1 },
     metadata: sessionId ? { sessionId } : {},
   },
-} as unknown as Part);
+});
+
+const session = (overrides: Partial<Session> = {}): Session => ({
+  id: 'ses_1',
+  projectID: 'proj_1',
+  directory: '/repo',
+  title: 'Session',
+  cost: 0,
+  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  time: { created: 1, updated: 1 },
+  ...overrides,
+});
 
 const state = (partial: Partial<State>): State => ({
   ...INITIAL_STATE,
@@ -34,6 +53,22 @@ const state = (partial: Partial<State>): State => ({
 });
 
 describe('buildSessionMessageRecordsSnapshot', () => {
+  test('renders and reverts a rollover-spanning transcript by array chronology', () => {
+    const before = message('msg_ffffffffffffBefore', 'user', undefined, 100);
+    const marker = message('msg_000000000000Marker', 'user', undefined, 200);
+    const after = message('msg_000000000001After', 'assistant', marker.id, 300);
+
+    const snapshot = buildSessionMessageRecordsSnapshot(
+      state({
+        session: [session({ revert: { messageID: marker.id } })],
+        message: { ses_1: [before, marker, after] },
+      }),
+      'ses_1',
+    );
+
+    expect(snapshot.list.map((record) => record.info.id)).toEqual([before.id]);
+  });
+
   test('only suspends part updates for the active streaming message', () => {
     const user = message('user_1', 'user');
     const assistant1 = message('assistant_1', 'assistant', 'user_1');
@@ -97,5 +132,28 @@ describe('buildSessionMessageRecordsSnapshot', () => {
     );
 
     expect(next.byId.get(assistant.id)?.parts).toBe(identifiedParts);
+  });
+});
+
+describe('readSessionMessageRecordsSnapshot', () => {
+  test('suspends a message again from its latest parts, not from a snapshot cached before the wait', () => {
+    const assistant = message('assistant_1', 'assistant');
+    const messages = [assistant];
+    const store = createStore<DirectoryStore>(() => ({
+      ...state({ message: { ses_1: messages }, part: { assistant_1: [textPart('before', 'before the page')] } }),
+      patch: () => undefined,
+      replace: () => undefined,
+    }));
+    const empty = buildSessionMessageRecordsSnapshot(state({}), 'ses_1');
+
+    const streaming = readSessionMessageRecordsSnapshot(store, 'ses_1', empty, true, assistant.id);
+    const pageParts = [textPart('before', 'before the page'), textPart('page', 'the page')];
+    store.setState({ part: { assistant_1: pageParts } });
+
+    const waiting = readSessionMessageRecordsSnapshot(store, 'ses_1', streaming, false);
+    expect(waiting.byId.get(assistant.id)?.parts).toBe(pageParts);
+
+    const answered = readSessionMessageRecordsSnapshot(store, 'ses_1', waiting, true, assistant.id);
+    expect(answered.byId.get(assistant.id)?.parts).toBe(pageParts);
   });
 });

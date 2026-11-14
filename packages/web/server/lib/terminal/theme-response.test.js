@@ -44,4 +44,37 @@ describe('terminal theme responses', () => {
       '\u001b]10;rgb:1b1b/1b1b/1b1b\u001b\\',
     ]);
   });
+
+  test('answers a primary device attribute query when the fallback is enabled', () => {
+    const attached = consumeTerminalThemeQueries('', '\u001b[0c', lightAppearance);
+    const unattached = consumeTerminalThemeQueries('', '\u001b[0c', lightAppearance, {
+      respondToPrimaryDeviceAttributes: true,
+    });
+
+    expect(attached.responses).toEqual([]);
+    expect(unattached.responses).toEqual(['\u001b[?1;2c']);
+  });
+
+  test('answers a primary device attribute query split across PTY chunks', () => {
+    const first = consumeTerminalThemeQueries('', '\u001b[0', lightAppearance, {
+      respondToPrimaryDeviceAttributes: true,
+    });
+    const second = consumeTerminalThemeQueries(first.pending, 'c', {
+      ...lightAppearance,
+      modeEnabled: first.modeEnabled,
+    }, { respondToPrimaryDeviceAttributes: true });
+
+    expect(first.pending).toBe('\u001b[0');
+    expect(second.responses).toEqual(['\u001b[?1;2c']);
+  });
+
+  test('answers no query inside ordinary colored log text', () => {
+    const result = consumeTerminalThemeQueries('', 'log \u001b[32mgreen\u001b[0m done', lightAppearance);
+    expect(result).toEqual({ pending: '', responses: [], modeEnabled: false });
+  });
+
+  test('finds a query that follows ordinary text', () => {
+    const result = consumeTerminalThemeQueries('', 'ordinary output \u001b[?996n trailing text', lightAppearance);
+    expect(result).toEqual({ pending: '', responses: ['\u001b[?997;2n'], modeEnabled: false });
+  });
 });

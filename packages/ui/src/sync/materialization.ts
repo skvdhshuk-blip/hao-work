@@ -1,8 +1,9 @@
-import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import type { Message, Part } from "@/lib/opencode/model"
 import { mergeMessages } from "./optimistic"
 import type { SessionMaterializationReason } from "./event-reducer"
+import { sortMessagesChronologically } from "./message-ordering"
+import { toolContentShellChars } from "@/lib/opencode/toolContentShells"
 
-const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 const STREAMING_PART_FIELDS = ["text", "output"] as const
 const ACTIVE_TOOL_STATUSES = new Set(["pending", "running"])
 const FINAL_TOOL_STATUSES = new Set(["completed", "error", "aborted", "failed", "timeout", "cancelled"])
@@ -93,10 +94,34 @@ export function getStaleRunningToolMessageID(
   return undefined
 }
 
-function sortParts(parts: Part[], skipPartTypes: ReadonlySet<string>) {
+function filterMaterializedParts(parts: Part[], skipPartTypes: ReadonlySet<string>): Part[] {
   return parts
     .filter((part) => !!part?.id && !skipPartTypes.has(part.type))
-    .sort((a, b) => cmp(a.id, b.id))
+}
+
+function finalizeActiveToolsInCompletedMessage(message: Message, parts: Part[]): Part[] {
+  if (message.role !== "assistant" || message.time.completed === undefined) return parts
+
+  const completedAt = message.time.completed
+  let reconciledParts = parts
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]
+    if (part.type !== "tool" || !ACTIVE_TOOL_STATUSES.has(part.state.status)) continue
+
+    const start = getPartStateTime(part)?.start ?? completedAt
+    if (reconciledParts === parts) reconciledParts = [...parts]
+    reconciledParts[index] = {
+      ...part,
+      state: {
+        ...part.state,
+        status: "error" as const,
+        error: "Interrupted",
+        time: { start, end: completedAt },
+      },
+    }
+  }
+
+  return reconciledParts
 }
 
 function haveEquivalentPartSnapshots(left: Part[] | undefined, right: Part[]): boolean {
@@ -161,6 +186,15 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
   if (!existing) return next
 
   if (existing.type === "tool" && next.type === "tool") {
+    // A page carries finished results as shells. The whole call this client
+    // already holds (from the event stream, or a completed message) stays.
+    if (
+      existing.state.status === next.state.status
+      && toolContentShellChars(next) !== null
+      && toolContentShellChars(existing) === null
+    ) {
+      return existing
+    }
     const existingStatus = (existing as { state?: { status?: unknown } }).state?.status
     const nextStatus = (next as { state?: { status?: unknown } }).state?.status
     if (
@@ -170,6 +204,21 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
       && ACTIVE_TOOL_STATUSES.has(nextStatus)
     ) {
       return existing
+    }
+    // A snapshot fetched just before a call started can land after the live
+    // `called`/`progress` events. OpenCode publishes progress metadata only
+    // on change (a subagent's child `sessionID` exactly once), so letting the
+    // stale copy win would lose it until the call settles.
+    if (existing.state.status === "running" && next.state.status === "pending") {
+      return existing
+    }
+    if (
+      existing.state.status === "running"
+      && next.state.status === "running"
+      && existing.state.metadata !== undefined
+      && next.state.metadata === undefined
+    ) {
+      next = { ...next, state: { ...next.state, metadata: existing.state.metadata } }
     }
   }
 
@@ -252,7 +301,7 @@ function mergeMaterializedParts(
   )
   if (missingLiveParts.length === 0) return mergedParts
 
-  return [...mergedParts, ...missingLiveParts].sort((a, b) => cmp(a.id, b.id))
+  return [...mergedParts, ...missingLiveParts]
 }
 
 export function materializeSessionSnapshots(
@@ -262,13 +311,39 @@ export function materializeSessionSnapshots(
   options: MaterializeSessionSnapshotsOptions = {},
 ): MaterializeSessionSnapshotsResult {
   const skipPartTypes = options.skipPartTypes ?? new Set<string>()
-  const snapshots = records
-    .filter((record) => !!record?.info?.id)
-    .sort((left, right) => cmp(left.info.id, right.info.id))
-  const nextMessages = snapshots.map((record) => record.info)
+  const recordsByMessageID = new Map(
+    records
+      .filter((record) => !!record?.info?.id)
+      .map((record) => [record.info.id, record] as const),
+  )
+  const nextMessages = sortMessagesChronologically([...recordsByMessageID.values()].map((record) => record.info))
+  const snapshots = nextMessages.map((message) => recordsByMessageID.get(message.id)!)
   const existingMessages = state.message[sessionID]
   const currentMessages = existingMessages ?? []
-  const messages = mergeMessages(currentMessages, nextMessages)
+  const incomingByID = new Map(nextMessages.map((message) => [message.id, message] as const))
+  let reconciledCurrentMessages = currentMessages
+  let deliveredWhileAway = false
+  for (let index = 0; index < currentMessages.length; index += 1) {
+    const existing = currentMessages[index]
+    const incoming = incomingByID.get(existing.id)
+    // History holds only delivered messages, so a record there supersedes the
+    // pending one a missed `session.inbox.delivered` left behind, at its
+    // delivery time.
+    const delivered = existing.role === "synthetic" && existing.pending === true && incoming?.role === "synthetic"
+    // A completion the server reports supersedes a turn this client still
+    // holds open, and the local interruption mark (`interruptedTurnToolParts`)
+    // it may have put on it. Any other existing record wins over the snapshot.
+    const completed = existing.role === "assistant"
+      && incoming?.role === "assistant"
+      && incoming.time.completed !== undefined
+      && (existing.time.completed === undefined || existing.closedLocally === true)
+    if (!incoming || (!delivered && !completed)) continue
+    deliveredWhileAway ||= delivered
+    if (reconciledCurrentMessages === currentMessages) reconciledCurrentMessages = [...currentMessages]
+    reconciledCurrentMessages[index] = incoming
+  }
+  if (deliveredWhileAway) reconciledCurrentMessages = sortMessagesChronologically(reconciledCurrentMessages)
+  const messages = mergeMessages(reconciledCurrentMessages, nextMessages)
   const messagesChanged = messages !== currentMessages || (existingMessages === undefined && snapshots.length === 0)
 
   let partsChanged = false
@@ -281,12 +356,13 @@ export function materializeSessionSnapshots(
 
     const isAssistant = record.info.role === "assistant"
     const existing = nextPartState[messageID]
-    const nextParts = mergeMaterializedParts(
+    const mergedParts = mergeMaterializedParts(
       existing,
-      sortParts(record.parts ?? [], skipPartTypes),
+      filterMaterializedParts(record.parts ?? [], skipPartTypes),
       skipPartTypes,
       isAssistant,
     )
+    const nextParts = finalizeActiveToolsInCompletedMessage(record.info, mergedParts)
     // For non-assistant messages an empty snapshot keeps the old "absent"
     // representation; only assistant messages need the explicit [] marker
     // (getSessionMaterializationStatus checks only assistant messages).
@@ -318,9 +394,19 @@ export function materializeSessionSnapshots(
   }
 }
 
+export type SessionMaterializationStatusOptions = {
+  /**
+   * The message loader holds this session's history (read from the server,
+   * not evicted since). Then an assistant message still running with no parts
+   * is a step whose parts are on their way, not a gap.
+   */
+  historyCovered?: boolean
+}
+
 export function getSessionMaterializationStatus(
   state: MaterializedState,
   sessionID: string,
+  options: SessionMaterializationStatusOptions = {},
 ): SessionMaterializationStatus {
   const messages = state.message[sessionID]
   if (!messages) {
@@ -335,9 +421,13 @@ export function getSessionMaterializationStatus(
     // as renderable — otherwise sessions containing such a message can never
     // reach renderable state and ensure-renderable callers loop forever.
     const parts = state.part[message.id]
-    if (!parts) {
-      missingPartMessageIDs.push(message.id)
-    }
+    if (parts) continue
+    // OpenCode 2.x opens every step of a turn as a new assistant message and
+    // sends its parts once the model answers, seconds later. In a transcript
+    // the loader holds, that wait is expected: a lost part shows as an orphan
+    // delta, and a step that ends without parts is repaired on its completion.
+    if (options.historyCovered && message.time.completed === undefined) continue
+    missingPartMessageIDs.push(message.id)
   }
 
   return {

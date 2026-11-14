@@ -128,6 +128,17 @@ if (request.action === 'resume_interrupt') {
   const text = JSON.stringify({ prompt: request.prompt ?? null, images: request.images ?? null });
   emit({ type: 'text', text });
   emit({ type: 'result', text, sessionId: 'hao_images_probe', usage: {}, cost: 0 });
+} else if (request.prompt === 'hold-for-steer') {
+  const fs = await import('node:fs');
+  const deadline = Date.now() + 2000;
+  let seen = '';
+  while (Date.now() < deadline) {
+    seen = fs.readFileSync(request.controlPath, 'utf8');
+    if (seen.includes('make it blue')) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  emit({ type: 'text', text: seen });
+  emit({ type: 'result', text: seen.trim() || 'missed', sessionId: 'hao_steer', usage: {}, cost: 0 });
 } else {
   emit({ type: 'text', text: 'hello ' });
   emit({ type: 'tool_start', toolName: 'Read', toolInput: { file_path: 'README.md' } });
@@ -2723,3 +2734,31 @@ describe('remote model list endpoint', () => {
     expect((await patch({ models: 'not-array' })).status).toBe(400);
   });
 });
+
+test('steers a running session through the OpenCode 2 prompt route', async () => {
+  const runtime = await createRuntime();
+  await configureDeepSeek(runtime.baseUrl);
+  const session = await createSession(runtime);
+  const started = prompt(runtime.baseUrl, runtime.project, session.id, 'hold-for-steer');
+  let payload = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const steered = await fetch(`${runtime.baseUrl}/api/session/${session.id}/prompt?directory=${encodeURIComponent(runtime.project)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-opencode-directory': encodeURIComponent(runtime.project),
+      },
+      body: JSON.stringify({ id: 'msg_steer', text: 'make it blue', delivery: 'steer' }),
+    });
+    payload = await steered.json();
+    if (payload?.delivery === 'steer') break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  expect(payload).toMatchObject({ id: 'msg_steer', delivery: 'steer' });
+  const first = await started;
+  expect(first.status).toBe(200);
+  const messages = await fetch(`${runtime.baseUrl}/session/${session.id}/message?directory=${encodeURIComponent(runtime.project)}`);
+  const body = await messages.json();
+  expect(JSON.stringify(body)).toContain('make it blue');
+});
+

@@ -1,4 +1,4 @@
-import { scoreByFuzzyQuery } from '@/lib/search/fuzzySearch';
+import { rankBySubsequence, type RankedMatch } from '@/lib/search/subsequenceSearch';
 
 export const buildCommandPaletteFileSearchKey = (
   currentRoot: string | null,
@@ -11,18 +11,17 @@ export const buildCommandPaletteFileSearchKey = (
   return JSON.stringify([currentRoot, trimmedQuery]);
 };
 
-export const scoreCommandPaletteFiles = <T extends { name: string }>(
+export const scoreCommandPaletteFiles = <T extends { name: string; relativePath: string }>(
   fileResults: T[],
   trimmedQuery: string,
   fileSearchKey: string,
   fileResultsKey: string,
-): { item: T; score: number }[] => {
+): RankedMatch<T>[] => {
   if (!fileSearchKey || fileResultsKey !== fileSearchKey || fileResults.length === 0) {
     return [];
   }
 
-  return scoreByFuzzyQuery(fileResults, trimmedQuery, (file) => file.name, {
-    limit: 10,
-    threshold: 0.4,
-  });
+  // Matches in the file name rank first, but the whole relative path counts:
+  // "solo-is-a" must still find solo-is-a-team-size/index.md.
+  return rankBySubsequence(fileResults, trimmedQuery, (file) => file.relativePath || file.name, { limit: 10, paths: true });
 };

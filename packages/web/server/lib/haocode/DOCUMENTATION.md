@@ -41,3 +41,5 @@ Shutdown is a drain operation: the compatibility server terminates workers, wait
 The adapter normalizes persisted or direct-API sandbox resource values before constructing the worker request: memory below `256 MB` and CPU counts outside `1..64` fall back to the documented defaults, matching the HaoCode SDK constructor contract.
 
 Do not leak HaoCode PHP objects into the browser contract. Adapter-only response fields must use the `_fe_` prefix. Secrets stay in the local runtime-state file with mode `0600` and are never returned by API responses.
+
+OpenCode 2.x clients call `POST /api/session/:id/prompt` with `{ id, text, delivery }`. The compatibility server strips the `/api` prefix and reads `x-opencode-directory` as well as `?directory=`. While a session is running, `delivery: "steer"` interrupts the current model stream at the next safe point and `delivery: "queue"` waits until that run would otherwise end. Neither is inserted between a tool call and its tool result. An idle session starts a run either way. `prompt_async` remains for older callers and still refuses a second run with 409.

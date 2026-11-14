@@ -1,5 +1,7 @@
 /**
- * Toggles whether tool permissions are auto-accepted for this session.
+ * Cycles how this session answers tool permissions: ask, safety net, accept
+ * everything. The safety net is left out of the cycle while no classification
+ * provider can run it.
  *
  * The pointer guards keep a tap from dismissing the mobile keyboard: on
  * Android's resizes-content viewport the keyboard-close relayout moves this
@@ -10,122 +12,55 @@ import React from 'react';
 
 import { toast } from '@/components/ui';
 import { Icon } from '@/components/icon/Icon';
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuRadioGroup,
-    DropdownMenuRadioItem,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+import type { IconName } from '@/components/icon/icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useI18n, type I18nKey } from '@/lib/i18n';
 import { opencodeClient } from '@/lib/opencode/client';
 import { cn } from '@/lib/utils';
-import {
-    DEFAULT_HITL_APPROVAL_MODE,
-    HITL_APPROVAL_MODES,
-    readHitlApprovalConfig,
-    type HitlApprovalMode,
-} from '@/components/sections/behavior/hitlApproval';
+import type { PermissionMode } from '@/stores/utils/permissionAutoAccept';
+import { TooltipLabelWithShortcut } from '@/components/ui/action-toolbar';
+import { formatShortcutForDisplay, getEffectiveShortcutCombo } from '@/lib/shortcuts';
+import { useUIStore } from '@/stores/useUIStore';
 
 type PermissionAutoAcceptButtonProps = {
     footerIconButtonClass: string;
     iconSizeClass: string;
     isInteractive: boolean;
-    permissionAutoAcceptEnabled: boolean;
-    handlePermissionAutoAcceptToggle: () => void;
+    /** Already passed through `displayedPermissionMode`. */
+    permissionMode: PermissionMode;
+    handlePermissionModeCycle: () => void;
     withTooltip?: boolean;
 };
 
-const HITL_MODE_LABEL_KEYS: Record<HitlApprovalMode, I18nKey> = {
-    ask: 'settings.behavior.page.toolApproval.option.ask',
-    smart: 'settings.behavior.page.toolApproval.option.smart',
-    auto: 'settings.behavior.page.toolApproval.option.auto',
-};
-
-const HITL_MODE_DESCRIPTION_KEYS: Record<HitlApprovalMode, I18nKey> = {
-    ask: 'settings.behavior.page.toolApproval.option.ask.description',
-    smart: 'settings.behavior.page.toolApproval.option.smart.description',
-    auto: 'settings.behavior.page.toolApproval.option.auto.description',
-};
-
-const HITL_MODE_STATUS_KEYS: Record<HitlApprovalMode, I18nKey> = {
-    ask: 'chat.chatInput.permissionAutoAccept.mode.ask',
-    smart: 'chat.chatInput.permissionAutoAccept.mode.smart',
-    auto: 'chat.chatInput.permissionAutoAccept.mode.auto',
-};
-
-const HITL_MODE_ICON: Record<HitlApprovalMode, { name: 'shield-user' | 'shield-check' | 'flashlight'; color?: string }> = {
-    ask: { name: 'shield-user' },
-    smart: { name: 'shield-check', color: 'var(--status-info)' },
-    auto: { name: 'flashlight', color: 'var(--status-warning)' },
-};
+const MODE_ICON = {
+    ask: { icon: 'shield-user', color: undefined },
+    safety: { icon: 'shield-star', color: 'var(--status-success)' },
+    auto: { icon: 'shield-check', color: 'var(--status-info)' },
+} satisfies Record<PermissionMode, { icon: IconName; color: string | undefined }>;
 
 export const PermissionAutoAcceptButton = React.memo(function PermissionAutoAcceptButton(props: PermissionAutoAcceptButtonProps) {
     const { t } = useI18n();
+    const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
     const {
         footerIconButtonClass,
         iconSizeClass,
         isInteractive,
-        permissionAutoAcceptEnabled,
-        handlePermissionAutoAcceptToggle,
+        permissionMode,
+        handlePermissionModeCycle,
         withTooltip = false,
     } = props;
 
-    // Keep the Hao Work HITL mode local to this button so composer keystrokes
-    // do not re-render ChatInput when the mode menu is opened or changed.
-    const [hitlMode, setHitlMode] = React.useState<HitlApprovalMode>(DEFAULT_HITL_APPROVAL_MODE);
-    const [hitlLoadState, setHitlLoadState] = React.useState<'loading' | 'ready' | 'error'>('loading');
-    const lastSavedHitlModeRef = React.useRef<HitlApprovalMode | null>(null);
-
-    React.useEffect(() => {
-        const abort = new AbortController();
-
-        const load = async () => {
-            try {
-                const config = await opencodeClient.getConfig();
-                if (abort.signal.aborted) return;
-                const nextMode = readHitlApprovalConfig(config).mode;
-                lastSavedHitlModeRef.current = nextMode;
-                setHitlMode(nextMode);
-                setHitlLoadState('ready');
-            } catch (error) {
-                if (abort.signal.aborted) return;
-                console.warn('Failed to load tool approval mode:', error);
-                setHitlLoadState('error');
-            }
-        };
-
-        void load();
-        return () => abort.abort();
-    }, []);
-
-    const handleHitlModeChange = React.useCallback((nextMode: HitlApprovalMode) => {
-        if (hitlLoadState !== 'ready' || nextMode === hitlMode) return;
-        const previousMode = lastSavedHitlModeRef.current ?? DEFAULT_HITL_APPROVAL_MODE;
-        setHitlMode(nextMode);
-        void (async () => {
-            try {
-                await opencodeClient.updateConfig({ _fe_hitlMode: nextMode });
-                lastSavedHitlModeRef.current = nextMode;
-                toast.success(t('settings.behavior.page.toolApproval.toast.saved'));
-            } catch (error) {
-                console.error('Failed to save tool approval mode:', error);
-                setHitlMode((current) => (current === nextMode ? previousMode : current));
-                toast.error(t('settings.behavior.page.toolApproval.toast.saveFailed'));
-            }
-        })();
-    }, [hitlLoadState, hitlMode, t]);
-
-    const statusLabel = t(HITL_MODE_STATUS_KEYS[hitlMode]);
-    const modeIcon = HITL_MODE_ICON[hitlMode];
+    const label = permissionMode === 'safety'
+        ? t('chat.chatInput.permissionMode.safety')
+        : permissionMode === 'auto'
+            ? t('chat.chatInput.permissionMode.auto')
+            : t('chat.chatInput.permissionMode.ask');
+    const { icon, color } = MODE_ICON[permissionMode];
 
     const button = (
         <button
             type="button"
+            onClick={handlePermissionModeCycle}
             className={cn(
                 footerIconButtonClass,
                 'relative rounded-md hover:bg-transparent',
@@ -140,20 +75,10 @@ export const PermissionAutoAcceptButton = React.memo(function PermissionAutoAcce
                     event.stopPropagation();
                 }
             }}
-            aria-label={statusLabel}
-            title={statusLabel}
+            aria-label={label}
+            {...(withTooltip ? {} : { title: label })}
         >
-            <Icon
-                name={modeIcon.name}
-                className={cn(iconSizeClass)}
-                style={modeIcon.color ? { color: modeIcon.color } : undefined}
-            />
-            {permissionAutoAcceptEnabled ? (
-                <span
-                    aria-hidden="true"
-                    className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--status-info)]"
-                />
-            ) : null}
+            <Icon name={icon} className={cn(iconSizeClass)} style={color ? { color } : undefined} />
         </button>
     );
 
@@ -224,7 +149,7 @@ export const PermissionAutoAcceptButton = React.memo(function PermissionAutoAcce
                 </span>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={8}>
-                {statusLabel}
+                <TooltipLabelWithShortcut label={label} shortcut={formatShortcutForDisplay(getEffectiveShortcutCombo('toggle_permission_auto_accept', shortcutOverrides), '')} />
             </TooltipContent>
         </Tooltip>
     );

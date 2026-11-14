@@ -12,15 +12,68 @@ import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { glyphInner } from "./brand/geometry.mjs"
+import { openInAppGlyphs } from "./icons/open-in-apps.mjs"
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, "..")
 const remixPath = resolve(repoRoot, "node_modules/@remixicon/react/index.mjs")
 const outPath = resolve(repoRoot, "packages/ui/src/components/icon/sprite.ts")
 
 const customIconData = new Map([
+  ...openInAppGlyphs,
+  // The OpenChamber glyph from scripts/brand, scaled from its 32 grid to 24.
+  // Its brand stroke turns hairline at row size next to Remixicon's 2px
+  // lines, so the sprite draws it heavier.
+  ["openchamber", `<g transform="scale(0.75)">${glyphInner({ stroke: 2.1 })}</g>`],
+  // OpenCode's mark (packages/identity/mark.svg in the OpenCode repository):
+  // a 4:5 frame with the lower half of its opening filled, drawn as a 2px line
+  // to sit beside Remixicon's line glyphs.
   [
-    "openchamber",
-    `<polygon points="12 2.5 3.5 7.4 3.5 17.2 12 22.1 20.5 17.2 20.5 7.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><polyline points="3.5 7.4 12 12.3 20.5 7.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="12.3" x2="12" y2="22.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="m12 5.5 3.7 2.1L12 9.7 8.3 7.6 12 5.5Zm0 1.5-1 .6 1 .6 1-.6-1-.6Z" fill="currentColor" fill-rule="evenodd"/>`,
+    "opencode",
+    `<path fill="none" stroke="currentColor" stroke-width="2" d="M6 4.5h12v15H6Z"/><path fill="currentColor" d="M9 10.5h6v6H9Z"/>`,
+  ],
+  // Worktree: Remixicon has none. Its folder with the bottom-right corner cut
+  // away for an emblem, as `folder-shared` does, holding a three-node branch
+  // in 2px lines like `git-branch`.
+  [
+    "worktree",
+    `<path fill="currentColor" d="M22 11H20V7H11.5858L9.58579 5H4V19H11V21H3C2.44772 21 2 20.5523 2 20V4C2 3.44772 2.44772 3 3 3H10.4142L12.4142 5H21C21.5523 5 22 5.44772 22 6V11Z"/><path fill="none" stroke="currentColor" stroke-width="2" d="M15.5 14V21M21 14V14.5C21 16.4 19.9 17.5 18 17.5H17.5C16.4 17.5 15.5 18.4 15.5 19.5"/><circle fill="currentColor" cx="15.5" cy="14" r="2"/><circle fill="currentColor" cx="21" cy="14" r="2"/><circle fill="currentColor" cx="15.5" cy="21" r="2"/>`,
+  ],
+  // The Session card toggle: a window whose upper right corner is fenced off
+  // as a card. Drawn from the maintainer's mockup, a 2-unit stroke turned into
+  // the sprite's filled form: the frame is a rounded rectangle (radius 2 on
+  // the stroke's centre, so 3 outside and 1 inside), more rounded than
+  // `layout-left`'s, as wide as the `computer` monitor's screen and as tall as
+  // the monitor with its stand and placed as it is (x 2-22, y 3-22), so the
+  // header's icons match in optical size and its edges land on whole pixels
+  // at 16px; the fence is two straight lines, down from the top edge at x 13.5
+  // to y 13 and across to the right edge, meeting in a square corner and
+  // joining the frame square.
+  [
+    "panel-card",
+    `<path fill="currentColor" fill-rule="evenodd" d="M5 3H19A3 3 0 0 1 22 6V19A3 3 0 0 1 19 22H5A3 3 0 0 1 2 19V6A3 3 0 0 1 5 3ZM5 5A1 1 0 0 0 4 6V19A1 1 0 0 0 5 20H19A1 1 0 0 0 20 19V6A1 1 0 0 0 19 5ZM12.5 5H14.5V12H20V14H12.5Z"/>`,
+  ],
+  // The left sidebar toggle, the Session card toggle's pair: the same rounded
+  // frame, with `layout-left`'s full-height divider (x 7-9).
+  [
+    "panel-left",
+    `<path fill="currentColor" fill-rule="evenodd" d="M5 3H19A3 3 0 0 1 22 6V19A3 3 0 0 1 19 22H5A3 3 0 0 1 2 19V6A3 3 0 0 1 5 3ZM5 5A1 1 0 0 0 4 6V19A1 1 0 0 0 5 20H19A1 1 0 0 0 20 19V6A1 1 0 0 0 19 5ZM7 5H9V20H7Z"/>`,
+  ],
+  // Command Code — corner squares + center square (official logo geometry).
+  [
+    "command-code",
+    `<path fill="currentColor" d="M5.8 5.8h4.8v4.8h-4.8Z M13.4 5.8h4.8v4.8h-4.8Z M10.6 10.6h2.8v2.8h-2.8Z M5.8 13.4h4.8v4.8h-4.8Z M13.4 13.4h4.8v4.8h-4.8Z"/>`,
+  ],
+  // Linear logo, adapted from the supplied 100x100 mark to the 24x24 sprite viewBox.
+  [
+    "linear",
+    `<g transform="translate(1.5 1.5) scale(0.21)"><path fill="currentColor" d="M1.22541 61.5228c-.2225-.9485.90748-1.5459 1.59638-.857L39.3342 97.1782c.6889.6889.0915 1.8189-.857 1.5964C20.0515 94.4522 5.54779 79.9485 1.22541 61.5228ZM.00189135 46.8891c-.01764375.2833.08887215.5599.28957165.7606L52.3503 99.7085c.2007.2007.4773.3075.7606.2896 2.3692-.1476 4.6938-.46 6.9624-.9259.7645-.157 1.0301-1.0963.4782-1.6481L2.57595 39.4485c-.55186-.5519-1.49117-.2863-1.648174.4782-.465915 2.2686-.77832 4.5932-.92588465 6.9624ZM4.21093 29.7054c-.16649.3738-.08169.8106.20765 1.1l64.77602 64.776c.2894.2894.7262.3742 1.1.2077 1.7861-.7956 3.5171-1.6927 5.1855-2.684.5521-.328.6373-1.0867.1832-1.5407L8.43566 24.3367c-.45409-.4541-1.21271-.3689-1.54074.1832-.99132 1.6686-1.88843 3.3994-2.68399 5.1855ZM12.6587 18.074c-.3701-.3701-.393-.9637-.0443-1.3541C21.7795 6.45931 35.1114 0 49.9519 0 77.5927 0 100 22.4073 100 50.0481c0 14.8405-6.4593 28.1724-16.7199 37.3375-.3903.3487-.984.3258-1.3542-.0443L12.6587 18.074Z"/></g>`,
+  ],
+  // Cloudflare logo, reduced to a single currentColor silhouette.
+  [
+    "cloudflare",
+    `<g transform="translate(0.2 0.2) scale(0.18)"><path fill="currentColor" d="M87.295 89.022c.763-2.617.472-5.015-.8-6.796-1.163-1.635-3.125-2.58-5.488-2.689l-44.737-.581c-.291 0-.545-.145-.691-.363s-.182-.509-.109-.8c.145-.436.581-.763 1.054-.8l45.137-.581c5.342-.254 11.157-4.579 13.192-9.885l2.58-6.723c.109-.291.145-.581.073-.872-2.906-13.158-14.644-22.97-28.672-22.97-12.938 0-23.913 8.359-27.838 19.952a13.35 13.35 0 0 0-9.267-2.58c-6.215.618-11.193 5.597-11.811 11.811-.145 1.599-.036 3.162.327 4.615C10.104 70.051 2 78.337 2 88.549c0 .909.073 1.817.182 2.726a.895.895 0 0 0 .872.763h82.57c.472 0 .909-.327 1.054-.8l.617-2.216z"/><path fill="currentColor" d="M101.542 60.275c-.4 0-.836 0-1.236.036-.291 0-.545.218-.654.509l-1.744 6.069c-.763 2.617-.472 5.015.8 6.796 1.163 1.635 3.125 2.58 5.488 2.689l9.522.581c.291 0 .545.145.691.363.145.218.182.545.109.8-.145.436-.581.763-1.054.8l-9.924.582c-5.379.254-11.157 4.579-13.192 9.885l-.727 1.853c-.145.363.109.727.509.727h34.089c.4 0 .763-.254.872-.654.581-2.108.909-4.325.909-6.614 0-13.447-10.975-24.422-24.458-24.422"/></g>`,
   ],
 ])
 
@@ -321,6 +374,10 @@ for (const file of allSrcFiles) {
   while ((nm = iconNameRegex.exec(content)) !== null) {
     addKebabIcon(nm[1] || nm[2])
   }
+  // And every literal of a conditional name, e.g. name={pending ? "loader-4" : "gift"}.
+  for (const expression of content.matchAll(/<Icon\b[^>]*?\bname=\{([^{}]*)\}/g)) {
+    for (const literal of expression[1].matchAll(/["']([a-z][a-z0-9-]*)["']/g)) addKebabIcon(literal[1])
+  }
 
   // Also scan for icon: 'kebab-name' / Icon: 'kebab-name' in object literals.
   const iconPropRegex = /\b[Ii]con:\s*["']([a-z][a-z0-9-]*)["']/g
@@ -339,6 +396,10 @@ for (const file of allSrcFiles) {
   addIconNameFunctionReturns(content)
   addTypedIconNameRecords(content)
   addIconNameVariableAssignments(content)
+  // Shared constants can live outside JSX files and need no naming suffix.
+  for (const match of content.matchAll(/\b(?:const|let|var)\s+\w+\s*:\s*IconName\s*=\s*["']([a-z][a-z0-9-]*)["']/g)) {
+    addKebabIcon(match[1])
+  }
 }
 
 console.log(`Found ${usedIcons.size} unique remixicon names used in source`)

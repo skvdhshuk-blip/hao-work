@@ -213,3 +213,36 @@ test('reports skipped PHP noise when the worker later fails', async () => {
     onEvent: () => {},
   })).rejects.toThrow(/1 PHP warning\/notice line\(s\) skipped/);
 });
+
+test('writes a steer onto the running worker control file', async () => {
+  const { workerPath } = await fixture(`
+    import fs from 'node:fs';
+    let body = '';
+    for await (const chunk of process.stdin) body += chunk;
+    const request = JSON.parse(body);
+    const deadline = Date.now() + 2000;
+    let seen = '';
+    while (Date.now() < deadline) {
+      seen = fs.readFileSync(request.controlPath, 'utf8');
+      if (seen.includes('make it blue')) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    process.stdout.write(JSON.stringify({ type: 'result', text: seen.trim() }) + '\\n');
+  `);
+  const events = [];
+  const supervisor = supervisorFor(workerPath);
+  const running = supervisor.run({
+    sessionId: 'ses_steer',
+    request: { prompt: 'paint' },
+    onEvent: (event) => events.push(event),
+  });
+  for (let attempt = 0; attempt < 50 && !supervisor.isRunning('ses_steer'); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(supervisor.steer('ses_steer', 'make it blue')).toBe(true);
+  expect(supervisor.queue('missing', 'later')).toBe(false);
+  await running;
+  expect(events.at(-1)?.text).toContain('make it blue');
+  expect(events.at(-1)?.text).toContain('"type":"steer"');
+});
+

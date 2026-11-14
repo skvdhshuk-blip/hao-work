@@ -1,6 +1,6 @@
-import { isAbsoluteFilePath, normalizeFilePath } from '@/lib/path-utils';
+import { normalizeFilePath } from '@/lib/path-utils';
 
-export type ParsedFileReference = {
+type ParsedFileReference = {
     path: string;
     line?: number;
     column?: number;
@@ -22,7 +22,28 @@ const KNOWN_BASENAME_PATTERN = Array.from(KNOWN_FILE_BASENAMES)
 
 export const normalizeReferencePath = (value: string): string => normalizeFilePath(value);
 
-export const isAbsoluteReferencePath = (value: string): boolean => isAbsoluteFilePath(value);
+export const localPathFromFileUrl = (value: string): string | null => {
+    let parsed: URL;
+    try {
+        parsed = new URL(value.trim());
+    } catch {
+        return null;
+    }
+
+    if (parsed.protocol !== 'file:' || (parsed.hostname && parsed.hostname !== 'localhost')) {
+        return null;
+    }
+
+    try {
+        const decodedPath = decodeURIComponent(parsed.pathname);
+        if (/^\/[A-Za-z]:\//.test(decodedPath)) {
+            return decodedPath.slice(1);
+        }
+        return decodedPath.startsWith('/') ? decodedPath : null;
+    } catch {
+        return null;
+    }
+};
 
 const trimPathCandidate = (value: string): string => {
     let next = (value || '').trim();

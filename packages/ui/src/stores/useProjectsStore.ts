@@ -1,23 +1,31 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { opencodeClient } from '@/lib/opencode/client';
+import { normalizePath } from '@/lib/pathNormalization';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import type { ProjectEntry } from '@/lib/api/types';
 import type { DesktopSettings } from '@/lib/desktop';
-import { updateDesktopSettings } from '@/lib/persistence';
+import { type SettingsSyncedDetail, updateDesktopSettings } from '@/lib/persistence';
 import { createProjectIdFromPath } from '@/lib/projectId';
+import { parseNonEmptyTrimmedString } from '@/lib/settings/parsers';
 import { getDeferredSafeStorage } from './utils/safeStorage';
 import { useDirectoryStore } from './useDirectoryStore';
 import { streamDebugEnabled } from '@/stores/utils/streamDebug';
-import { PROJECT_COLORS } from '@/lib/projectMeta';
+import { COLOR_PRESETS } from '@/lib/colorPresets';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { getArchivedScopeKey } from '@/lib/sessionFolders/folderScopes';
+import { useSessionFoldersStore } from './useSessionFoldersStore';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
-import { getVSCodeBootstrapConfig, isVSCodeRuntime } from './utils/vscodeRuntime';
+import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
+import { getVSCodeBootstrapConfig } from '@/lib/vscodeBootstrap';
+import { isVSCodeRuntime } from './utils/vscodeRuntime';
+import { z } from 'zod';
+import { requestOpenCodeTrust } from '@/lib/opencodeTrust';
+import { runBackgroundNetworkTask } from '@/lib/background-network';
 
-/** Pick a color key that's least used among existing projects */
+/** Pick the preset colour least used among existing projects */
 const pickAutoColor = (projects: ProjectEntry[]): string => {
-  const colorKeys = PROJECT_COLORS.map((c) => c.key);
+  const colorKeys: string[] = [...COLOR_PRESETS];
   const usageCounts = new Map<string, number>();
   for (const key of colorKeys) {
     usageCounts.set(key, 0);
@@ -45,11 +53,22 @@ interface VSCodeWorkspaceFolderConfig {
 }
 
 interface ProjectsStore {
+  hasServerSnapshot: boolean;
+  serverSnapshotFailed: boolean;
   projects: ProjectEntry[];
   activeProjectId: string | null;
   manualProjectOrder: string[];
 
-  addProject: (path: string, options?: { label?: string; id?: string }) => ProjectEntry | null;
+  addProject: (path: string, options?: { label?: string; id?: string }) => Promise<ProjectEntry | null>;
+  /**
+   * Registers the folder of a session and resolves to the session's folder as
+   * the server confirmed it, or null when `isCurrent` no longer holds. The
+   * server moves a session recorded under a symlinked spelling of its folder
+   * to the canonical path, so the answer can differ from `directory`;
+   * `isCurrent` is asked with each of the two.
+   */
+  adoptSessionProject: (sessionId: string, directory: string, isCurrent: (directory: string) => boolean) => Promise<string | null>;
+  addProjects: (paths: string[]) => Promise<ProjectEntry[]>;
   removeProject: (id: string) => void;
   setActiveProject: (id: string) => void;
   setActiveProjectIdOnly: (id: string) => void;
@@ -59,7 +78,9 @@ interface ProjectsStore {
     icon?: string | null;
     color?: string | null;
     iconBackground?: string | null;
+    defaultAgent?: string | null;
     defaultModel?: string | null;
+    defaultVariant?: string | null;
   }) => void;
   uploadProjectIcon: (id: string, file: File) => Promise<{ ok: boolean; error?: string }>;
   removeProjectIcon: (id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -67,7 +88,7 @@ interface ProjectsStore {
   reorderProjects: (fromIndex: number, toIndex: number) => void;
   resetForRuntimeSwitch: () => void;
   validateProjectPath: (path: string) => ProjectPathValidationResult;
-  synchronizeFromSettings: (settings: DesktopSettings) => void;
+  synchronizeFromSettings: (settings: DesktopSettings, options?: { adoptActiveProject?: boolean }) => void;
   syncVSCodeWorkspaceFolders: (folders: VSCodeWorkspaceFolderConfig[], activePath?: string | null) => ProjectEntry | null;
   getActiveProject: () => ProjectEntry | null;
 }
@@ -159,21 +180,25 @@ const normalizeProjectPath = (value: string): string => {
   const homeDirectory = safeStorage.getItem('homeDirectory') || useDirectoryStore.getState().homeDirectory || '';
   const expanded = resolveTildePath(trimmed, homeDirectory);
 
-  const normalized = expanded.replace(/\\/g, '/');
-  if (normalized === '/') {
-    return '/';
-  }
-  return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized;
+  return normalizePath(expanded) ?? '';
 };
 
+// Folder names are shown verbatim: title-casing them turned `.ssh` into `.Ssh`
+// and made every project look like a name the user never chose.
 const deriveProjectLabel = (path: string): string => {
   const normalized = normalizeProjectPath(path);
   if (!normalized || normalized === '/') {
     return 'Root';
   }
   const segments = normalized.split('/').filter(Boolean);
-  const raw = segments[segments.length - 1] || normalized;
-  return raw.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return segments[segments.length - 1] || normalized;
+};
+
+// Labels auto-derived by older versions were title-cased and persisted. Drop
+// them back to the folder name unless marked as a manual rename.
+const legacyAutoProjectLabel = (path: string): string => {
+  const derived = deriveProjectLabel(path);
+  return derived.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 };
 
 const sanitizeProjectIconImage = (value: unknown): ProjectEntry['iconImage'] | undefined => {
@@ -197,7 +222,7 @@ const sanitizeProjectIconImage = (value: unknown): ProjectEntry['iconImage'] | u
   return { mime, updatedAt, source };
 };
 
-const resolveUploadMime = (file: File): 'image/png' | 'image/jpeg' | 'image/svg+xml' | null => {
+export const resolveUploadMime = (file: File): 'image/png' | 'image/jpeg' | 'image/svg+xml' | null => {
   const rawType = typeof file.type === 'string' ? file.type.trim().toLowerCase() : '';
   if (rawType === 'image/png' || rawType === 'image/jpeg' || rawType === 'image/svg+xml') {
     return rawType;
@@ -261,7 +286,14 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
     };
 
     if (typeof candidate.label === 'string' && candidate.label.trim().length > 0) {
-      project.label = candidate.label.trim();
+      const storedLabel = candidate.label.trim();
+      const provenance = candidate.labelSource === 'manual' || candidate.labelSource === 'auto'
+        ? candidate.labelSource
+        : null;
+      const legacyAuto = provenance !== 'manual' && storedLabel === legacyAutoProjectLabel(normalizedPath);
+      project.label = legacyAuto ? deriveProjectLabel(normalizedPath) : storedLabel;
+      const labelSource = legacyAuto ? 'auto' : provenance;
+      if (labelSource) project.labelSource = labelSource;
     }
     if (typeof candidate.icon === 'string' && candidate.icon.trim().length > 0) {
       project.icon = candidate.icon.trim();
@@ -277,9 +309,17 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
     if (typeof candidate.color === 'string' && candidate.color.trim().length > 0) {
       project.color = candidate.color.trim();
     }
+    const defaultAgent = parseNonEmptyTrimmedString(candidate.defaultAgent, {});
+    if (defaultAgent) {
+      project.defaultAgent = defaultAgent;
+    }
     const defaultModel = normalizeDefaultModel(candidate.defaultModel);
     if (defaultModel) {
       project.defaultModel = defaultModel;
+      // A variant only means something next to the model it belongs to.
+      if (typeof candidate.defaultVariant === 'string' && candidate.defaultVariant.trim().length > 0) {
+        project.defaultVariant = candidate.defaultVariant.trim();
+      }
     }
     if (candidate.iconBackground === null) {
       project.iconBackground = null;
@@ -341,13 +381,7 @@ const readPersistedActiveProjectId = (): string | null => {
   return null;
 };
 
-const cacheProjects = (projects: ProjectEntry[], activeProjectId: string | null) => {
-  try {
-    safeStorage.setItem(getProjectsStorageKey(), JSON.stringify(projects));
-  } catch {
-    // ignored
-  }
-
+const cacheActiveProjectId = (activeProjectId: string | null) => {
   try {
     const activeProjectStorageKey = getActiveProjectStorageKey();
     if (activeProjectId) {
@@ -360,12 +394,32 @@ const cacheProjects = (projects: ProjectEntry[], activeProjectId: string | null)
   }
 };
 
+const cacheProjects = (projects: ProjectEntry[], activeProjectId: string | null) => {
+  try {
+    safeStorage.setItem(getProjectsStorageKey(), JSON.stringify(projects));
+  } catch {
+    // ignored
+  }
+  cacheActiveProjectId(activeProjectId);
+};
+
 const persistProjects = (projects: ProjectEntry[], activeProjectId: string | null, manualOrder?: string[]) => {
   cacheProjects(projects, activeProjectId);
   if (manualOrder) {
     persistManualProjectOrder(manualOrder);
   }
   void updateDesktopSettings({ projects, activeProjectId: activeProjectId ?? undefined });
+};
+
+// Discovery looks the project up in the server's list, so it waits for the
+// debounced write that adds these entries. One project at a time, so adding a
+// batch does not walk every folder at once.
+const discoverIconsOnceSaved = async (get: () => ProjectsStore, entries: ProjectEntry[]) => {
+  const saved = await updateDesktopSettings({ projects: get().projects });
+  if (!saved.ok) return;
+  for (const entry of entries) {
+    await get().discoverProjectIcon(entry.id);
+  }
 };
 
 const persistManualProjectOrder = (manualOrder: string[]) => {
@@ -411,6 +465,7 @@ const createVSCodeWorkspaceProject = (
     id,
     path: normalizedPath,
     label: deriveProjectLabel(normalizedPath),
+    labelSource: 'auto',
     addedAt: existing?.addedAt ?? now,
     lastOpenedAt: isActive ? now : existing?.lastOpenedAt ?? now,
   };
@@ -506,10 +561,13 @@ const vscodeWorkspaceProjectsEqual = (left: ProjectEntry[], right: ProjectEntry[
     return leftProject.id === rightProject.id
       && leftProject.path === rightProject.path
       && leftProject.label === rightProject.label
+      && leftProject.labelSource === rightProject.labelSource
       && leftProject.icon === rightProject.icon
       && leftProject.color === rightProject.color
       && leftProject.iconBackground === rightProject.iconBackground
+      && leftProject.defaultAgent === rightProject.defaultAgent
       && leftProject.defaultModel === rightProject.defaultModel
+      && leftProject.defaultVariant === rightProject.defaultVariant
       && leftProject.addedAt === rightProject.addedAt
       && leftProject.lastOpenedAt === rightProject.lastOpenedAt
       && leftProject.sidebarCollapsed === rightProject.sidebarCollapsed
@@ -548,6 +606,8 @@ if (vscodeWorkspace) {
 export const useProjectsStore = create<ProjectsStore>()(
   devtools((set, get) => ({
     projects: effectiveInitialProjects,
+    hasServerSnapshot: false,
+    serverSnapshotFailed: false,
     activeProjectId: initialActiveProjectId,
     manualProjectOrder: readPersistedManualOrder(),
 
@@ -564,8 +624,69 @@ export const useProjectsStore = create<ProjectsStore>()(
       return { ok: true, normalizedPath: normalized };
     },
 
-    addProject: (path: string, options?: { label?: string; id?: string }) => {
+    adoptSessionProject: async (sessionId, directory, isCurrent) => {
+      if (!isCurrent(directory)) return null;
       if (isVSCodeProjectsRuntime) {
+        const add = getRegisteredRuntimeAPIs()?.vscode?.addWorkspaceFolder;
+        if (!add) throw new Error('Adding workspace folders is unavailable');
+        const folders = await add(directory);
+        if (!isCurrent(directory)) return null;
+        get().syncVSCodeWorkspaceFolders(folders);
+        if (!get().projects.some((entry) => entry.path === directory)) throw new Error('The session workspace folder was not added');
+        return directory;
+      }
+      const response = await runBackgroundNetworkTask(() => isCurrent(directory) ? runtimeFetch('/api/projects/session-directory', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, directory }),
+      }) : Promise.resolve(null));
+      if (!response) return null;
+      if (!response.ok) throw new Error(`Session project registration answered ${response.status}`);
+      const { project, directory: answered } = z.object({
+        project: z.object({
+          id: z.string().min(1), path: z.string().min(1), label: z.string().optional(),
+          addedAt: z.number().optional(), lastOpenedAt: z.number().optional(),
+        }),
+        // The native mobile app can reach a server that predates this field.
+        directory: z.string().min(1).optional(),
+      }).parse(await response.json());
+      const confirmed = answered ?? directory;
+      if (!isCurrent(confirmed)) return null;
+      // This response owns only an append, never a replacement or activation.
+      if (!get().projects.some((entry) => entry.id === project.id)) {
+        const projects = [...get().projects, project];
+        set({ projects });
+        cacheProjects(projects, get().activeProjectId);
+      }
+      // Join the append to this window's pending full-registry mutations. An
+      // older debounced manual add must not overwrite the confirmed project.
+      void updateDesktopSettings({ projects: get().projects });
+      return confirmed;
+    },
+
+    addProject: async (path: string, options?: { label?: string; id?: string }) => {
+      if (isVSCodeProjectsRuntime) {
+        // Projects are scoped to VS Code workspace folders in this runtime.
+        // Adding a folder through the extension host makes the project appear
+        // in the workspace and the new folder is synced back as a project.
+        const validation = get().validateProjectPath(path);
+        if (!validation.ok || !validation.normalizedPath) {
+          return null;
+        }
+        const normalizedPath = validation.normalizedPath;
+        const existing = get().projects.find((project) => project.path === normalizedPath);
+        if (existing) {
+          return existing;
+        }
+        const runtimeApis = getRegisteredRuntimeAPIs();
+        if (runtimeApis?.vscode?.addWorkspaceFolder) {
+          try {
+            if (!await requestOpenCodeTrust(normalizedPath, { deliberate: true })) return null;
+            const folders = await runtimeApis.vscode.addWorkspaceFolder(normalizedPath);
+            return get().syncVSCodeWorkspaceFolders(folders, normalizedPath);
+          } catch {
+            return null;
+          }
+        }
         return null;
       }
       const { validateProjectPath } = get();
@@ -582,12 +703,14 @@ export const useProjectsStore = create<ProjectsStore>()(
       }
 
       const now = Date.now();
-      const label = options?.label?.trim() || deriveProjectLabel(normalizedPath);
+      const requestedLabel = options?.label?.trim();
+      const label = requestedLabel || deriveProjectLabel(normalizedPath);
       const id = createProjectIdFromPath(normalizedPath);
       const entry: ProjectEntry = {
         id,
         path: normalizedPath,
         label,
+        labelSource: requestedLabel ? 'manual' : 'auto',
         color: pickAutoColor(get().projects),
         addedAt: now,
         lastOpenedAt: now,
@@ -601,8 +724,70 @@ export const useProjectsStore = create<ProjectsStore>()(
       }
 
       get().setActiveProject(entry.id);
-      void get().discoverProjectIcon(entry.id);
+      void discoverIconsOnceSaved(get, [entry]);
       return entry;
+    },
+
+    addProjects: async (paths: string[]) => {
+      if (isVSCodeProjectsRuntime) {
+        // VS Code paths are added via runtimeApis.vscode.addWorkspaceFolder,
+        // which is reached only by addProject. Iterate so valid selections
+        // succeed instead of silently returning []. Dedupe by path so the
+        // returned array mirrors the non-VS Code contract.
+        const added: ProjectEntry[] = [];
+        const seen = new Set<string>();
+        for (const path of paths) {
+          if (seen.has(path)) continue;
+          seen.add(path);
+          const project = await get().addProject(path);
+          if (project) {
+            added.push(project);
+          }
+        }
+        return added;
+      }
+      const current = get();
+      const existingPaths = new Set(current.projects.map((project) => project.path));
+      const now = Date.now();
+      const entries: ProjectEntry[] = [];
+      const seenPaths = new Set<string>();
+
+      for (const rawPath of paths) {
+        const validation = get().validateProjectPath(rawPath);
+        if (!validation.ok || !validation.normalizedPath) {
+          continue;
+        }
+        const normalizedPath = validation.normalizedPath;
+        if (existingPaths.has(normalizedPath) || seenPaths.has(normalizedPath)) {
+          continue;
+        }
+        seenPaths.add(normalizedPath);
+        entries.push({
+          id: createProjectIdFromPath(normalizedPath),
+          path: normalizedPath,
+          label: deriveProjectLabel(normalizedPath),
+          labelSource: 'auto',
+          color: pickAutoColor([...current.projects, ...entries]),
+          addedAt: now,
+          lastOpenedAt: now,
+        });
+      }
+
+      if (entries.length === 0) {
+        return [];
+      }
+
+      const nextProjects = [...current.projects, ...entries];
+      set({ projects: nextProjects });
+
+      if (streamDebugEnabled()) {
+        console.info('[ProjectsStore] Added projects', entries);
+      }
+
+      // Mirror addProject: the first newly added project becomes active.
+      get().setActiveProject(entries[0].id);
+      void discoverIconsOnceSaved(get, entries);
+      return entries;
     },
 
     removeProject: (id: string) => {
@@ -625,11 +810,23 @@ export const useProjectsStore = create<ProjectsStore>()(
       // Clean up worktree entries for the removed project
       if (project) {
         const normalizedPath = project.path.replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+        // Its chat folders go for every client of the server: those of the
+        // project root, its archive and each of its worktrees.
+        const folderRoot = normalizePath(project.path);
+        if (folderRoot) {
+          const worktreeScopes = (useSessionUIStore.getState().availableWorktreesByProject.get(normalizedPath) ?? [])
+            .flatMap((worktree) => normalizePath(worktree.path) ?? []);
+          useSessionFoldersStore.getState().forgetScopes([folderRoot, getArchivedScopeKey(folderRoot), ...worktreeScopes]);
+        }
         useSessionUIStore.setState((s) => {
           const next = new Map(s.availableWorktreesByProject);
           next.delete(normalizedPath);
           return { availableWorktreesByProject: next };
         });
+        // Its running isolated spaces stop, but not one whose agent is working. Loaded on demand,
+        // so the feature stays out of this store's module graph.
+        const label = project.label?.trim() || project.path.split('/').pop() || project.path;
+        void import('@/lib/spaces/space-close').then(({ stopSpacesOfClosedProject }) => stopSpacesOfClosedProject(project.path, label));
       }
 
       if (nextActiveId) {
@@ -639,7 +836,7 @@ export const useProjectsStore = create<ProjectsStore>()(
           useDirectoryStore.getState().setDirectory(nextActive.path, { showOverlay: false });
         }
       } else {
-        void useDirectoryStore.getState().goHome();
+        void useDirectoryStore.getState().goToNoProjectDirectory();
       }
     },
 
@@ -676,18 +873,13 @@ export const useProjectsStore = create<ProjectsStore>()(
       if (activeProjectId === id) {
         return;
       }
-      const target = projects.find((project) => project.id === id);
-      if (!target) {
+      if (!projects.some((project) => project.id === id)) {
         return;
       }
 
-      const now = Date.now();
-      const nextProjects = projects.map((project) =>
-        project.id === id ? { ...project, lastOpenedAt: now } : project
-      );
-
-      set({ projects: nextProjects, activeProjectId: id });
-      persistProjects(nextProjects, id, get().manualProjectOrder);
+      set({ activeProjectId: id });
+      cacheActiveProjectId(id);
+      void updateDesktopSettings({ activeProjectId: id });
     },
 
     renameProject: (id: string, label: string) => {
@@ -700,8 +892,8 @@ export const useProjectsStore = create<ProjectsStore>()(
       }
 
       const { projects, activeProjectId } = get();
-      const nextProjects = projects.map((project) =>
-        project.id === id ? { ...project, label: trimmed } : project
+      const nextProjects = projects.map((project): ProjectEntry =>
+        project.id === id ? { ...project, label: trimmed, labelSource: 'manual' } : project
       );
       set({ projects: nextProjects });
       persistProjects(nextProjects, activeProjectId, get().manualProjectOrder);
@@ -712,7 +904,9 @@ export const useProjectsStore = create<ProjectsStore>()(
       icon?: string | null;
       color?: string | null;
       iconBackground?: string | null;
+      defaultAgent?: string | null;
       defaultModel?: string | null;
+      defaultVariant?: string | null;
     }) => {
       if (isVSCodeProjectsRuntime) {
         return;
@@ -723,12 +917,23 @@ export const useProjectsStore = create<ProjectsStore>()(
         const updated = { ...project };
         if (meta.label !== undefined) {
           const trimmed = meta.label.trim();
-          if (trimmed) updated.label = trimmed;
+          if (trimmed) {
+            updated.label = trimmed;
+            updated.labelSource = 'manual';
+          }
         }
         if (meta.icon !== undefined) updated.icon = meta.icon;
         if (meta.color !== undefined) updated.color = meta.color;
         if (meta.iconBackground !== undefined) {
           updated.iconBackground = normalizeIconBackground(meta.iconBackground);
+        }
+        if (meta.defaultAgent !== undefined) {
+          const normalized = parseNonEmptyTrimmedString(meta.defaultAgent, {});
+          if (normalized) {
+            updated.defaultAgent = normalized;
+          } else {
+            delete updated.defaultAgent;
+          }
         }
         if (meta.defaultModel !== undefined) {
           const normalized = normalizeDefaultModel(meta.defaultModel);
@@ -737,6 +942,19 @@ export const useProjectsStore = create<ProjectsStore>()(
           } else {
             delete updated.defaultModel;
           }
+        }
+        if (meta.defaultVariant !== undefined) {
+          const trimmed = meta.defaultVariant?.trim();
+          if (trimmed) {
+            updated.defaultVariant = trimmed;
+          } else {
+            delete updated.defaultVariant;
+          }
+        }
+        // A variant without its model is meaningless, and the model may have
+        // just been cleared in this same update.
+        if (!updated.defaultModel) {
+          delete updated.defaultVariant;
         }
         return updated;
       });
@@ -780,7 +998,7 @@ export const useProjectsStore = create<ProjectsStore>()(
 
         const payload = (await response.json().catch(() => null)) as { settings?: DesktopSettings } | null;
         if (payload?.settings) {
-          get().synchronizeFromSettings(payload.settings);
+          get().synchronizeFromSettings(payload.settings, { adoptActiveProject: false });
         }
         return { ok: true };
       } catch (error) {
@@ -809,7 +1027,7 @@ export const useProjectsStore = create<ProjectsStore>()(
 
         const payload = (await response.json().catch(() => null)) as { settings?: DesktopSettings } | null;
         if (payload?.settings) {
-          get().synchronizeFromSettings(payload.settings);
+          get().synchronizeFromSettings(payload.settings, { adoptActiveProject: false });
         }
         return { ok: true };
       } catch (error) {
@@ -823,6 +1041,7 @@ export const useProjectsStore = create<ProjectsStore>()(
         return { ok: false, error: 'Custom icons are not supported in this runtime' };
       }
 
+      const runtime = getRuntimeKey();
       try {
         const response = await runtimeFetch(`/api/projects/${encodeURIComponent(id)}/icon/discover`, {
           method: 'POST',
@@ -837,15 +1056,23 @@ export const useProjectsStore = create<ProjectsStore>()(
           error?: string;
           skipped?: boolean;
           reason?: string;
-          settings?: DesktopSettings;
+          project?: { iconImage?: unknown } | null;
         } | null;
 
         if (!response.ok) {
           return { ok: false, error: payload?.error || 'Failed to discover project icon' };
         }
 
-        if (payload?.settings) {
-          get().synchronizeFromSettings(payload.settings);
+        // The search can outlast changes made in this window, so the answer's
+        // settings are already old: only this project's icon is taken from it.
+        // A full-list write still queued or in flight lacks the icon and would
+        // erase it on the server, so the list that has it is written after.
+        const iconImage = sanitizeProjectIconImage(payload?.project?.iconImage);
+        if (iconImage && runtime === getRuntimeKey() && get().projects.some((entry) => entry.id === id)) {
+          const projects = get().projects.map((entry) => (entry.id === id ? { ...entry, iconImage } : entry));
+          set({ projects });
+          cacheProjects(projects, get().activeProjectId);
+          void updateDesktopSettings({ projects });
         }
 
         return {
@@ -884,6 +1111,7 @@ export const useProjectsStore = create<ProjectsStore>()(
     },
 
     resetForRuntimeSwitch: () => {
+      set({ hasServerSnapshot: false, serverSnapshotFailed: false });
       if (isVSCodeProjectsRuntime) {
         return;
       }
@@ -895,32 +1123,44 @@ export const useProjectsStore = create<ProjectsStore>()(
       set({ projects, activeProjectId: nextActiveProjectId, manualProjectOrder: [] });
     },
 
-    synchronizeFromSettings: (settings: DesktopSettings) => {
+    synchronizeFromSettings: (settings: DesktopSettings, options?: { adoptActiveProject?: boolean }) => {
       if (isVSCodeProjectsRuntime) {
         return;
       }
+      const adoptActiveProject = options?.adoptActiveProject !== false;
       const incomingProjects = sanitizeProjects(settings.projects ?? []);
       const incomingActive = typeof settings.activeProjectId === 'string' && settings.activeProjectId.trim()
         ? settings.activeProjectId.trim()
         : null;
 
       const current = get();
+      const incomingIds = new Set(incomingProjects.map((p) => p.id));
+      if (!current.hasServerSnapshot || current.serverSnapshotFailed) set({ hasServerSnapshot: true, serverSnapshotFailed: false });
+
+      // The settings document is shared by every window on this server, so
+      // outside a bootstrap sync the incoming active pointer is just another
+      // window's choice — the project LIST still reconciles, but this
+      // window's active project stays its own while it remains valid.
+      const nextActive = adoptActiveProject
+        ? incomingActive
+        : (current.activeProjectId && incomingIds.has(current.activeProjectId)
+          ? current.activeProjectId
+          : incomingActive);
 
       const projectsChanged = JSON.stringify(current.projects) !== JSON.stringify(incomingProjects);
-      const activeChanged = current.activeProjectId !== incomingActive;
+      const activeChanged = current.activeProjectId !== nextActive;
 
       if (!projectsChanged && !activeChanged) {
         return;
       }
 
-      const incomingIds = new Set(incomingProjects.map((p) => p.id));
       const cleanedOrder = get().manualProjectOrder.filter((id) => incomingIds.has(id));
-      set({ projects: incomingProjects, activeProjectId: incomingActive, manualProjectOrder: cleanedOrder });
-      cacheProjects(incomingProjects, incomingActive);
+      set({ projects: incomingProjects, activeProjectId: nextActive, manualProjectOrder: cleanedOrder });
+      cacheProjects(incomingProjects, nextActive);
       persistManualProjectOrder(cleanedOrder);
 
-      if (incomingActive) {
-        const activeProject = incomingProjects.find((project) => project.id === incomingActive);
+      if (activeChanged && nextActive) {
+        const activeProject = incomingProjects.find((project) => project.id === nextActive);
         if (activeProject) {
           opencodeClient.setDirectory(activeProject.path);
           useDirectoryStore.getState().setDirectory(activeProject.path, { showOverlay: false });
@@ -955,7 +1195,7 @@ export const useProjectsStore = create<ProjectsStore>()(
         cacheProjects(result.projects, result.activeProjectId);
       }
 
-      if (result.activeProject) {
+      if (result.activeProject && (activeChanged || activePath)) {
         opencodeClient.setDirectory(result.activeProject.path);
         useDirectoryStore.getState().setDirectory(result.activeProject.path, { showOverlay: false });
       }
@@ -975,10 +1215,15 @@ export const useProjectsStore = create<ProjectsStore>()(
 );
 
 if (typeof window !== 'undefined') {
+  window.addEventListener('openchamber:settings-sync-failed', () => {
+    useProjectsStore.setState({ serverSnapshotFailed: true });
+  });
   window.addEventListener('openchamber:settings-synced', (event: Event) => {
-    const detail = (event as CustomEvent<DesktopSettings>).detail;
-    if (detail && typeof detail === 'object') {
-      useProjectsStore.getState().synchronizeFromSettings(detail);
+    const detail = (event as CustomEvent<SettingsSyncedDetail>).detail;
+    if (detail && typeof detail === 'object' && detail.settings) {
+      useProjectsStore.getState().synchronizeFromSettings(detail.settings, {
+        adoptActiveProject: detail.bootstrap,
+      });
     }
   });
 }

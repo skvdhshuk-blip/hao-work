@@ -9,7 +9,9 @@
     These entitlements are commonly required for Electron/Chromium JIT behavior
     under hardened runtime, plus access the app already relies on (microphone for
     voice notes / dictation, network client for sidecar + remote hosts, shell
-    probing for PATH inheritance).
+    probing for PATH inheritance, Apple Events for agent and terminal commands
+    that control other apps: macOS attributes those to this app, and without the
+    entitlement denies every sender except osascript with no prompt).
   -->
   <key>com.apple.security.cs.allow-jit</key>
   <true/>
@@ -21,12 +23,7 @@
   <true/>
   <key>com.apple.security.cs.allow-dyld-environment-variables</key>
   <true/>
-  <!--
-    Required by the tokimo sandbox runner, which uses Apple Hypervisor.framework
-    to launch the guest VM that isolates agent tool execution. Harmless on hosts
-    that never enable the sandbox; required when it is turned on.
-  -->
-  <key>com.apple.security.hypervisor</key>
+  <key>com.apple.security.automation.apple-events</key>
   <true/>
   <key>com.apple.security.device.audio-input</key>
   <true/>

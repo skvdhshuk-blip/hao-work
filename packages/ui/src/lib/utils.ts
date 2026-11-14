@@ -1,6 +1,5 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { isDesktopShell } from "@/lib/desktop";
 import { matchesFuzzyQuery } from "@/lib/search/fuzzySearch";
 import type { I18nKey } from "@/lib/i18n";
 
@@ -17,7 +16,7 @@ export const isMacOS = (): boolean => {
   return /Macintosh|Mac OS X/.test(navigator.userAgent || '');
 };
 
-const isWindows = (): boolean => {
+export const isWindows = (): boolean => {
   if (typeof navigator === 'undefined') return false;
   return /Windows/.test(navigator.userAgent || '');
 };
@@ -26,24 +25,6 @@ export const getRevealLabelKey = (): I18nKey => {
   if (isMacOS()) return 'common.revealPath.finder';
   if (isWindows()) return 'common.revealPath.fileExplorer';
   return 'common.revealPath.fileManager';
-};
-
-/**
- * Checks if the platform-appropriate modifier key is pressed.
- * On macOS desktop app: Cmd (metaKey), on other platforms or web: Ctrl (ctrlKey).
- * Browser intercepts Cmd shortcuts, so we only use Cmd in the desktop app.
- */
-export const hasModifier = (e: KeyboardEvent | React.KeyboardEvent): boolean => {
-  return isMacOS() && isDesktopShell() ? e.metaKey : e.ctrlKey;
-};
-
-/**
- * Returns the platform-appropriate modifier key label.
- * On macOS desktop app: "⌘", on other platforms or web: "Ctrl"
- * Browser intercepts Cmd shortcuts, so we only show Cmd in the desktop app.
- */
-export const getModifierLabel = (): string => {
-  return isMacOS() && isDesktopShell() ? '⌘' : 'Ctrl';
 };
 
 export const truncatePathMiddle = (
@@ -66,29 +47,22 @@ export const truncatePathMiddle = (
     return source;
   }
 
-  const prefixBudget = Math.max(0, maxLength - (fileName.length + 2));
-  if (prefixBudget <= 0) {
-    return `…/${fileName}`;
-  }
-
-  let prefix = '';
-  for (const segment of segments) {
+  // Keep the segments closest to the file name: in trees full of index.md the
+  // parent directory is the distinguishing part, so drop leading segments.
+  let suffix = fileName;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i];
     if (!segment) {
       continue;
     }
-    const candidate = prefix ? `${prefix}/${segment}` : segment;
-    if (candidate.length > prefixBudget) {
+    const candidate = `${segment}/${suffix}`;
+    if (candidate.length + 2 > maxLength) {
       break;
     }
-    prefix = candidate;
+    suffix = candidate;
   }
 
-  if (!prefix) {
-    const first = segments[0] ?? '';
-    prefix = first ? first.slice(0, prefixBudget) : '';
-  }
-
-  return prefix ? `${prefix}…/${fileName}` : `…/${fileName}`;
+  return `…/${suffix}`;
 };
 
 const normalizePath = (value: string) => {

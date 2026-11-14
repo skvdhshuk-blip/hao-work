@@ -28,14 +28,22 @@ try {
   const iconsRoot = path.join(dataDir, 'icons');
   const thunarIcon = path.join(iconsRoot, 'hicolor', '48x48', 'apps', 'org.xfce.thunar.png');
   const codeIcon = path.join(iconsRoot, 'hicolor', '32x32', 'apps', 'code.png');
+  const terminalIcon = path.join(iconsRoot, 'hicolor', '48x48', 'apps', 'utilities-terminal.png');
+  const helperIcon = path.join(iconsRoot, 'hicolor', '48x48', 'apps', 'helper-app.png');
   await fs.mkdir(userApps, { recursive: true });
   await fs.mkdir(systemApps, { recursive: true });
   await fs.mkdir(path.dirname(thunarIcon), { recursive: true });
   await fs.mkdir(path.dirname(codeIcon), { recursive: true });
+  await fs.mkdir(path.dirname(terminalIcon), { recursive: true });
+  await fs.mkdir(path.dirname(helperIcon), { recursive: true });
   // Minimal valid 1x1 PNG.
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  // Distinct PNG so the helper-app icon is distinguishable from the terminal theme icon.
+  const helperPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBASZNV9oAAAAASUVORK5CYII=', 'base64');
   await fs.writeFile(thunarIcon, png);
   await fs.writeFile(codeIcon, png);
+  await fs.writeFile(terminalIcon, png);
+  await fs.writeFile(helperIcon, helperPng);
 
   const codeDesktopPath = path.join(userApps, 'code.desktop');
   await fs.writeFile(codeDesktopPath, [
@@ -52,6 +60,23 @@ try {
   await fs.writeFile(path.join(userApps, 'missing-name.desktop'), '[Desktop Entry]\nType=Application\nExec=missing %f\n', 'utf8');
   await fs.writeFile(path.join(userApps, 'missing-exec.desktop'), '[Desktop Entry]\nType=Application\nName=Missing Exec\nIcon=missing\n', 'utf8');
   await fs.writeFile(path.join(systemApps, 'ghostty.desktop'), '[Desktop Entry]\nType=Application\nName=Ghostty\nExec=ghostty --working-directory=%f --open-uri=%u\nIcon=ghostty\n', 'utf8');
+  // A non-terminal app that launches itself via xdg-terminal-exec (e.g. a TUI
+  // helper). Its Exec line contains "xdg-terminal-exec", which the loose
+  // substring match in desktopEntryMatchesApp would mis-attribute to the
+  // generic "terminal" appId. Categories=Utility; (not TerminalEmulator) is
+  // the signal that this is NOT a terminal emulator.
+  await fs.writeFile(path.join(systemApps, 'helper-app.desktop'), [
+    '[Desktop Entry]',
+    'Type=Application',
+    'NoDisplay=false',
+    'Terminal=false',
+    'StartupNotify=true',
+    'Exec=/usr/bin/xdg-terminal-exec --app-id=helper-app --title="Helper App" -- /usr/bin/helper-script',
+    `Icon=${helperIcon}`,
+    'Name=Helper App',
+    'Categories=Utility;',
+    '',
+  ].join('\n'), 'utf8');
   await fs.writeFile(path.join(systemApps, 'plain.desktop'), '[Desktop Entry]\nType=Application\nName=Plain Editor\nExec=plain-editor --flag\nIcon=plain\n', 'utf8');
   await fs.writeFile(path.join(systemApps, 'thunar.desktop'), [
     '[Desktop Entry]',
@@ -69,7 +94,7 @@ try {
   assert(dirs.includes(systemApps), 'XDG_DATA_DIRS applications dir should be included');
 
   const entries = await readLinuxDesktopEntries({ applicationDirs: [userApps, systemApps], env, homeDir: tempRoot });
-  assert(entries.length === 4, `expected 4 visible valid entries, got ${entries.length}`);
+  assert(entries.length === 5, `expected 5 visible valid entries, got ${entries.length}`);
   assert(entries.some((entry) => entry.name === 'Visual Studio Code'), 'valid desktop entry should be parsed');
   assert(entries.some((entry) => entry.name === 'Ghostty'), 'system desktop entry should be parsed');
   assert(entries.some((entry) => entry.name === 'Plain Editor'), 'no-placeholder entry should be parsed');
@@ -127,6 +152,28 @@ try {
   const codeInfo = appInfos.find((entry) => entry.name === 'Visual Studio Code');
   assert(typeof codeInfo?.iconDataUrl === 'string' && codeInfo.iconDataUrl.startsWith('data:image/png;base64,'), 'desktop app should resolve Icon= theme PNG to data URL');
 
+  const terminalEmulatorEntry = parseDesktopEntry([
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=MyConsole',
+    'Exec=myconsole --working-directory=%f',
+    'Icon=utilities-terminal',
+    'Categories=TerminalEmulator;',
+    '',
+  ].join('\n'), path.join(systemApps, 'myconsole.desktop'));
+  const helperEntry = entries.find((entry) => entry.name === 'Helper App');
+  const terminalIconInfos = await buildLinuxInstalledApps(['Terminal'], {
+    entries: [helperEntry, terminalEmulatorEntry],
+    env,
+    homeDir: tempRoot,
+    execFileSyncImpl: () => 'thunar.desktop',
+  });
+  const terminalInfo = terminalIconInfos.find((entry) => entry.name === 'Terminal');
+  const expectedTerminalIconDataUrl = `data:image/png;base64,${png.toString('base64')}`;
+  const expectedHelperIconDataUrl = `data:image/png;base64,${helperPng.toString('base64')}`;
+  assert(terminalInfo?.iconDataUrl === expectedTerminalIconDataUrl, `Terminal should resolve the TerminalEmulator entry icon, got ${terminalInfo?.iconDataUrl}`);
+  assert(terminalInfo?.iconDataUrl !== expectedHelperIconDataUrl, 'Terminal icon must not resolve to a non-terminal entry whose Exec uses a terminal launcher (loose name/exec match regression)');
+
   const fetchedIcons = await fetchLinuxAppIcons(['Finder', 'Visual Studio Code'], {
     entries,
     env,
@@ -141,16 +188,61 @@ try {
   assert(specs[0].program === '/opt/Visual Studio Code/code', 'desktop entry opener should use parsed program');
   assert(specs[0].args.includes('/tmp/My Project'), 'desktop entry opener should include target');
 
-  const terminalFileSpecs = buildLinuxOpenSpecs({ targetPath: '/tmp/My Project/file.txt', appId: 'ghostty', appName: 'Ghostty', targetKind: 'file', entries, env });
+  const terminalBin = path.join(tempRoot, 'terminal-bin');
+  await fs.mkdir(terminalBin, { recursive: true });
+  const terminalRunMarker = path.join(tempRoot, 'xdg-terminal-exec-ran');
+  // Leaves a marker on any run: building the candidates must not run the binary.
+  await fs.writeFile(path.join(terminalBin, 'xdg-terminal-exec'), `#!/bin/sh\n: > '${terminalRunMarker}'\n`, { mode: 0o755 });
+  const defaultTerminalEnv = { ...env, PATH: terminalBin };
+
+  const terminalFileSpecs = buildLinuxOpenSpecs({ targetPath: '/tmp/My Project/file.txt', appId: 'ghostty', appName: 'Ghostty', targetKind: 'file', entries, env: defaultTerminalEnv });
   assert(terminalFileSpecs[0]?.program === 'ghostty', 'terminal desktop entry should be preferred when present');
   assert(terminalFileSpecs[0]?.args.join('|') === '--working-directory=/tmp/My Project|--open-uri=/tmp/My Project', `terminal file target should use dirname, got ${terminalFileSpecs[0]?.args.join('|')}`);
   assert(terminalFileSpecs[1]?.program === 'xdg-terminal-exec', 'terminal specs should include xdg-terminal-exec fallback after desktop entry');
-  assert(terminalFileSpecs[1]?.args.join('|') === '--working-directory|/tmp/My Project', `terminal fallback should use file dirname, got ${terminalFileSpecs[1]?.args.join('|')}`);
+  assert(terminalFileSpecs[1]?.args.join('|') === '--dir=/tmp/My Project', `terminal fallback should use the --dir= form with the file dirname, got ${terminalFileSpecs[1]?.args.join('|')}`);
 
-  const fallbackTerminalSpecs = buildLinuxOpenSpecs({ targetPath: '/tmp/My Project', appId: 'terminal', appName: 'Terminal', targetKind: 'project', entries, env });
+  const fallbackTerminalSpecs = buildLinuxOpenSpecs({ targetPath: '/tmp/My Project', appId: 'terminal', appName: 'Terminal', targetKind: 'project', entries, env: defaultTerminalEnv });
   assert(fallbackTerminalSpecs.length >= 1, 'missing terminal desktop entry should include xdg-terminal-exec fallback');
   assert(fallbackTerminalSpecs[0]?.program === 'xdg-terminal-exec', 'missing terminal entry should use xdg-terminal-exec first');
-  assert(fallbackTerminalSpecs[0]?.args.join('|') === '--working-directory|/tmp/My Project', `xdg-terminal-exec fallback should keep working directory args, got ${fallbackTerminalSpecs[0]?.args.join('|')}`);
+  assert(fallbackTerminalSpecs[0]?.args.join('|') === '--dir=/tmp/My Project', `xdg-terminal-exec fallback should use the --dir= form, got ${fallbackTerminalSpecs[0]?.args.join('|')}`);
+  assert(!fallbackTerminalSpecs.some((spec) => (spec.args || []).some((arg) => arg.includes('helper-script'))), 'non-terminal entry using a terminal launcher must not be launched for the generic terminal appId');
+
+  const terminalWithoutXdgSpecs = buildLinuxOpenSpecs({ targetPath: '/tmp/My Project', appId: 'terminal', appName: 'Terminal', targetKind: 'project', entries, env });
+  assert(terminalWithoutXdgSpecs.length === 0, `without xdg-terminal-exec and a terminal entry nothing can take the directory, got ${terminalWithoutXdgSpecs.map((spec) => spec.program).join('|')}`);
+
+  const ptyxisEntry = parseDesktopEntry([
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=Ptyxis',
+    'Exec=ptyxis --working-directory=%f',
+    'Categories=TerminalEmulator;',
+    '',
+  ].join('\n'), '/tmp/org.gnome.Ptyxis.desktop');
+  const terminalEmulatorSpecs = buildLinuxOpenSpecs({
+    targetPath: '/tmp/My Project',
+    appId: 'terminal',
+    appName: 'Terminal',
+    targetKind: 'project',
+    entries: [ptyxisEntry, ...entries],
+    env,
+  });
+  assert(terminalEmulatorSpecs.length === 1, `only the ptyxis entry can take the directory, got ${terminalEmulatorSpecs.map((spec) => spec.program).join('|')}`);
+  assert(terminalEmulatorSpecs[0]?.program === 'ptyxis', `terminal emulator entry should be preferred, got ${terminalEmulatorSpecs[0]?.program}`);
+  assert(terminalEmulatorSpecs[0]?.args.join('|') === '--working-directory=/tmp/My Project', `ptyxis should receive working directory, got ${terminalEmulatorSpecs[0]?.args.join('|')}`);
+  assert(!terminalEmulatorSpecs.some((spec) => (spec.args || []).some((arg) => arg.includes('helper-script'))), 'non-terminal entry using a terminal launcher must not be launched when a real terminal emulator entry exists');
+
+  const defaultTerminalFirstSpecs = buildLinuxOpenSpecs({
+    targetPath: '/tmp/My Project',
+    appId: 'terminal',
+    appName: 'Terminal',
+    targetKind: 'project',
+    entries: [ptyxisEntry, ...entries],
+    env: defaultTerminalEnv,
+  });
+  assert(defaultTerminalFirstSpecs[0]?.program === 'xdg-terminal-exec', `the system default terminal should come first, got ${defaultTerminalFirstSpecs[0]?.program}`);
+  assert(defaultTerminalFirstSpecs[0]?.args.join('|') === '--dir=/tmp/My Project', `the system default terminal should get the directory, got ${defaultTerminalFirstSpecs[0]?.args.join('|')}`);
+  assert(defaultTerminalFirstSpecs[1]?.program === 'ptyxis', `the terminal entry should stay as the next candidate, got ${defaultTerminalFirstSpecs[1]?.program}`);
+  assert(!await fs.stat(terminalRunMarker).catch(() => null), 'building terminal candidates must not run xdg-terminal-exec');
 
   const defaultSpecs = buildLinuxOpenSpecs({ targetPath: '/tmp/My Project', appId: 'finder', appName: 'Finder', targetKind: 'project', entries, env });
   assert(defaultSpecs[0].kind === 'default', 'finder maps to safe default Linux opener spec');
@@ -169,6 +261,9 @@ try {
     specs,
     terminalFileSpecs,
     fallbackTerminalSpecs,
+    terminalWithoutXdgSpecs,
+    terminalEmulatorSpecs,
+    defaultTerminalFirstSpecs,
     defaultSpecs,
   }, null, 2));
 } finally {

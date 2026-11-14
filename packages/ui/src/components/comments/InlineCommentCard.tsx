@@ -1,18 +1,12 @@
 import React, { useState } from 'react';
 import type { InlineCommentDraft } from '@/stores/useInlineCommentDraftStore';
-import { useOptionalThemeSystem } from '@/contexts/useThemeSystem';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Icon } from "@/components/icon/Icon";
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
+import { isWholeFileComment } from './wholeFileComment';
 
 interface InlineCommentCardProps {
   draft: InlineCommentDraft;
@@ -20,125 +14,118 @@ interface InlineCommentCardProps {
   onDelete: () => void;
   className?: string;
   maxWidth?: number;
+  /** Beside review comments, the card says it goes to the agent and leaves the file to its place under the lines. */
+  forAgent?: boolean;
 }
 
+const HEADER_ACTION_CLASS = 'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-interactive-hover hover:text-foreground';
+
+/**
+ * A saved inline comment shown under its lines in the diff/editor: a header
+ * naming the file and range with direct edit/remove actions, and the comment
+ * text below, on one tone so the card stands apart from the lines around it.
+ */
 export function InlineCommentCard({
   draft,
   onEdit,
   onDelete,
   className,
   maxWidth,
+  forAgent = false,
 }: InlineCommentCardProps) {
   const { t } = useI18n();
-  const themeContext = useOptionalThemeSystem();
-  const currentTheme = themeContext?.currentTheme;
   const [isOpen, setIsOpen] = useState(false);
-  const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
-  const draftText = typeof draft.text === 'string' ? draft.text : '';
-  
+  const draftText = draft.text;
+
   // Check if content is long enough to warrant collapsing (rough estimate)
-  // In a real app we might measure line height, but length check is a good proxy for now
   const isLongContent = draftText.length > 150 || draftText.split('\n').length > 3;
 
   return (
-    <ContextMenu open={isContextMenuOpen} onOpenChange={setIsContextMenuOpen}>
-      <ContextMenuTrigger
-        render={
-          <div
-            className={cn(
-              "rounded-lg border shadow-none w-full max-w-[min(100%,calc(var(--oc-context-panel-width,100vw)-var(--oc-editor-gutter-width,0px)))] overflow-hidden transition-all duration-200",
-              className
-            )}
-            style={{
-              backgroundColor: currentTheme?.colors?.surface?.elevated,
-              borderColor: currentTheme?.colors?.interactive?.border,
-              maxWidth: maxWidth ? `${Math.max(200, Math.floor(maxWidth))}px` : undefined,
-            }}
-            data-comment-card="true"
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setIsContextMenuOpen(true);
-            }}
-          />
-        }
-      >
-      <div className="flex items-start justify-between gap-2 p-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground mb-1.5">
-            <span className="truncate max-w-[200px]" title={draft.fileLabel}>
-              {draft.fileLabel}
-            </span>
-            <span>•</span>
-            <span>{t('inlineComment.range.lines', { start: draft.startLine, end: draft.endLine })}</span>
-            {draft.side && <span>({draft.side})</span>}
-          </div>
-          
-          <Collapsible open={isOpen || !isLongContent} onOpenChange={setIsOpen}>
-            <div className={cn("text-sm whitespace-pre-wrap break-words leading-relaxed", !isOpen && isLongContent && "line-clamp-3")}>
-              {draftText}
-            </div>
-            
-            {isLongContent && (
-              <CollapsibleTrigger asChild>
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  className="h-6 px-0 mt-1 text-xs text-muted-foreground hover:text-foreground w-full justify-start"
-                >
-                  {isOpen ? (
-                    <>
-                      <Icon name="arrow-up-s" className="size-3 mr-1" />
-                      {t('inlineComment.actions.showLess')}
-                    </>
-                  ) : (
-                    <>
-                      <Icon name="arrow-down-s" className="size-3 mr-1" />
-                      {t('inlineComment.actions.showMore')}
-                    </>
-                  )}
-                </Button>
-              </CollapsibleTrigger>
-            )}
-            
-            <CollapsibleContent>
-              {/* Used for animation purposes if we want to animate height */}
-            </CollapsibleContent>
-          </Collapsible>
-        </div>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 -mr-1 text-muted-foreground hover:text-foreground"
+    <div
+      className={cn(
+        'w-full max-w-[min(100%,calc(var(--oc-context-panel-width,100vw)-var(--oc-editor-gutter-width,0px)))] overflow-hidden rounded-xl border border-[var(--interactive-border)] bg-[var(--surface-elevated)] shadow-none',
+        className
+      )}
+      style={{
+        maxWidth: maxWidth ? `${Math.max(200, Math.floor(maxWidth))}px` : undefined,
+      }}
+      data-comment-card="true"
+    >
+      <div className="flex items-center gap-1.5 px-3 pt-2">
+        {forAgent ? <Icon name="attachment-2" className="size-3.5 shrink-0 text-muted-foreground" /> : null}
+        <span className="min-w-0 max-w-[200px] truncate text-xs font-medium text-foreground" title={draft.fileLabel}>
+          {forAgent ? t('review.card.forAgent') : draft.fileLabel}
+        </span>
+        <span className="shrink-0 text-xs text-muted-foreground">•</span>
+        {/* "Whole file" is short and never shrinks, so a narrow panel truncates the path instead. */}
+        <span className={cn('me-auto text-xs text-muted-foreground', isWholeFileComment(draft) ? 'shrink-0' : 'min-w-0 truncate')}>
+          {isWholeFileComment(draft)
+            ? t('inlineComment.range.wholeFile')
+            : <>{t('inlineComment.range.lines', { start: draft.startLine, end: draft.endLine })}{draft.side ? ` (${draft.side})` : ''}</>}
+        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className={HEADER_ACTION_CLASS}
+              style={{ minHeight: 0, minWidth: 0 }}
+              onClick={onEdit}
+              aria-label={t('inlineComment.actions.editComment')}
             >
-              <Icon name="more" className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={onEdit}>
-              <Icon name="edit" className="size-4 mr-2" />
-              {t('inlineComment.actions.editComment')}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onDelete} className="text-destructive">
-              <Icon name="delete-bin" className="size-4 mr-2" />
-              {t('inlineComment.actions.deleteComment')}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <Icon name="pencil" className="h-3 w-3" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={6}>{t('inlineComment.actions.editComment')}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className={HEADER_ACTION_CLASS}
+              style={{ minHeight: 0, minWidth: 0 }}
+              onClick={onDelete}
+              aria-label={t('inlineComment.actions.deleteComment')}
+            >
+              <Icon name="close" className="h-3 w-3" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={6}>{t('inlineComment.actions.deleteComment')}</TooltipContent>
+        </Tooltip>
       </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onClick={onEdit}>
-          <Icon name="edit" className="size-4 mr-2" />
-          {t('inlineComment.actions.editComment')}
-        </ContextMenuItem>
-        <ContextMenuItem onClick={onDelete} className="text-destructive focus:text-destructive">
-          <Icon name="delete-bin" className="size-4 mr-2" />
-          {t('inlineComment.actions.deleteComment')}
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+
+      <div className="px-3 pb-2 pt-1">
+        <Collapsible open={isOpen || !isLongContent} onOpenChange={setIsOpen}>
+          <div className={cn('whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground', !isOpen && isLongContent && 'line-clamp-3')}>
+            {draftText}
+          </div>
+
+          {isLongContent && (
+            <CollapsibleTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mt-1 h-6 w-full justify-start px-0 text-xs text-muted-foreground hover:text-foreground"
+              >
+                {isOpen ? (
+                  <>
+                    <Icon name="arrow-up-s" className="me-1 size-3" />
+                    {t('inlineComment.actions.showLess')}
+                  </>
+                ) : (
+                  <>
+                    <Icon name="arrow-down-s" className="me-1 size-3" />
+                    {t('inlineComment.actions.showMore')}
+                  </>
+                )}
+              </Button>
+            </CollapsibleTrigger>
+          )}
+
+          <CollapsibleContent>
+            {/* Used for animation purposes if we want to animate height */}
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+    </div>
   );
 }

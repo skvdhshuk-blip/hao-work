@@ -1,9 +1,13 @@
 import { create } from 'zustand';
-import type { Session } from '@opencode-ai/sdk/v2';
-import { isSessionPinned } from '@/stores/useSessionPinnedStore';
-import { normalizePath } from '@/lib/pathNormalization';
+import type { Session } from '@/lib/opencode/model';
+import { isSessionPinned } from '@/lib/sessionPins';
+import { countSyncPerformance } from './performance-diagnostics';
 
-type SessionActivityPhase = 'active' | 'settled';
+export type SessionActivityPhase = 'active' | 'settled';
+
+export type SessionOrderingMutation =
+  | { type: 'observe'; sessionId: string; phase: SessionActivityPhase }
+  | { type: 'remove'; sessionId: string };
 
 type SessionOrderingState = {
   rankById: Map<string, number>;
@@ -18,6 +22,7 @@ let lastRank = 0;
 export const useSessionOrderingStore = create<SessionOrderingState>(() => ({
   rankById: new Map(),
 }));
+useSessionOrderingStore.subscribe(() => countSyncPerformance('orderingPublications'));
 
 const nextRank = (): number => {
   lastRank = Math.max(lastRank + 1, Date.now());
@@ -38,16 +43,46 @@ const promoteSessions = (sessionIds: Iterable<string>, useSharedRank = false): v
   });
 };
 
+/** Promote a confirmed restore without deriving or changing session activity. */
+export const promoteRestoredSessionOrdering = (sessionId: string): void => {
+  if (!sessionId) return;
+  promoteSessions([sessionId]);
+};
+
 export const observeSessionActivityEvent = (
   sessionId: string,
   phase: SessionActivityPhase,
 ): void => {
-  const previous = phaseById.get(sessionId);
-  phaseById.set(sessionId, phase);
+  applySessionOrderingMutations([{ type: 'observe', sessionId, phase }]);
+};
 
-  if (previous === phase) return;
-  if (previous === undefined && phase === 'settled') return;
-  promoteSessions([sessionId]);
+export const applySessionOrderingMutations = (
+  mutations: readonly SessionOrderingMutation[],
+): void => {
+  if (mutations.length === 0) return;
+  const currentRanks = useSessionOrderingStore.getState().rankById;
+  let rankById: Map<string, number> | null = null;
+
+  for (const mutation of mutations) {
+    if (mutation.type === 'remove') {
+      phaseById.delete(mutation.sessionId);
+      baselineRankById.delete(mutation.sessionId);
+      if ((rankById ?? currentRanks).has(mutation.sessionId)) {
+        rankById ??= new Map(currentRanks);
+        rankById.delete(mutation.sessionId);
+      }
+      continue;
+    }
+
+    const previous = phaseById.get(mutation.sessionId);
+    phaseById.set(mutation.sessionId, mutation.phase);
+    if (previous === mutation.phase) continue;
+    if (previous === undefined && mutation.phase === 'settled') continue;
+    rankById ??= new Map(currentRanks);
+    rankById.set(mutation.sessionId, nextRank());
+  }
+
+  if (rankById) useSessionOrderingStore.setState({ rankById });
 };
 
 export const reconcileSessionActivitySnapshot = (
@@ -71,14 +106,7 @@ export const reconcileSessionActivitySnapshot = (
 };
 
 export const removeSessionOrdering = (sessionId: string): void => {
-  phaseById.delete(sessionId);
-  baselineRankById.delete(sessionId);
-  useSessionOrderingStore.setState((state) => {
-    if (!state.rankById.has(sessionId)) return state;
-    const rankById = new Map(state.rankById);
-    rankById.delete(sessionId);
-    return { rankById };
-  });
+  applySessionOrderingMutations([{ type: 'remove', sessionId }]);
 };
 
 export const resetSessionOrdering = (): void => {
@@ -92,8 +120,14 @@ const finiteTime = (value: unknown): number => (
   typeof value === 'number' && Number.isFinite(value) ? value : 0
 );
 
-const updatedAt = (session: Session): number => (
-  finiteTime(session.time?.updated) || finiteTime(session.time?.created)
+/**
+ * When the session last had a conversation. `time.idle` moves only when a turn
+ * ends; `time.updated` also moves on title and metadata writes, which must not
+ * lift a session nobody touched. Sessions migrated from 1.x have no `idle`
+ * until their first 2.x turn, so they fall back to `updated`.
+ */
+export const getSessionActivityTime = (session: Session): number => (
+  finiteTime(session.time?.idle) || finiteTime(session.time?.updated) || finiteTime(session.time?.created)
 );
 
 const createdAt = (session: Session): number => finiteTime(session.time?.created);
@@ -107,7 +141,7 @@ const sessionDirectory = (session: Session): string | null => {
     directory?: string | null;
     project?: { worktree?: string | null } | null;
   };
-  return normalizePath(record.directory ?? null) ?? normalizePath(record.project?.worktree ?? null);
+  return record.directory ?? record.project?.worktree ?? null;
 };
 
 const baselineRank = (session: Session, pinned: boolean): number => {
@@ -115,7 +149,7 @@ const baselineRank = (session: Session, pinned: boolean): number => {
   const key = pinned ? 'created' : 'updated';
   const existingRank = existing?.[key];
   if (existingRank !== undefined) return existingRank;
-  const rank = pinned ? createdAt(session) : updatedAt(session);
+  const rank = pinned ? createdAt(session) : getSessionActivityTime(session);
   baselineRankById.set(session.id, { ...existing, [key]: rank });
   return rank;
 };
@@ -135,12 +169,12 @@ export const raiseSessionOrderingBaselines = (sessions: Iterable<Session>): void
   let baselinesChanged = false;
 
   for (const session of sessions) {
-    const fresh = updatedAt(session);
+    const fresh = getSessionActivityTime(session);
     const liveRank = currentRanks.get(session.id);
     if (liveRank !== undefined) {
       // A live rank frozen BEFORE this newer authoritative stamp is stale —
       // the session was active again while this client wasn't watching (its
-      // transition events never arrived, e.g. другий пристрій + сон). Ranks
+      // transition events never arrived, e.g. another device + sleep). Ranks
       // share the epoch-ms scale with `updated`, so raising is well-ordered.
       if (fresh > liveRank) {
         nextRanks = nextRanks ?? new Map(currentRanks);
@@ -197,12 +231,39 @@ export const orderSessionsByLifecycleScopes = (
   sessions: Session[],
   pinnedSessionIds: Set<string>,
   rankById: ReadonlyMap<string, number>,
+  hierarchy?: {
+    rootIds: readonly string[];
+    childrenByParentId: ReadonlyMap<string, readonly string[]>;
+  },
 ): Session[] => {
+  countSyncPerformance('sidebarOrderBuilds');
   const sessionIds = new Set(sessions.map((session) => session.id));
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const roots: Session[] = [];
   const childrenByParent = new Map<string, Session[]>();
+  const indexedIds = new Set<string>();
+
+  if (hierarchy) {
+    for (const sessionId of hierarchy.rootIds) {
+      const session = sessionById.get(sessionId);
+      if (!session) continue;
+      indexedIds.add(sessionId);
+      roots.push(session);
+    }
+    for (const [parentId, childIds] of hierarchy.childrenByParentId) {
+      if (!sessionIds.has(parentId)) continue;
+      const children = childIds.flatMap((sessionId) => {
+        const session = sessionById.get(sessionId);
+        if (!session) return [];
+        indexedIds.add(sessionId);
+        return [session];
+      });
+      if (children.length > 0) childrenByParent.set(parentId, children);
+    }
+  }
 
   for (const session of sessions) {
+    if (indexedIds.has(session.id)) continue;
     const parentId = parentIdOf(session);
     if (!parentId || !sessionIds.has(parentId)) {
       roots.push(session);
@@ -217,9 +278,34 @@ export const orderSessionsByLifecycleScopes = (
     }
   }
 
-  const compare = (left: Session, right: Session) => (
-    compareSessionsByLifecycleOrder(left, right, pinnedSessionIds, rankById)
-  );
+  const metadataById = new Map(sessions.map((session) => {
+    const parentId = parentIdOf(session);
+    const pinned = isSessionPinned(pinnedSessionIds, sessionDirectory(session), session.id);
+    const fallback = baselineRank(session, pinned);
+    return [session.id, {
+      parentId,
+      pinned,
+      fallback,
+      lifecycle: rankById.get(session.id) ?? fallback,
+      created: baselineRank(session, true),
+    }] as const;
+  }));
+  countSyncPerformance('sidebarOrderMetadataEntries', metadataById.size);
+  const compare = (left: Session, right: Session): number => {
+    const leftMetadata = metadataById.get(left.id);
+    const rightMetadata = metadataById.get(right.id);
+    if (!leftMetadata || !rightMetadata) return left.id.localeCompare(right.id);
+    if (leftMetadata.pinned !== rightMetadata.pinned) return leftMetadata.pinned ? -1 : 1;
+    if (leftMetadata.parentId === rightMetadata.parentId) {
+      const rankDelta = rightMetadata.lifecycle - leftMetadata.lifecycle;
+      if (rankDelta !== 0) return rankDelta;
+    }
+    const baselineDelta = rightMetadata.fallback - leftMetadata.fallback;
+    if (baselineDelta !== 0) return baselineDelta;
+    const createdDelta = rightMetadata.created - leftMetadata.created;
+    if (createdDelta !== 0) return createdDelta;
+    return left.id.localeCompare(right.id);
+  };
   roots.sort(compare);
   for (const siblings of childrenByParent.values()) {
     siblings.sort(compare);
@@ -238,7 +324,8 @@ export const orderSessionsByLifecycleScopes = (
   for (const root of roots) {
     append(root);
   }
-  for (const session of sessions) {
+  const remaining = sessions.filter((session) => !visited.has(session.id)).sort(compare);
+  for (const session of remaining) {
     append(session);
   }
   return ordered;

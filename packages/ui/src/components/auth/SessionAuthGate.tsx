@@ -7,15 +7,18 @@ import { toast } from '@/components/ui';
 import { invokeDesktop, isDesktopShell, isVSCodeRuntime } from '@/lib/desktop';
 import { syncDesktopSettings, initializeAppearancePreferences } from '@/lib/persistence';
 import { applyPersistedDirectoryPreferences } from '@/lib/directoryPersistence';
+import { ensureHomeDirectoryResolved, useDirectoryStore } from '@/stores/useDirectoryStore';
 import { DesktopHostSwitcherInline } from '@/components/desktop/DesktopHostSwitcher';
 import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { installAuthSessionFocusWatch, useAuthSessionStore } from '@/lib/runtime-auth-expiry';
+import { AuthExpiredBanner } from './AuthExpiredBanner';
 import { getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged, switchRuntimeEndpoint } from '@/lib/runtime-switch';
 import { desktopHostsGet, desktopHostsSet, getDesktopHostApiUrl, normalizeHostUrl } from '@/lib/desktopHosts';
-import { resolveStatusCheckFailureState, runtimeIdentityMatches, type GateState, type RuntimeIdentity } from './sessionAuthGateState';
+import { runtimeIdentityMatches, type GateState, type RuntimeIdentity } from './sessionAuthGateState';
 import {
   authenticateWithPasskey,
   cancelPasskeyCeremony,
@@ -27,6 +30,8 @@ import {
 } from '@/lib/passkeys';
 
 const STATUS_CHECK_ENDPOINT = '/auth/session';
+// How long the app stays hidden after login while the home directory resolves.
+const HOME_RESOLUTION_WAIT_MS = 10_000;
 // Transient-failure auto-retry for the initial session check. Over the relay the
 // very first /auth/session can race the tunnel's initial WebSocket attempt (a
 // failed attempt rejects requests queued on the channel even though the tunnel
@@ -264,7 +269,7 @@ const AuthShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background text-foreground"
       style={{ fontFamily: '"Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif' }}
     >
-      <div className="app-region-drag fixed left-0 top-0 z-20" style={titlebarDragStyle} aria-hidden />
+      <div className="app-region-drag fixed inset-s-0 top-0 z-20" style={titlebarDragStyle} aria-hidden />
       <div
         className="pointer-events-none absolute inset-0 opacity-55"
         style={{
@@ -286,8 +291,8 @@ const AuthShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 const LoadingScreen: React.FC = () => (
-  <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-    <OpenChamberLogo width={120} height={120} />
+  <div className="flex min-h-dvh items-center justify-center bg-[var(--splash-background,var(--surface-background))] text-foreground">
+    <OpenChamberLogo width={120} height={120} variant="splash" />
   </div>
 );
 
@@ -351,6 +356,12 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
   const [activePasskeyAction, setActivePasskeyAction] = React.useState<'auth' | 'register' | null>(null);
   const passwordInputRef = React.useRef<HTMLInputElement | null>(null);
   const hasResyncedRef = React.useRef(skipAuth);
+  const hasBootstrapResyncedRef = React.useRef(skipAuth);
+  // Whether the home directory was resolved after authentication. Until then
+  // the app stays unmounted when the home is unknown: on a first visit to a
+  // password-protected server the page-load attempt could only fall back to
+  // "/", and the app would start working there.
+  const [homeChecked, setHomeChecked] = React.useState(skipAuth);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') {
@@ -463,6 +474,12 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
 
         if (response.ok) {
           resetTransientRetry();
+          // The gate may already be 'authenticated' (the user logged in from
+          // another tab before pressing "Log in" here), so the state effect
+          // below would not fire; this answer itself proves the session alive.
+          if (useAuthSessionStore.getState().state !== 'ok') {
+            useAuthSessionStore.getState().markAuthenticated();
+          }
           setState('authenticated');
           setIsTunnelLocked(false);
           setErrorMessage('');
@@ -506,14 +523,10 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
         return;
       }
       console.warn('Failed to check session status:', error);
-      if (resolveStatusCheckFailureState({ shouldUseDesktopShellPasswordLogin: shouldUseDesktopShellPasswordLogin() }) === 'locked') {
-        setState('locked');
-        setRetryAfter(undefined);
-        setIsTunnelLocked(false);
-        return;
-      }
       // Network-level failure — over the relay this is typically the initial
       // tunnel attempt racing this request; it self-heals within seconds.
+      // No server answer exists here (the request never reached the wire),
+      // so this is never evidence of a password requirement; 401 above is.
       if (scheduleTransientRetry()) return;
       setState('error');
       setIsTunnelLocked(false);
@@ -546,10 +559,27 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
       setActivePasskeyAction(null);
       setIsPasskeyBusy(false);
       resetTransientRetry();
+      setHomeChecked(false);
       setState('pending');
       void checkStatus();
     });
   }, [checkStatus, resetTransientRetry, skipAuth]);
+
+  React.useEffect(() => {
+    if (homeChecked || state !== 'authenticated') return;
+    let cancelled = false;
+    const settle = () => {
+      if (!cancelled) setHomeChecked(true);
+    };
+    // The home read has no timeout of its own; a stalled one must not keep the
+    // app hidden. Past the bound the app starts as it did before this wait.
+    const timer = window.setTimeout(settle, HOME_RESOLUTION_WAIT_MS);
+    void ensureHomeDirectoryResolved().finally(settle);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [homeChecked, state]);
 
   React.useEffect(() => {
     if (!skipAuth && state === 'locked') {
@@ -557,12 +587,33 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
     }
   }, [skipAuth, state]);
 
+  // Mid-session expiry: the banner asks for a re-login by flipping the shared
+  // auth store to 'reauthenticating'; the gate answers with its own status
+  // check, which lands in the full 'locked' flow on a genuine 401. A
+  // successful login resolves the store back to 'ok'.
+  const authSessionState = useAuthSessionStore((store) => store.state);
   React.useEffect(() => {
-    if (state === 'locked' && passwordInputRef.current) {
+    if (!skipAuth) installAuthSessionFocusWatch();
+  }, [skipAuth]);
+  React.useEffect(() => {
+    if (skipAuth) return;
+    if (authSessionState === 'reauthenticating') {
+      void checkStatusRef.current?.();
+    }
+  }, [authSessionState, skipAuth]);
+  React.useEffect(() => {
+    if (skipAuth) return;
+    if (state === 'authenticated' && useAuthSessionStore.getState().state !== 'ok') {
+      useAuthSessionStore.getState().markAuthenticated();
+    }
+  }, [skipAuth, state]);
+
+  React.useEffect(() => {
+    if (state === 'locked' && !isSubmitting && passwordInputRef.current) {
       passwordInputRef.current.focus();
       passwordInputRef.current.select();
     }
-  }, [state]);
+  }, [state, isSubmitting]);
 
   React.useEffect(() => {
     if (skipAuth) {
@@ -570,10 +621,18 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
     }
     if (state === 'authenticated' && !hasResyncedRef.current) {
       hasResyncedRef.current = true;
+      // First authentication of this page load is bootstrap: adopt the
+      // persisted workspace pointers. A re-login after mid-session expiry is
+      // not — this window already has its own workspace, and the shared
+      // settings document may carry another window's pointers.
+      const isBootstrapResync = !hasBootstrapResyncedRef.current;
+      hasBootstrapResyncedRef.current = true;
       void (async () => {
         await initializeAppearancePreferences();
-        await syncDesktopSettings();
-        await applyPersistedDirectoryPreferences();
+        await syncDesktopSettings({ bootstrap: isBootstrapResync });
+        if (isBootstrapResync) {
+          await applyPersistedDirectoryPreferences();
+        }
       })();
     }
   }, [skipAuth, state]);
@@ -890,7 +949,7 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
               )}
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
-                  <Icon name="lock" className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/60" />
+                  <Icon name="lock" className="absolute inset-s-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     id="openchamber-ui-password"
                     ref={passwordInputRef}
@@ -904,7 +963,7 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
                         setErrorMessage('');
                       }
                     }}
-                    className="pl-10"
+                    className="ps-10"
                     aria-invalid={Boolean(errorMessage) || undefined}
                     aria-describedby={errorMessage ? 'oc-ui-auth-error' : undefined}
                     disabled={isSubmitting}
@@ -983,5 +1042,14 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
     );
   }
 
-  return <>{children}</>;
+  if (!homeChecked && !useDirectoryStore.getState().isHomeReady) {
+    return <LoadingScreen />;
+  }
+
+  return (
+    <>
+      {skipAuth ? null : <AuthExpiredBanner />}
+      {children}
+    </>
+  );
 };

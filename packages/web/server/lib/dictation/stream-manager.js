@@ -7,22 +7,156 @@
  * Responsibilities:
  * - Reorders inbound chunks by `seq` and acks the highest contiguous seq.
  * - Resamples client PCM (16 kHz by default) to the provider's required rate.
- * - Auto-commits a segment every `autoCommitSeconds` of audio, but clears
- *   silence-only segments instead of committing them.
+ * - Segments long dictations at natural pauses: past `segmentMinSeconds` of
+ *   audio it cuts inside the first pause it finds, and `segmentMaxSeconds` is
+ *   a hard cap for speech with no pause in it. Silence-only segments are
+ *   cleared instead of committed.
  * - Concatenates per-segment transcripts into live partials and emits the
- *   final text once every committed segment has a final transcript.
+ *   final text once every committed segment has a final transcript. The
+ *   manager counts the commits it issued rather than trusting the session's
+ *   echoed events, so a commit still in flight when the client finishes
+ *   cannot be silently dropped from the transcript.
  * - Applies an adaptive finalization timeout budget based on pending work.
+ * - When the start options ask for it, passes the final text through
+ *   `correctTranscript` before emitting it.
  */
 
-import { Pcm16MonoResampler, parsePcmRateFromFormat, pcm16lePeakAbs } from './audio.js';
+import {
+  Pcm16MonoResampler,
+  parsePcmRateFromFormat,
+  pcm16leFrameRms,
+  pcm16lePeakAbs,
+} from './audio.js';
+import { CORRECTION_TIMEOUT_MS } from './transcript-correction.js';
 
 const DEFAULT_FINAL_TIMEOUT_MS = 10000;
-const DEFAULT_AUTO_COMMIT_SECONDS = 15;
+// Parakeet decode cost and peak memory grow quadratically with segment length,
+// and a long enough segment aborts the worker inside the native runtime, not
+// just slowly (the curve and the crash are in DOCUMENTATION.md#segmentation).
+// Segmenting keeps a long dictation off that curve, and committed segments
+// decode while the user is still speaking, so only the tail is left on stop.
+//
+// The minimum is low because a 15s segment decodes in well under a second.
+// The hard cap stays small (25s) so even pauseless speech never piles up a
+// segment that can hit the allocation abort.
+const DEFAULT_SEGMENT_MIN_SECONDS = 15;
+const DEFAULT_SEGMENT_MAX_SECONDS = 25;
 const FINAL_TIMEOUT_MAX_MS = 5 * 60 * 1000;
 const FINAL_TIMEOUT_PER_PENDING_SEGMENT_MS = 15 * 1000;
 const FINAL_TIMEOUT_PER_PENDING_AUDIO_SECOND_MS = 1500;
 const FINAL_TIMEOUT_PER_MISSING_SEQ_MS = 250;
 const SILENCE_PEAK_THRESHOLD = 300;
+// Pause detection looks at ~50 ms frames. A frame is quiet when its RMS sits
+// within ~10 dB of the quietest frame in the last ~10 s of the stream (the
+// noise floor), so a laptop fan or a boosted mic does not hide every pause,
+// and at least ~15 dB below the loudest frame, so before the first real pause
+// the softest bit of speech does not pass for one. The floor is a sliding
+// window rather than an all-time minimum because a gated mic often opens with
+// a second of digital zeros, and a floor pinned there would call room noise
+// speech for the rest of the dictation. The absolute minimum keeps a
+// digitally silent stream from needing exact zeros. A pause is a quiet run of
+// at least 200 ms: longer than the closure inside a word, and a fast speaker's
+// pause between sentences is barely longer (a synthesized voice pauses
+// 200–350 ms at a period), so a cut lands between words.
+const PAUSE_FRAME_MS = 50;
+const PAUSE_MIN_FRAMES = 4;
+const NOISE_FLOOR_WINDOW_CHUNKS = 10;
+const QUIET_ABOVE_FLOOR_RATIO = 3;
+const QUIET_BELOW_SPEECH_RATIO = 6;
+const QUIET_RMS_MIN = 200;
+
+const secondsToPcm16Bytes = (seconds, sampleRate) =>
+  seconds > 0 ? Math.max(1, Math.round(seconds * sampleRate * 2)) : 0;
+
+/**
+ * Byte offset inside `pcm16` where the current segment should end, or null to
+ * keep the whole chunk in it.
+ *
+ * Past `segmentMinBytes` the cut goes into the middle of the first pause; a
+ * pause may have started in the previous chunk, which `state.quietRunFrames`
+ * carries over (when its middle already went by, the cut is where this chunk
+ * starts, still inside the pause). At the hard cap the cut goes into the quietest frame of this
+ * chunk rather than at its boundary, so even pauseless speech is cut between
+ * words when it can be. Bytes before the cut belong to the segment being
+ * committed, bytes after it start the next one.
+ */
+function findSegmentCut(state, pcm16) {
+  if (state.finishRequested) {
+    return null;
+  }
+  const capReached =
+    state.segmentMaxBytes > 0 && state.bytesSinceCommit + pcm16.length >= state.segmentMaxBytes;
+  const frameSamples = state.pauseFrameSamples;
+  const frameBytes = frameSamples * 2;
+  const rms = pcm16leFrameRms(pcm16, frameSamples);
+  if (rms.length === 0) {
+    return capReached ? pcm16.length : null;
+  }
+
+  let chunkFloor = Infinity;
+  for (const value of rms) {
+    if (value < chunkFloor) {
+      chunkFloor = value;
+    }
+    if (value > state.loudestRms) {
+      state.loudestRms = value;
+    }
+  }
+  state.recentChunkFloors.push(chunkFloor);
+  if (state.recentChunkFloors.length > NOISE_FLOOR_WINDOW_CHUNKS) {
+    state.recentChunkFloors.shift();
+  }
+  const noiseFloor = Math.min(...state.recentChunkFloors);
+  const quietBelow = Math.min(
+    Math.max(noiseFloor * QUIET_ABOVE_FLOOR_RATIO, QUIET_RMS_MIN),
+    state.loudestRms / QUIET_BELOW_SPEECH_RATIO,
+  );
+  const quiet = rms.map((value) => value <= quietBelow);
+
+  let cut = null;
+  if (state.segmentMinBytes > 0) {
+    let runStart = -state.quietRunFrames;
+    let inRun = state.quietRunFrames > 0;
+    for (let i = 0; i <= quiet.length; i += 1) {
+      if (i < quiet.length && quiet[i]) {
+        if (!inRun) {
+          inRun = true;
+          runStart = i;
+        }
+        continue;
+      }
+      if (!inRun) {
+        continue;
+      }
+      inRun = false;
+      if (i - runStart < PAUSE_MIN_FRAMES) {
+        continue;
+      }
+      const bytes = Math.max(0, Math.floor((runStart + i) / 2)) * frameBytes;
+      if (state.bytesSinceCommit + bytes >= state.segmentMinBytes) {
+        cut = bytes;
+        break;
+      }
+    }
+  }
+
+  if (cut === null && capReached) {
+    let quietest = 0;
+    for (let i = 1; i < rms.length; i += 1) {
+      if (rms[i] < rms[quietest]) {
+        quietest = i;
+      }
+    }
+    cut = (quietest * frameSamples + (frameSamples >> 1)) * 2;
+  }
+
+  let trailing = 0;
+  while (trailing < quiet.length && quiet[quiet.length - 1 - trailing]) {
+    trailing += 1;
+  }
+  state.quietRunFrames = trailing;
+  return cut;
+}
 
 export class DictationStreamManager {
   /**
@@ -32,14 +166,20 @@ export class DictationStreamManager {
    *   Resolves a connected streaming transcription session for one dictation.
    *   The streaming transcription session contract:
    *   { requiredSampleRate, appendPcm16(buf), commit(), clear(), close(), on(event, handler) }
+   * @param {(text: string, options: { language?: string }) => Promise<string>} [params.correctTranscript]
+   *   Fixes misheard words in a finished dictation when its start options ask
+   *   for it (`correct: true`). Resolves to the original text on any failure.
    * @param {number} [params.finalTimeoutMs]
-   * @param {number} [params.autoCommitSeconds]
+   * @param {number} [params.segmentMinSeconds] audio before a pause may split a segment
+   * @param {number} [params.segmentMaxSeconds] hard segment cap for pauseless speech
    */
-  constructor({ emit, createSttSession, finalTimeoutMs, autoCommitSeconds }) {
+  constructor({ emit, createSttSession, correctTranscript, finalTimeoutMs, segmentMinSeconds, segmentMaxSeconds }) {
     this.emit = emit;
     this.createSttSession = createSttSession;
+    this.correctTranscript = correctTranscript ?? null;
     this.finalTimeoutMs = finalTimeoutMs ?? DEFAULT_FINAL_TIMEOUT_MS;
-    this.autoCommitSeconds = autoCommitSeconds ?? DEFAULT_AUTO_COMMIT_SECONDS;
+    this.segmentMinSeconds = segmentMinSeconds ?? DEFAULT_SEGMENT_MIN_SECONDS;
+    this.segmentMaxSeconds = segmentMaxSeconds ?? DEFAULT_SEGMENT_MAX_SECONDS;
     this.streams = new Map();
   }
 
@@ -87,13 +227,12 @@ export class DictationStreamManager {
       if (!state) {
         return;
       }
+      // Segment accounting is reset where the commit is issued, not here: this
+      // event arrives after an async hop, and zeroing the counters on arrival
+      // would discard audio that came in meanwhile — up to and including
+      // mistaking the tail of the dictation for silence and clearing it.
       state.committedSegmentIds.push(segmentId);
-      state.bytesSinceCommit = 0;
-      state.peakSinceCommit = 0;
-
-      if (state.finishRequested && state.awaitingFinalCommit) {
-        state.awaitingFinalCommit = false;
-      }
+      state.pendingCommits = Math.max(0, state.pendingCommits - 1);
 
       this.maybeFinalizeStream(dictationId);
     });
@@ -106,10 +245,6 @@ export class DictationStreamManager {
       state.transcriptsBySegmentId.set(segmentId, transcript);
       if (isFinal) {
         state.finalTranscriptSegmentIds.add(segmentId);
-      }
-
-      if (state.finishRequested && state.awaitingFinalCommit && isFinal) {
-        state.awaitingFinalCommit = false;
       }
 
       const orderedIds = state.committedSegmentIds.includes(segmentId)
@@ -143,20 +278,27 @@ export class DictationStreamManager {
       receivedChunks: new Map(),
       nextSeqToForward: 0,
       ackSeq: -1,
-      autoCommitBytes:
-        this.autoCommitSeconds > 0
-          ? Math.max(1, Math.round(this.autoCommitSeconds * stt.requiredSampleRate * 2))
-          : 0,
+      segmentMinBytes: secondsToPcm16Bytes(this.segmentMinSeconds, stt.requiredSampleRate),
+      segmentMaxBytes: secondsToPcm16Bytes(this.segmentMaxSeconds, stt.requiredSampleRate),
+      pauseFrameSamples: Math.max(1, Math.round((stt.requiredSampleRate * PAUSE_FRAME_MS) / 1000)),
+      recentChunkFloors: [],
+      loudestRms: 0,
+      quietRunFrames: 0,
       bytesSinceCommit: 0,
       peakSinceCommit: 0,
       committedSegmentIds: [],
       transcriptsBySegmentId: new Map(),
       finalTranscriptSegmentIds: new Set(),
-      awaitingFinalCommit: false,
+      pendingCommits: 0,
       finishRequested: false,
       finishSealed: false,
       finalSeq: null,
       finalTimeout: null,
+      correction:
+        startOptions.correct === true && this.correctTranscript
+          ? { language: startOptions.language }
+          : null,
+      correcting: false,
     });
 
     this.emitAck(dictationId, -1);
@@ -201,11 +343,8 @@ export class DictationStreamManager {
 
       const resampled = state.resampler ? state.resampler.processChunk(pcm16) : pcm16;
       if (resampled.length > 0) {
-        state.stt.appendPcm16(resampled);
-        state.bytesSinceCommit += resampled.length;
-        state.peakSinceCommit = Math.max(state.peakSinceCommit, pcm16lePeakAbs(resampled));
         try {
-          this.maybeAutoCommitSegment(state);
+          this.forwardAudio(state, resampled);
         } catch (error) {
           this.failAndCleanupStream(dictationId, error?.message || String(error), true);
           return;
@@ -325,9 +464,7 @@ export class DictationStreamManager {
       return state.finalTranscriptSegmentIds.has(segmentId) ? count : count + 1;
     }, 0);
     const pendingSegments =
-      pendingCommittedSegments +
-      pendingUncommittedTranscriptSegments +
-      (state.awaitingFinalCommit ? 1 : 0);
+      pendingCommittedSegments + pendingUncommittedTranscriptSegments + state.pendingCommits;
     const pendingAudioSeconds = Math.ceil(Math.max(0, state.bytesSinceCommit) / bytesPerSecond);
     const missingSeqCount =
       state.finalSeq === null ? 0 : Math.max(0, state.finalSeq - state.ackSeq);
@@ -337,29 +474,63 @@ export class DictationStreamManager {
       pendingAudioSeconds * FINAL_TIMEOUT_PER_PENDING_AUDIO_SECOND_MS +
       missingSeqCount * FINAL_TIMEOUT_PER_MISSING_SEQ_MS;
 
-    return Math.max(
+    const transcriptionMs = Math.max(
       this.finalTimeoutMs,
       Math.min(FINAL_TIMEOUT_MAX_MS, this.finalTimeoutMs + extraMs),
     );
+    // The correction pass runs after the last transcript and has its own cap.
+    return transcriptionMs + (state.correction ? CORRECTION_TIMEOUT_MS : 0);
   }
 
-  maybeAutoCommitSegment(state) {
-    if (state.finishRequested) {
+  /**
+   * Append one chunk of provider-rate audio, ending the current segment inside
+   * the chunk when it holds a good place to cut.
+   */
+  forwardAudio(state, pcm16) {
+    const cutAt = findSegmentCut(state, pcm16);
+    if (cutAt === null) {
+      this.appendToSegment(state, pcm16);
       return;
     }
-    if (state.autoCommitBytes <= 0 || state.bytesSinceCommit < state.autoCommitBytes) {
-      return;
-    }
-    if (state.peakSinceCommit < SILENCE_PEAK_THRESHOLD) {
-      state.stt.clear();
-      state.bytesSinceCommit = 0;
-      state.peakSinceCommit = 0;
-      return;
-    }
+    this.appendToSegment(state, pcm16.subarray(0, cutAt));
+    this.endSegment(state);
+    this.appendToSegment(state, pcm16.subarray(cutAt));
+  }
 
+  appendToSegment(state, pcm16) {
+    if (pcm16.length === 0) {
+      return;
+    }
+    state.stt.appendPcm16(pcm16);
+    state.bytesSinceCommit += pcm16.length;
+    state.peakSinceCommit = Math.max(state.peakSinceCommit, pcm16lePeakAbs(pcm16));
+  }
+
+  /** Commit the current segment, or drop it when it holds only silence. */
+  endSegment(state) {
+    const silent = state.peakSinceCommit < SILENCE_PEAK_THRESHOLD;
     state.bytesSinceCommit = 0;
     state.peakSinceCommit = 0;
-    state.stt.commit();
+    if (silent) {
+      state.stt.clear();
+      return;
+    }
+    this.commitSegment(state);
+  }
+
+  /**
+   * Issue a commit and record it as in flight. The session acknowledges with a
+   * `committed` event; until then the manager must not finalize, or the
+   * segment's transcript would be missing from the final text.
+   */
+  commitSegment(state) {
+    state.pendingCommits += 1;
+    try {
+      state.stt.commit();
+    } catch (error) {
+      state.pendingCommits -= 1;
+      throw error;
+    }
   }
 
   maybeSealStreamFinish(dictationId) {
@@ -378,23 +549,16 @@ export class DictationStreamManager {
     }
 
     if (state.bytesSinceCommit > 0) {
-      if (state.peakSinceCommit < SILENCE_PEAK_THRESHOLD) {
-        state.stt.clear();
-        state.bytesSinceCommit = 0;
-        state.peakSinceCommit = 0;
-        state.awaitingFinalCommit = false;
-        this.dropUncommittedNonFinalTranscripts(state);
-      } else {
-        state.awaitingFinalCommit = true;
-        try {
-          state.stt.commit();
-        } catch (error) {
-          this.failAndCleanupStream(dictationId, error?.message || String(error), true);
-          return;
-        }
+      const silent = state.peakSinceCommit < SILENCE_PEAK_THRESHOLD;
+      try {
+        this.endSegment(state);
+      } catch (error) {
+        this.failAndCleanupStream(dictationId, error?.message || String(error), true);
+        return;
       }
-    } else {
-      state.awaitingFinalCommit = false;
+      if (silent) {
+        this.dropUncommittedNonFinalTranscripts(state);
+      }
     }
 
     state.finishSealed = true;
@@ -415,7 +579,7 @@ export class DictationStreamManager {
 
   maybeFinalizeStream(dictationId) {
     const state = this.streams.get(dictationId);
-    if (!state) {
+    if (!state || state.correcting) {
       return;
     }
 
@@ -425,7 +589,7 @@ export class DictationStreamManager {
     if (state.ackSeq < state.finalSeq) {
       return;
     }
-    if (state.awaitingFinalCommit) {
+    if (state.pendingCommits > 0) {
       return;
     }
 
@@ -455,7 +619,22 @@ export class DictationStreamManager {
       .join(' ')
       .trim();
 
-    this.emit({ type: 'final', payload: { dictationId, text: orderedText } });
-    this.cleanupStream(dictationId);
+    if (!state.correction || !orderedText) {
+      this.emit({ type: 'final', payload: { dictationId, text: orderedText } });
+      this.cleanupStream(dictationId);
+      return;
+    }
+
+    state.correcting = true;
+    void this.correctTranscript(orderedText, state.correction)
+      .catch(() => orderedText)
+      .then((text) => {
+        // Cancelled or timed out meanwhile: the client stopped waiting.
+        if (this.streams.get(dictationId) !== state) {
+          return;
+        }
+        this.emit({ type: 'final', payload: { dictationId, text } });
+        this.cleanupStream(dictationId);
+      });
   }
 }

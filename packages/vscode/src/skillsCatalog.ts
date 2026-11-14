@@ -1,3 +1,4 @@
+import { OPENCODE_CONFIG_DIR } from './opencodeConfigPaths';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -5,9 +6,17 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import yaml from 'yaml';
 
-import { discoverSkills } from './opencodeConfig';
+import { readEnterprisePolicy } from '../../web/server/lib/enterprise-mode.js';
+import { isInstalledFromSource, readInstalledSources } from '../../web/server/lib/skills-catalog/installed-sources.js';
+import { removeDirectory, removeStaleCatalogFolders } from '../../web/server/lib/skills-catalog/remove-directory.js';
+import { getOutputChannel } from './outputChannel';
 
 const execFileAsync = promisify(execFile);
+
+// The extension host's console is not kept in any log, so a folder left
+// behind is named in the Output panel instead.
+const removeCatalogDirectory = (dir: string) =>
+  removeDirectory(dir, { warn: (message) => getOutputChannel().appendLine(message) });
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_BUFFER = 4 * 1024 * 1024;
@@ -33,15 +42,6 @@ type SkillFrontmatter = {
   [key: string]: unknown;
 };
 
-type ClawdHubSkillMetadata = {
-  slug: string;
-  version: string;
-  displayName?: string;
-  owner?: string;
-  downloads?: number;
-  stars?: number;
-};
-
 type SkillsCatalogItem = {
   repoSource: string;
   repoSubpath?: string;
@@ -51,9 +51,7 @@ type SkillsCatalogItem = {
   description?: string;
   installable: boolean;
   warnings?: string[];
-  clawdhub?: ClawdHubSkillMetadata;
 };
-
 type SkillsCatalogItemWithBadge = SkillsCatalogItem & {
   sourceId: string;
   installed: { isInstalled: boolean; scope?: SkillScope; source?: SkillInstallSource };
@@ -72,7 +70,7 @@ type SkillsRepoScanResult =
   | { ok: false; error: SkillsRepoError };
 
 type SkillsInstallResult =
-  | { ok: true; installed: Array<{ skillName: string; scope: SkillScope; source?: SkillInstallSource }>; skipped: Array<{ skillName: string; reason: string }> }
+  | { ok: true; installed: Array<{ skillName: string; skillDir: string; scope: SkillScope; source?: SkillInstallSource }>; skipped: Array<{ skillName: string; reason: string }> }
   | { ok: false; error: SkillsRepoError };
 
 const CURATED_SOURCES: CuratedSource[] = [
@@ -84,142 +82,26 @@ const CURATED_SOURCES: CuratedSource[] = [
     defaultSubpath: 'skills',
   },
   {
-    id: 'clawdhub',
-    label: 'ClawdHub',
-    description: 'Community skill registry with vector search',
-    source: 'clawdhub:registry',
+    id: 'openai',
+    label: 'OpenAI',
+    description: "OpenAI's curated skills",
+    source: 'openai/skills',
+    defaultSubpath: 'skills/.curated',
+  },
+  {
+    id: 'cursor',
+    label: 'Cursor',
+    description: "Cursor's plugin skills",
+    source: 'cursor/plugins',
+    defaultSubpath: 'pstack/skills',
+  },
+  {
+    id: 'mattpocock',
+    label: 'Matt Pocock',
+    description: 'Matt Pocock skills collection',
+    source: 'mattpocock/skills',
   },
 ];
-
-// ============== ClawdHub API ==============
-
-const CLAWDHUB_API_BASE = 'https://clawdhub.com/api/v1';
-const CLAWDHUB_PAGE_LIMIT = 25;
-const CLAWDHUB_RATE_LIMIT_MS = 100;
-let clawdhubLastRequest = 0;
-
-function isClawdHubSource(source: string): boolean {
-  return typeof source === 'string' && source.startsWith('clawdhub:');
-}
-
-async function clawdhubFetch(url: string, options?: RequestInit): Promise<Response> {
-  const maxAttempts = 10;
-  let lastResponse: Response | null = null;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const now = Date.now();
-    const elapsed = now - clawdhubLastRequest;
-    if (elapsed < CLAWDHUB_RATE_LIMIT_MS) {
-      await new Promise((resolve) => setTimeout(resolve, CLAWDHUB_RATE_LIMIT_MS - elapsed));
-    }
-    clawdhubLastRequest = Date.now();
-
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        Accept: 'application/json',
-        'User-Agent': 'OpenChamber-VSCode/1.0',
-        ...options?.headers,
-      },
-    });
-
-    lastResponse = response;
-
-    if (response.status === 429 || response.status >= 500) {
-      if (attempt < maxAttempts - 1) {
-        const waitMs = 50 * (attempt + 1);
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
-        continue;
-      }
-    }
-
-    return response;
-  }
-
-  return lastResponse as Response;
-}
-
-type ClawdHubSkillListItem = {
-  slug: string;
-  displayName?: string;
-  summary?: string;
-  tags?: { latest?: string };
-  latestVersion?: { version?: string };
-  stats?: { downloads?: number; stars?: number };
-  owner?: { handle?: string };
-};
-
-type ClawdHubSkillsResponse = {
-  items: ClawdHubSkillListItem[];
-  nextCursor?: string;
-};
-
-async function scanClawdHub(): Promise<SkillsRepoScanResult> {
-  try {
-    const allItems: SkillsCatalogItem[] = [];
-    let cursor: string | null = null;
-    const maxPages = 20;
-
-    for (let page = 0; page < maxPages; page++) {
-      const url = cursor
-        ? `${CLAWDHUB_API_BASE}/skills?cursor=${encodeURIComponent(cursor)}&limit=${CLAWDHUB_PAGE_LIMIT}`
-        : `${CLAWDHUB_API_BASE}/skills?limit=${CLAWDHUB_PAGE_LIMIT}`;
-
-      let data: ClawdHubSkillsResponse;
-
-      try {
-        const response = await clawdhubFetch(url);
-        if (!response.ok) {
-          throw new Error(`ClawdHub API error: ${response.status}`);
-        }
-
-        data = (await response.json()) as ClawdHubSkillsResponse;
-      } catch (error) {
-        if (page > 0 && allItems.length > 0) {
-          break;
-        }
-        throw error;
-      }
-
-      for (const item of data.items || []) {
-        const latestVersion = item.tags?.latest || item.latestVersion?.version || '1.0.0';
-
-        allItems.push({
-          repoSource: 'clawdhub:registry',
-          skillDir: item.slug,
-          skillName: item.slug,
-          frontmatterName: item.displayName || item.slug,
-          description: item.summary || undefined,
-          installable: true,
-          clawdhub: {
-            slug: item.slug,
-            version: latestVersion,
-            displayName: item.displayName,
-            owner: item.owner?.handle,
-            downloads: item.stats?.downloads || 0,
-            stars: item.stats?.stars || 0,
-          },
-        });
-      }
-
-      if (!data.nextCursor) break;
-      cursor = data.nextCursor;
-    }
-
-    // Sort by downloads (most popular first)
-    allItems.sort((a, b) => (b.clawdhub?.downloads || 0) - (a.clawdhub?.downloads || 0));
-
-    return { ok: true, items: allItems };
-  } catch (error) {
-    return {
-      ok: false,
-      error: {
-        kind: 'networkError',
-        message: error instanceof Error ? error.message : 'Failed to fetch skills from ClawdHub',
-      },
-    };
-  }
-}
 
 function validateSkillName(skillName: string): boolean {
   if (skillName.length < 1 || skillName.length > 64) return false;
@@ -266,8 +148,18 @@ async function assertGitAvailable() {
   return { ok: true as const };
 }
 
+// Same rules as the server (web/server/lib/skills-catalog/source.js): a branch
+// or tag after `#`, never starting with `-` and never holding `..`.
+const GIT_REF_PATTERN = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]+$/;
+
 function parseSkillRepoSource(input: string, subpath?: string) {
-  const raw = (input || '').trim();
+  const trimmed = (input || '').trim();
+  const hashIndex = trimmed.lastIndexOf('#');
+  const raw = hashIndex >= 0 ? trimmed.slice(0, hashIndex).trim() : trimmed;
+  const ref = hashIndex >= 0 ? trimmed.slice(hashIndex + 1).trim() || null : null;
+  if (ref !== null && !GIT_REF_PATTERN.test(ref)) {
+    return { ok: false as const, error: { kind: 'invalidSource' as const, message: `Invalid branch or tag "${ref}"` } };
+  }
   if (!raw) {
     return { ok: false as const, error: { kind: 'invalidSource' as const, message: 'Repository source is required' } };
   }
@@ -308,6 +200,7 @@ function parseSkillRepoSource(input: string, subpath?: string) {
       cloneUrlHttps: `https://${gitHost}/${owner}/${repo}.git`,
       cloneUrlSsh: `git@${gitHost}:${owner}/${repo}.git`,
       effectiveSubpath: explicitSubpath,
+      ref,
     }
   }
 
@@ -322,6 +215,7 @@ function parseSkillRepoSource(input: string, subpath?: string) {
       cloneUrlHttps: `https://github.com/${owner}/${repo}.git`,
       cloneUrlSsh: `git@github.com:${owner}/${repo}.git`,
       effectiveSubpath: explicitSubpath || shorthandSubpath,
+      ref,
     };
   }
 
@@ -349,17 +243,10 @@ function parseSkillMd(content: string): { frontmatter: SkillFrontmatter; warning
   }
 }
 
-async function safeRm(dir: string) {
-  try {
-    await fs.promises.rm(dir, { recursive: true, force: true });
-  } catch {
-    // ignore
-  }
-}
-
-async function cloneRepo(cloneUrl: string, targetDir: string) {
-  const preferred = ['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', cloneUrl, targetDir];
-  const fallback = ['clone', '--depth', '1', '--no-checkout', cloneUrl, targetDir];
+async function cloneRepo(cloneUrl: string, targetDir: string, ref: string | null = null) {
+  const branch = ref ? ['--branch', ref] : [];
+  const preferred = ['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', ...branch, cloneUrl, targetDir];
+  const fallback = ['clone', '--depth', '1', '--no-checkout', ...branch, cloneUrl, targetDir];
 
   const result = await runGit(preferred, { timeoutMs: 60_000 });
   if (result.ok) return { ok: true as const };
@@ -394,10 +281,11 @@ export async function scanSkillsRepository(options: { source: string; subpath?: 
   }
 
   const effectiveSubpath = parsed.effectiveSubpath || options.defaultSubpath || null;
+  void removeStaleCatalogFolders();
   const tempBase = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-vscode-skills-scan-'));
 
   try {
-    const cloned = await cloneRepo(parsed.cloneUrlHttps, tempBase);
+    const cloned = await cloneRepo(parsed.cloneUrlHttps, tempBase, parsed.ref);
     if (!cloned.ok) {
       return { ok: false as const, error: cloned.error };
     }
@@ -416,7 +304,12 @@ export async function scanSkillsRepository(options: { source: string; subpath?: 
       if (sparseSet.ok) {
         const checkout = await runGit(['-C', tempBase, 'checkout', '--force', 'HEAD'], { timeoutMs: 60_000 });
         if (checkout.ok) {
-          const lsFiles = await runGit(['-C', tempBase, 'ls-files'], { timeoutMs: 15_000 });
+          // Same subpath limit as the server scan (web/server/lib/skills-catalog/scan.js).
+          const lsFilesArgs = ['-C', tempBase, 'ls-files'];
+          if (effectiveSubpath) {
+            lsFilesArgs.push('--', effectiveSubpath);
+          }
+          const lsFiles = await runGit(lsFilesArgs, { timeoutMs: 15_000 });
           if (lsFiles.ok) {
             skillMdPaths = lsFiles.stdout
               .split(/\r?\n/)
@@ -495,7 +388,7 @@ export async function scanSkillsRepository(options: { source: string; subpath?: 
 
     return { ok: true as const, items };
   } finally {
-    await safeRm(tempBase);
+    await removeCatalogDirectory(tempBase);
   }
 }
 
@@ -545,8 +438,8 @@ async function copyDirectoryNoSymlinks(srcDir: string, dstDir: string) {
 }
 
 function getUserSkillBaseDir() {
-  const pluralPath = path.join(os.homedir(), '.config', 'opencode', 'skills');
-  const legacyPath = path.join(os.homedir(), '.config', 'opencode', 'skill');
+  const pluralPath = path.join(OPENCODE_CONFIG_DIR, 'skills');
+  const legacyPath = path.join(OPENCODE_CONFIG_DIR, 'skill');
   if (fs.existsSync(legacyPath) && !fs.existsSync(pluralPath)) return legacyPath;
   return pluralPath;
 }
@@ -620,10 +513,11 @@ export async function installSkillsFromRepository(options: {
     };
   }
 
+  void removeStaleCatalogFolders();
   const tempBase = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-vscode-skills-install-'));
 
   try {
-    const cloned = await cloneRepo(parsed.cloneUrlHttps, tempBase);
+    const cloned = await cloneRepo(parsed.cloneUrlHttps, tempBase, parsed.ref);
     if (!cloned.ok) {
       return { ok: false as const, error: cloned.error };
     }
@@ -639,7 +533,7 @@ export async function installSkillsFromRepository(options: {
       return { ok: false as const, error: { kind: 'unknown' as const, message: checkoutResult.stderr || checkoutResult.message || 'Failed to checkout repository' } };
     }
 
-    const installed: Array<{ skillName: string; scope: SkillScope; source?: SkillInstallSource }> = [];
+    const installed: Array<{ skillName: string; skillDir: string; scope: SkillScope; source?: SkillInstallSource }> = [];
     const skipped: Array<{ skillName: string; reason: string }> = [];
 
     for (const plan of skillPlans) {
@@ -677,16 +571,16 @@ export async function installSkillsFromRepository(options: {
       }
 
       if (exists && decision === 'overwrite') {
-        await safeRm(targetDir);
+        await removeCatalogDirectory(targetDir);
       }
 
       await fs.promises.mkdir(path.dirname(targetDir), { recursive: true });
 
       try {
         await copyDirectoryNoSymlinks(srcDir, targetDir);
-        installed.push({ skillName: plan.skillName, scope: options.scope, source: targetSource });
+        installed.push({ skillName: plan.skillName, skillDir: plan.skillDirPosix, scope: options.scope, source: targetSource });
       } catch (error) {
-        await safeRm(targetDir);
+        await removeCatalogDirectory(targetDir);
         skipped.push({
           skillName: plan.skillName,
           reason: error instanceof Error ? error.message : 'Failed to copy skill files',
@@ -696,97 +590,80 @@ export async function installSkillsFromRepository(options: {
 
     return { ok: true as const, installed, skipped };
   } finally {
-    await safeRm(tempBase);
+    await removeCatalogDirectory(tempBase);
   }
 }
 
 const catalogCache = new Map<string, { expiresAt: number; items: SkillsCatalogItem[] }>();
+const catalogScansInFlight = new Map<string, Promise<SkillsRepoScanResult>>();
 const CATALOG_TTL_MS = 30 * 60 * 1000;
 
-export async function getSkillsCatalog(
-  workingDirectory?: string,
-  refresh?: boolean,
-  additionalSources?: SkillsCatalogSourceConfig[],
-  installedSkills?: Array<{ name: string; scope: SkillScope; source?: 'opencode' | 'agents' | 'claude' }>
-) {
-  const sources = [...CURATED_SOURCES, ...(Array.isArray(additionalSources) ? additionalSources : [])];
-  const discovered = Array.isArray(installedSkills) ? installedSkills : discoverSkills(workingDirectory);
-  const installedByName = new Map(discovered.map((s) => [s.name, s]));
+// The source list answers without scanning, like the web route: the page asks
+// for it on every open and on every OpenCode skill or config event, and each
+// source's skills then load through `getSkillsCatalogSourceItems`.
+export function getSkillsCatalogSources(additionalSources: SkillsCatalogSourceConfig[] = []): SkillsCatalogSourceConfig[] {
+  // The machine policy can hide the built-in catalogs (see enterprise-mode.js).
+  const curated = readEnterprisePolicy().hideBuiltinSkillCatalogs ? [] : CURATED_SOURCES;
+  return [...curated, ...additionalSources];
+}
 
-  const itemsBySource: Record<string, SkillsCatalogItemWithBadge[]> = {};
-
-  for (const src of sources) {
-    // Handle ClawdHub sources separately (API-based, not git-based)
-    if (isClawdHubSource(src.source)) {
-      const cacheKey = 'clawdhub:registry';
-      let cached = !refresh ? catalogCache.get(cacheKey) : null;
-      if (cached && Date.now() >= cached.expiresAt) {
-        catalogCache.delete(cacheKey);
-        cached = null;
-      }
-
-      let items: SkillsCatalogItem[] = [];
-      if (cached) {
-        items = cached.items;
-      } else {
-        const scanned = await scanClawdHub();
-        if (!scanned.ok) {
-          itemsBySource[src.id] = [];
-          continue;
-        }
-        items = scanned.items || [];
-        catalogCache.set(cacheKey, { expiresAt: Date.now() + CATALOG_TTL_MS, items });
-      }
-
-      itemsBySource[src.id] = items.map((item) => {
-        const installed = installedByName.get(item.skillName);
-        return {
-          sourceId: src.id,
-          ...item,
-          installed: installed ? { isInstalled: true, scope: installed.scope, source: installed.source === 'agents' ? 'agents' : 'opencode' } : { isInstalled: false },
-        };
-      });
-      continue;
-    }
-
-    // Handle GitHub sources (git clone based)
-    const parsed = parseSkillRepoSource(src.source);
-    if (!parsed.ok) {
-      itemsBySource[src.id] = [];
-      continue;
-    }
-
-    const effectiveSubpath = src.defaultSubpath || parsed.effectiveSubpath || '';
-    const cacheKey = `${parsed.normalizedRepo}::${effectiveSubpath}`;
-
-    let cached = !refresh ? catalogCache.get(cacheKey) : null;
-    if (cached && Date.now() >= cached.expiresAt) {
-      catalogCache.delete(cacheKey);
-      cached = null;
-    }
-
-    let items: SkillsCatalogItem[] = [];
-    if (cached) {
-      items = cached.items;
-    } else {
-      const scanned = await scanSkillsRepository({ source: src.source, defaultSubpath: src.defaultSubpath });
-      if (!scanned.ok) {
-        itemsBySource[src.id] = [];
-        continue;
-      }
-      items = scanned.items || [];
-      catalogCache.set(cacheKey, { expiresAt: Date.now() + CATALOG_TTL_MS, items });
-    }
-
-    itemsBySource[src.id] = items.map((item) => {
-      const installed = installedByName.get(item.skillName);
-      return {
-        sourceId: src.id,
-        ...item,
-        installed: installed ? { isInstalled: true, scope: installed.scope, source: installed.source === 'agents' ? 'agents' : 'opencode' } : { isInstalled: false },
-      };
-    });
+// Requests for one catalog share a scan that is still running, refreshes
+// included, so a page that reopens or refreshes never starts a second clone
+// of the same repository.
+function scanCatalogSource(cacheKey: string, src: SkillsCatalogSourceConfig, refresh: boolean): Promise<SkillsRepoScanResult> {
+  const cached = catalogCache.get(cacheKey);
+  if (cached && !refresh && Date.now() < cached.expiresAt) {
+    return Promise.resolve({ ok: true, items: cached.items });
   }
 
-  return { ok: true as const, sources, itemsBySource };
+  const running = catalogScansInFlight.get(cacheKey);
+  if (running) return running;
+
+  const scan = scanSkillsRepository({ source: src.source, defaultSubpath: src.defaultSubpath })
+    .then((result) => {
+      if (result.ok) {
+        catalogCache.set(cacheKey, { expiresAt: Date.now() + CATALOG_TTL_MS, items: result.items });
+      }
+      return result;
+    })
+    .finally(() => catalogScansInFlight.delete(cacheKey));
+  catalogScansInFlight.set(cacheKey, scan);
+  return scan;
+}
+
+export async function getSkillsCatalogSourceItems(options: {
+  sourceId: string;
+  refresh?: boolean;
+  additionalSources?: SkillsCatalogSourceConfig[];
+  installedSkills: Array<{ name: string; scope: SkillScope; source?: 'opencode' | 'agents' | 'claude' }>;
+}): Promise<{ ok: true; items: SkillsCatalogItemWithBadge[] } | { ok: false; error: SkillsRepoError }> {
+  const src = getSkillsCatalogSources(options.additionalSources).find((entry) => entry.id === options.sourceId);
+  if (!src) {
+    return { ok: false, error: { kind: 'invalidSource', message: 'Unknown source' } };
+  }
+
+  const parsed = parseSkillRepoSource(src.source);
+  if (!parsed.ok) {
+    return { ok: false, error: parsed.error };
+  }
+
+  const effectiveSubpath = src.defaultSubpath || parsed.effectiveSubpath || '';
+  const cacheKey = `${parsed.normalizedRepo}${parsed.ref ? `#${parsed.ref}` : ''}::${effectiveSubpath}`;
+  const scanned = await scanCatalogSource(cacheKey, src, options.refresh === true);
+  if (!scanned.ok) {
+    return { ok: false, error: scanned.error };
+  }
+
+  const installedByName = new Map(options.installedSkills.map((s) => [s.name, s]));
+  // Same source-aware rule as the web catalog route (#4756).
+  const provenanceByName = readInstalledSources();
+  const items = scanned.items.map((item): SkillsCatalogItemWithBadge => {
+    const installed = installedByName.get(item.skillName);
+    return {
+      sourceId: src.id,
+      ...item,
+      installed: installed && isInstalledFromSource(provenanceByName, item.skillName, src.id, item.skillDir) ? { isInstalled: true, scope: installed.scope, source: installed.source === 'agents' ? 'agents' : 'opencode' } : { isInstalled: false },
+    };
+  });
+  return { ok: true, items };
 }

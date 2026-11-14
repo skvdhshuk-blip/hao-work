@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/openchamber/openchamber/main/script
 
 Or install manually: `bun add -g @openchamber/web` (or npm, pnpm, yarn).
 
-> **Prerequisites:** Node.js 22+. The [OpenCode CLI](https://opencode.ai) is optional — the server bundles the hao-code engine; install the CLI and configure `settings.opencodeBinary` only if you want a managed opencode runtime.
+> **Prerequisites:** [OpenCode CLI](https://opencode.ai) installed, Node.js 24.14+.
 
 ## Usage
 
@@ -110,12 +110,16 @@ OPENCODE_HOST=https://myhost:4096 OPENCODE_SKIP_START=true openchamber
 | `OPENCODE_HOST` | Full base URL of external server (overrides `OPENCODE_PORT`) |
 | `OPENCODE_PORT` | Port of external server |
 | `OPENCODE_SKIP_START` | Skip starting embedded OpenCode server |
-| `OPENCHAMBER_OPENCODE_HOSTNAME` | Bind hostname for managed OpenCode server (default: `127.0.0.1`, use `0.0.0.0` for LAN/remote access — trusted networks only) |
+| `OPENCHAMBER_OPENCODE_HOSTNAME` | Bind hostname for managed OpenCode server (default: `127.0.0.1`, use `0.0.0.0` for LAN/remote access — trusted networks only). Invalid values are rejected with an error and fall back to loopback |
 | `OPENCHAMBER_HOST` | Bind hostname for the OpenChamber web server (default: `127.0.0.1`; use `0.0.0.0` for LAN/remote access — trusted networks only) |
 | `OPENCHAMBER_VERBOSE_REQUEST_LOGS` | Set to `true` to log every HTTP request; disabled by default to keep user logs small |
+| `OPENCHAMBER_GITLAB_CLIENT_ID` | OAuth application ID used for GitLab device flow. Overrides the built-in application, which covers `gitlab.com` only; a self-managed instance needs its own. Personal access token and `glab` authentication remain available without it. |
 | `OPENCHAMBER_SKIP_API_COMPRESSION` | Set to `true` to disable gzip compression for `/api/*` responses |
 | `OPENCHAMBER_COMPRESS_API` | Set to `true` to force `/api/*` compression, or `false` to disable it. Desktop runtime disables API compression by default to reduce local sidecar CPU use |
+| `OPENCHAMBER_FS_UPLOAD_MAX_BYTES` | Maximum file upload size in bytes (default: 100 MiB) |
+| `OPENCHAMBER_PROXY_TIMEOUT_MS` | OpenCode upstream proxy deadline in milliseconds. Accepts integers from `0` to `2147483647`; defaults to `240000` (4 minutes). Invalid values warn and keep the default. `0` disables this proxy deadline, allowing unbounded waits until the client disconnects. Other client and upstream timeouts still apply. VS Code's separate extension bridge is unchanged. |
 | `OPENCHAMBER_TERMINAL_SHELL` | Preferred terminal shell executable used by the `Auto` setting before platform defaults |
+| `npm_config_registry` / `NPM_CONFIG_REGISTRY` | Registry used for plugin metadata and npm version checks. Scoped registry settings and the user's `.npmrc` are also honored. The lowercase value takes precedence when both are set. |
 
 </details>
 

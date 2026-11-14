@@ -41,123 +41,166 @@ export function matchesFuzzyQuery(
   return fuse.search(query).length > 0;
 }
 
-function getFuzzyMatchMask<T>(
-  items: T[],
-  query: string,
-  getText: (item: T) => string,
-  options?: FuzzySearchOptions
-): boolean[] {
-  if (!query) {
-    return items.map(() => true);
+const RANK_TOKEN_MISS = Number.POSITIVE_INFINITY;
+
+const tokenizeRankQuery = (query: string): string[] =>
+  query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+const compactText = (value: string): string => value.replace(/[^a-z0-9]+/g, '');
+
+type RankFields = { fields: string[]; compact: string[] };
+
+const buildRankFields = (texts: ReadonlyArray<string | null | undefined>): RankFields => {
+  const fields: string[] = [];
+  const compact: string[] = [];
+  for (const text of texts) {
+    if (!text) continue;
+    const lower = text.toLowerCase();
+    fields.push(lower);
+    compact.push(compactText(lower));
   }
+  return { fields, compact };
+};
 
-  const mergedOptions = { ...DEFAULT_FUZZY_OPTIONS, ...options };
-  const queryLower = query.toLowerCase();
-  const matches = new Array(items.length).fill(false);
-  const fuzzyCandidateTexts: string[] = [];
-  const fuzzyCandidateIndices: number[] = [];
-
-  for (let i = 0; i < items.length; i++) {
-    const target = getText(items[i]);
-    if (!target) {
-      continue;
+/**
+ * Score one query token against an item's fields. Lower is better:
+ * field prefix < word-boundary substring < mid-word substring <
+ * punctuation-insensitive ("compact") substring. Earlier fields win ties, so
+ * callers should order `getTexts` by importance (name before path/description).
+ */
+const scoreRankToken = (token: string, { fields, compact }: RankFields): number => {
+  // A token with no alphanumerics compacts to '', and every field contains ''.
+  // Without this guard a "..." query would score a hit on every item.
+  const compactToken = compactText(token);
+  let best = RANK_TOKEN_MISS;
+  for (let fieldIndex = 0; fieldIndex < fields.length; fieldIndex++) {
+    const field = fields[fieldIndex];
+    const fieldPenalty = fieldIndex * 0.01;
+    const idx = field.indexOf(token);
+    let score = RANK_TOKEN_MISS;
+    if (idx === 0) {
+      score = fieldPenalty;
+    } else if (idx > 0) {
+      const boundary = !/[a-z0-9]/.test(field[idx - 1]);
+      score = (boundary ? 0.1 : 0.2) + idx / 1000 + fieldPenalty;
+    } else if (compactToken.length > 0) {
+      const compactIdx = compact[fieldIndex].indexOf(compactToken);
+      if (compactIdx >= 0 && token.length > 1) {
+        score = 0.4 + compactIdx / 1000 + fieldPenalty;
+      }
     }
-
-    if (mergedOptions.preferSubstring && target.toLowerCase().includes(queryLower)) {
-      matches[i] = true;
-      continue;
-    }
-
-    fuzzyCandidateTexts.push(target);
-    fuzzyCandidateIndices.push(i);
+    if (score < best) best = score;
   }
+  return best;
+};
 
-  if (fuzzyCandidateTexts.length === 0) {
-    return matches;
-  }
-
-  const fuse = new Fuse(fuzzyCandidateTexts, {
-    threshold: mergedOptions.threshold,
-    distance: mergedOptions.distance,
-    ignoreLocation: mergedOptions.ignoreLocation,
-  });
-
-  for (const result of fuse.search(query)) {
-    matches[fuzzyCandidateIndices[result.refIndex]] = true;
-  }
-
-  return matches;
+export interface RankByQueryOptions {
+  limit?: number;
+  /** Typo-tolerant Fuse fallback for single-token queries (default true). */
+  fuzzy?: boolean;
 }
 
 /**
- * Score-sorted fuzzy ranking. Strict (low threshold), prioritizes substring
- * matches (especially prefix matches), and returns the top N.
+ * The canonical dropdown matcher: every whitespace-separated query token must
+ * match somewhere in the item's fields (any order, punctuation-insensitive),
+ * and results come back ordered by relevance — exact/prefix matches first,
+ * then word-boundary and substring matches, original order breaking ties.
+ * Single-token queries additionally fall back to typo-tolerant fuzzy matching.
  *
- * Use this for command-palette-style result ranking where order matters more
- * than recall.
+ * Use this for every searchable dropdown (projects, agents, branches, models)
+ * instead of ad hoc `toLowerCase().includes` filters, so matching quality and
+ * ordering stay consistent across pickers.
  */
-export function scoreByFuzzyQuery<T>(
-  items: T[],
+export function rankByQuery<T>(
+  items: readonly T[],
   query: string,
-  getText: (item: T) => string,
-  options?: { limit?: number; threshold?: number; noFuzzy?: boolean },
-): { item: T; score: number }[] {
-  if (!query) return items.map((item) => ({ item, score: 0 }));
+  getTexts: (item: T) => ReadonlyArray<string | null | undefined>,
+  options?: RankByQueryOptions,
+): T[] {
+  const tokens = tokenizeRankQuery(query);
   const limit = options?.limit ?? items.length;
-  const threshold = options?.threshold ?? 0.3;
-  const noFuzzy = options?.noFuzzy ?? false;
-  const queryLower = query.toLowerCase();
+  if (tokens.length === 0) return items.slice(0, limit);
 
-  const scored: { item: T; score: number }[] = [];
-  const fuzzyCandidates: { item: T; text: string }[] = [];
+  const scored: { item: T; score: number; order: number }[] = [];
+  const missed: { item: T; joined: string; order: number }[] = [];
 
-  for (const item of items) {
-    const text = getText(item);
-    if (!text) continue;
-    const lower = text.toLowerCase();
-    const idx = lower.indexOf(queryLower);
-    if (idx === 0) {
-      scored.push({ item, score: -1 });
-      continue;
+  for (let order = 0; order < items.length; order++) {
+    const item = items[order];
+    const rankFields = buildRankFields(getTexts(item));
+    let total = 0;
+    for (const token of tokens) {
+      const tokenScore = scoreRankToken(token, rankFields);
+      if (tokenScore === RANK_TOKEN_MISS) {
+        total = RANK_TOKEN_MISS;
+        break;
+      }
+      total += tokenScore;
     }
-    if (idx > 0) {
-      scored.push({ item, score: idx / 1000 });
-      continue;
+    if (total === RANK_TOKEN_MISS) {
+      missed.push({ item, joined: rankFields.fields.join(' '), order });
+    } else {
+      scored.push({ item, score: total, order });
     }
-    if (!noFuzzy) fuzzyCandidates.push({ item, text });
   }
 
-  if (fuzzyCandidates.length > 0) {
+  const fuzzyEnabled = options?.fuzzy ?? true;
+  if (fuzzyEnabled && tokens.length === 1 && tokens[0].length >= 3 && missed.length > 0) {
     const fuse = new Fuse(
-      fuzzyCandidates.map((c) => c.text),
-      { threshold, ignoreLocation: true, distance: 100, includeScore: true, minMatchCharLength: 2 },
+      missed.map((entry) => entry.joined),
+      { threshold: 0.35, ignoreLocation: true, distance: 100, includeScore: true, minMatchCharLength: 2 },
     );
-    for (const result of fuse.search(query)) {
-      scored.push({ item: fuzzyCandidates[result.refIndex].item, score: result.score ?? 1 });
+    for (const result of fuse.search(tokens[0])) {
+      const entry = missed[result.refIndex];
+      scored.push({ item: entry.item, score: 1 + (result.score ?? 1), order: entry.order });
     }
   }
 
-  scored.sort((a, b) => a.score - b.score);
-  return scored.slice(0, limit);
+  scored.sort((a, b) => (a.score - b.score) || (a.order - b.order));
+  return scored.slice(0, limit).map((entry) => entry.item);
 }
 
-export function partitionByFuzzyQuery<T>(
-  items: T[],
+/**
+ * Boolean companion to `rankByQuery` for lists that keep their own grouping or
+ * order: every token must match one of the fields, punctuation-insensitive,
+ * without the fuzzy fallback.
+ */
+export function matchesRankQuery(
+  texts: ReadonlyArray<string | null | undefined>,
   query: string,
-  getText: (item: T) => string,
-  options?: FuzzySearchOptions
-): { matching: T[]; other: T[] } {
-  const matches = getFuzzyMatchMask(items, query, getText, options);
-  const matching: T[] = [];
-  const other: T[] = [];
-
-  for (let i = 0; i < items.length; i++) {
-    if (matches[i]) {
-      matching.push(items[i]);
-      continue;
-    }
-    other.push(items[i]);
-  }
-
-  return { matching, other };
+  options?: { wordStart?: boolean },
+): boolean {
+  const tokens = tokenizeRankQuery(query);
+  if (tokens.length === 0) return true;
+  const rankFields = buildRankFields(texts);
+  if (options?.wordStart) return tokens.every((token) => matchesTokenAtWordStart(token, rankFields));
+  return tokens.every((token) => scoreRankToken(token, rankFields) !== RANK_TOKEN_MISS);
 }
+
+/**
+ * How the sidebar's search and its sections' title condition match: each word
+ * from the start of a word, so a standing section does not fill with "prefix"
+ * for "fix". The pickers keep matching anywhere.
+ */
+export const SIDEBAR_SEARCH = { wordStart: true } as const;
+
+const WORD_CHARACTER = /[\p{L}\p{N}]/u;
+
+/**
+ * Whether a token starts a word in one of the fields: at the field's start or
+ * after a character that is not a letter or a digit, in any script. "fix"
+ * finds "Fix login" and "bugfix/fix-relay" but not "prefix". Punctuation inside
+ * the token may be left out from a word start on: "sidebarcustom" finds
+ * "openchamber/sidebar-custom-sections".
+ */
+const matchesTokenAtWordStart = (token: string, { fields }: RankFields): boolean => {
+  const compactToken = compactText(token);
+  return fields.some((field) => {
+    for (let index = 0; index < field.length; index += 1) {
+      if (index > 0 && WORD_CHARACTER.test(field[index - 1])) continue;
+      if (field.startsWith(token, index)) return true;
+      if (token.length > 1 && compactToken.length > 0 && compactText(field.slice(index)).startsWith(compactToken)) return true;
+    }
+    return false;
+  });
+};
+

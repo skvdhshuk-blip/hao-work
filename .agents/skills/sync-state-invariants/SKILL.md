@@ -5,9 +5,11 @@ description: Use when changing session synchronization, bootstrap or reconnect s
 
 # Sync State Invariants
 
-## Read First
+## Required Context
 
-Read `packages/ui/src/sync/DOCUMENTATION.md` and the nearest owning module documentation before editing.
+Read `packages/ui/src/sync/DOCUMENTATION.md` and the nearest owning module documentation before editing. Context gathering is complete when every changed state has an identified owner, authority, scope, and lifecycle.
+
+Before editing behavior a user can reach, write the surface list (`ui-api-decoupling`, *Name The Surfaces Before Editing*). State that reconciles differently per runtime is a parity decision, not an implementation detail.
 
 ## Sources Of Truth
 
@@ -20,7 +22,9 @@ Classify every input before deriving state:
 | Persisted history/cache | Startup continuity and context restoration, never proof of current activity |
 | Optimistic shadow state | Temporary UI continuity until authoritative reconciliation |
 
-Prefer deterministic authoritative records over heuristics. Derive live behavior from live channels, not historical anomalies.
+Give each state and its invariants one owner. Callers request domain transitions from that owner; they do not inspect one field, mutate another collection, and repair status externally. Split ownership only when the states have genuinely independent lifecycles.
+
+Represent mutually exclusive lifecycle states with discriminated unions or equally precise contracts. Avoid boolean/nullable field combinations that permit impossible states. Reject invalid transitions at the owning boundary so downstream reducers and effects receive trusted state.
 
 ## Failure Is Not Empty
 
@@ -45,20 +49,17 @@ Inferring destructive cleanup from disappearance between snapshots requires an e
 
 ## Live And Historical State
 
-- Use historical state to restore context, not to infer ongoing execution.
-- Scope delayed-live fallbacks to the active entity and clear them when authoritative state arrives.
+- Scope delayed-live fallbacks to the active entity, never widen them to arbitrary historical records, and clear them when authoritative state arrives.
 - Do not let stale persisted data keep a fallback active indefinitely.
 - Define field precedence when global and local/live snapshots feed the same view.
 - Use one ordering/rank source for all views of the same entities.
 
 ## Event Reducers
 
+- Make the valid transition path explicit and flat. Return early for irrelevant entities and semantic no-ops; assert or reject transitions that violate an established invariant.
 - Clone only fields the event mutates; preserve every unrelated reference.
 - Return no change for semantically identical events.
-- Gate scans behind cheap event/entity checks.
-- Coalesce repeated same-entity events without violating ordering.
 - Reject stale async/event completions using generation or authoritative timestamps.
-- Do not widen a narrow fallback to arbitrary historical records.
 
 For streaming-frequency work, also load `performance-engineering`.
 
@@ -66,11 +67,12 @@ For streaming-frequency work, also load `performance-engineering`.
 
 - Preserve rich fields when lightweight polling omits them.
 - Use cheap change detection before heavy per-directory fetches.
+- Refresh only directories already running: the selected one and those an event names. Every OpenCode read of a directory starts it with its MCP servers (`opencode-v2`), so a refresh over every store is a fan-out.
 - Treat startup 502/503 as transient with bounded retry/recovery.
 - A retry loop requires a real failure signal; swallowed errors disable retries.
 - Preserve previous authoritative state during transient bootstrap/reconnect failures.
 - Distinguish stale-scope rejection from same-scope mutation reconciliation. A generation token rejects obsolete owners but does not protect mutations made while a still-valid request is in flight.
-- Capture a mutation revision when an authoritative load starts. At commit time, read current state and preserve or overlay entity mutations newer than that revision.
+- Capture a mutation revision when an authoritative load or persisted hydration starts. At commit time, read current state and preserve or overlay entity mutations newer than that revision.
 - Record removals as mutations even when the entity is already absent, so an in-flight response cannot resurrect it.
 - Return committed reconciled state, not the raw fetched snapshot, when callers depend on the result.
 
@@ -97,21 +99,41 @@ For streaming-frequency work, also load `performance-engineering`.
 - Key runtime-scoped caches by runtime identity when IDs or paths can collide.
 - Clean optimistic and local cache state after partial failures.
 
+### Never Evict What Is In Use
+
+An entry acquired during render but protected only after commit is unprotected
+for the whole render pass. Eviction that runs on acquisition therefore disposes
+entries that are actively mounting; the next render recreates them in a loading
+state, which issues another fetch, which repeats forever. The symptom is an
+endless request loop and sawtoothing listeners, heap, and CPU, and it appears
+only once live entries outnumber the limit, so it never reproduces on a small
+workspace.
+
+- Define what protects an entry from eviction, and prove that protection is in
+  place before eviction can observe the entry, not one commit later.
+- Treat capacity as a soft target. Overflowing briefly is always cheaper than
+  evict/recreate cycles; bound the cache with idle-time eviction instead.
+- Never run an eviction scan on the acquisition path. Coalesce it into one
+  deferred pass so a render mounting many entries scans once, not once per
+  entry.
+- Keep explicit lifecycle edges, such as the last consumer releasing an entry,
+  synchronous. Deferring those changes an observable contract.
+- Raising a limit is a workaround, not a fix. It relocates the cliff and hides
+  the loop from everyone whose workload is smaller than the new number.
+
 ## Persisted Snapshot Ordering
 
 When state exists in memory and one or more persistent stores, define an explicit authority and ordering protocol:
 
-- Distinguish a missing snapshot from authoritative empty data, malformed data, and read failure.
 - Preserve mutation order independently per owner by serializing writes or attaching monotonic revisions and rejecting stale writes. Do not rely on uncontrolled wall-clock timestamps.
 - Capture runtime/owner identity with every debounced or asynchronous operation and verify it again before commit.
 - Pending writes must complete against their captured owner, drain before an owner switch, or be canceled only under an explicit durability/data-loss contract. Apply the strongest available guarantee at page hide/freeze and shutdown boundaries.
-- During hydration, capture the local mutation revision and do not replace state after newer local mutations.
-- Validate persisted payload shape before granting authority. Malformed data is failure, not empty success.
+- Distinguish a missing snapshot, authoritative empty data, read failure, and malformed data; validate payload shape before granting authority.
 - Define retention explicitly; never silently evict older owner namespaces unless bounded retention and resulting data loss are intentional contracts.
 
 ## Verification
 
-Cover the relevant lifecycle, not only static state:
+Cover every applicable lifecycle branch, not only static state. Verification is complete when failure cannot masquerade as empty success, stale or partial data cannot cause destructive replacement, and each transition remains with its owner:
 
 - fresh bootstrap and successful empty result;
 - fetch failure preserving prior state;
@@ -125,16 +147,3 @@ Cover the relevant lifecycle, not only static state:
 - identity-preserving moves/category changes and runtime/scope changes resetting cleanup baselines;
 - create, update, move, archive, and delete mutations surviving responses started before those mutations;
 - missing versus empty persistence, malformed payloads, out-of-order writes, hydration races, and lifecycle durability behavior.
-
-## Red Flags
-
-- Fetch helper catches and returns `[]`.
-- Historical message/session data drives a live spinner.
-- One failed entity blocks or clears all entities.
-- Light polling overwrites fields it did not fetch.
-- Queue reads current model/agent at send time.
-- New session lookup assumes SSE already indexed it.
-- Optimistic data has no shadow entry or rollback.
-- Snapshot-difference cleanup treats its first startup snapshot as a disappearance event.
-- Missing or malformed persistence becomes authoritative empty state.
-- Debounced writes are canceled on owner/lifecycle change without completing against the captured owner or an explicit durability/data-loss contract.

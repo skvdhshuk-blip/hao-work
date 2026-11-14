@@ -81,6 +81,13 @@ running.
   obvious (e.g. `app.example.com`, `~/.secrets/cf-token`).
 - One command per idea. Don't chain unrelated commands just to look compact.
 
+## Update a page after a behaviour change
+
+When a feature starts working differently, re-read its page from the new
+behaviour, starting with the intro. Patching only the sentences that name the
+changed detail leaves an opening that still describes the old feature. Then
+update every translated copy of the page the same way.
+
 ## Add a new docs page
 
 1. Create a new file in `packages/docs/content/docs/`.
@@ -203,13 +210,16 @@ other language mirrors the English files under a locale folder.
 | Korean | `ko/` | `ko` |
 | Polish | `pl/` | `pl` |
 | French | `fr/` | `fr` |
+| German | `de/` | `de` |
 | Japanese | `ja/` | `ja` |
+| Turkish | `tr/` | `tr` |
+| Dutch | `nl/` | `nl` |
 
 > [!IMPORTANT]
 > The **content folder** uses the lowercase locale key (`zh-cn`, `pt-br`); the
 > **sidebar `translations`** key uses the BCP-47 language tag (`zh-CN`, `pt-BR`).
 > They look similar but are not interchangeable — Starlight resolves them with
-> different rules. Everything else (`uk`, `es`, `ko`, `pl`, `fr`, `ja`, `en`) is identical
+> different rules. Everything else (`uk`, `es`, `ko`, `pl`, `fr`, `de`, `ja`, `tr`, `nl`, `en`) is identical
 > in both columns.
 
 This locale set is mirrored in the website at
@@ -231,6 +241,7 @@ content/docs/
   ko/install.mdx           # Korean
   pl/install.mdx           # Polish
   fr/install.mdx           # French
+  tr/install.mdx           # Turkish
   ja/install.mdx           # Japanese
 
   guides/tunnels.mdx       # nested English page
@@ -269,6 +280,7 @@ to each section and item in `sidebar.config.json`:
     "ko": "여기서 시작",
     "pl": "Zacznij tutaj",
     "fr": "Commencer ici",
+    "de": "Hier starten",
     "ja": "ここから開始"
   },
   "items": [
@@ -283,6 +295,7 @@ to each section and item in `sidebar.config.json`:
         "ko": "설치",
         "pl": "Instalacja",
         "fr": "Installation",
+        "de": "Installation",
         "ja": "インストール"
       }
     }

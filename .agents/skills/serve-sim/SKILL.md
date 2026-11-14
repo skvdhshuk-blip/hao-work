@@ -5,46 +5,34 @@ description: Use when working with the OpenChamber iOS Simulator app without ope
 
 # serve-sim
 
-Use `serve-sim` to stream and control a booted Apple Simulator from the terminal. It captures the simulator framebuffer, serves a browser preview, and exposes CLI controls for taps, typing, gestures, hardware buttons, rotation, memory warnings, permissions, camera injection, and accessibility inspection.
+## Scripted Workflow
 
-## OpenChamber Defaults
+Run the discrete scripts from the repository root:
 
-- Mobile package: `packages/mobile`
-- iOS bundle id: `com.openchamber.app`
-- Headless env wrapper: `packages/mobile/scripts/with-mobile-env.mjs`
-- iOS simulator helper: `packages/mobile/scripts/ios-sim.mjs`
-- Preferred scripts:
-  - `bun run mobile:build:ios:simulator`
-  - `bun run mobile:sim:run`
-  - `bun run mobile:sim:serve`
-  - `bun run mobile:sim:list`
-  - `bun run mobile:sim:kill`
-  - `bun run mobile:sim:dev` — foreground build + run + stream in one command (`--no-build` to skip the build); intended for the user, agents should prefer the discrete scripts above
-
-## Workflow
-
-1. Build the simulator app without opening Xcode:
+1. Build the simulator app:
    ```sh
    bun run mobile:build:ios:simulator
    ```
 
-2. Boot a simulator if needed, install, and launch the app:
+2. Boot if needed, install, and launch:
    ```sh
    bun run mobile:sim:run
    ```
 
-3. Start the browser stream in detached JSON mode:
+3. Start the detached browser stream:
    ```sh
    bun run mobile:sim:serve
    ```
-   Surface the returned `url` to the user. It normally starts at `http://127.0.0.1:3100`; always use the `url` from the JSON output rather than assuming the port.
+   Surface the returned JSON `url`; it is the only authoritative stream address.
 
 4. Stop helpers when finished unless the user asks to keep them running:
    ```sh
    bun run mobile:sim:kill
    ```
 
-## Direct CLI Controls
+Completion means the app launched, the returned stream URL was surfaced, and requested interactions were verified.
+
+## Manual Controls
 
 - Tap normalized coordinates: `bunx serve-sim tap 0.5 0.5`
 - Type focused text: `bunx serve-sim type "hello"`
@@ -53,9 +41,19 @@ Use `serve-sim` to stream and control a booted Apple Simulator from the terminal
 - List streams: `bunx serve-sim --list -q`
 - Accessibility tree: `curl http://localhost:3100/ax`
 
-Run direct CLI commands from `packages/mobile` (the binary lives in that package; plain `serve-sim` inside `with-mobile-env.mjs` from elsewhere fails with command not found).
+Run direct CLI commands from `packages/mobile`. `serve-sim` is installed in that package and is absent from the root `node_modules/.bin`.
 
 Coordinates are normalized `0..1`, not pixels. Prefer `tap` for simple taps; do not emulate taps using separate `gesture` begin/end commands because that can register as long press.
+
+If accessibility lookup cannot identify a target, report the missing target instead of guessing coordinates.
+
+## iPhone Duo (foldable)
+
+- Runtime: the Duo-specific one (`xcodebuild -downloadPlatform iOS -buildVersion 27.2` gives `SimRuntime.iOS-27-2-iPhone19-4`). On the generic iOS 27.1 runtime AccessibilityUIServer crash-loops at launch and macOS shows endless crash dialogs.
+- Xcode 27 has no Simulator.app; `DeviceHub.app` in `Xcode.app/Contents/Applications` replaces it.
+- `bunx serve-sim fold <0..180>` sets the hinge; the stream shows the inner display. `simctl io <udid> screenshot --display=1` shoots the outer screen, `--display=3` the inner.
+- `tap` and `type` reach the app only when folded. Unfolded, no touches arrive, so drive the WebView through lldb: attach to the app pid, `expr -l objc -- @import WebKit`, take the WKWebView at `[[[[[UIApplication sharedApplication] connectedScenes] anyObject] keyWindow] rootViewController] view]`, `evaluateJavaScript` a script that writes its result into `document.title`, then `po [webView title]`.
+- Geometry: safe-area insets top 0, right 84 (the status bar column), bottom 34; window 466×678 folded, 951×669 unfolded, which is the tablet layout (short side ≥ 600).
 
 ## Preconditions
 
@@ -63,10 +61,3 @@ Coordinates are normalized `0..1`, not pixels. Prefer `tap` for simple taps; do 
 - Xcode installed; use `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` if `xcode-select` points at CommandLineTools.
 - Node 18+.
 - At least one simulator can be booted with `xcrun simctl`.
-
-## Anti-Patterns
-
-- Do not open Xcode just to build/install/launch during agent work; use the scripts above.
-- Do not parse human output from `serve-sim`; use `-q` for JSON.
-- Do not leave helper streams running unintentionally.
-- Do not guess coordinates after accessibility lookup fails; report the missing target instead.

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { useInlineCommentDraftStore } from './useInlineCommentDraftStore';
+import { migratePersistedDrafts, persistedDraftEnvelopeSchema, useInlineCommentDraftStore } from './useInlineCommentDraftStore';
 
 const selection = {
   source: 'terminal' as const,
@@ -7,13 +7,14 @@ const selection = {
   startLine: 4,
   endLine: 5,
   code: 'first\nsecond',
-  language: 'term-1',
+  language: '',
+  terminalId: 'term-1',
   text: '',
 };
 const target = { directory: '/repo', sessionKey: 'session-1' };
 
 describe('terminal context drafts', () => {
-  afterEach(() => { useInlineCommentDraftStore.setState({ drafts: {}, touchedAt: {} }); });
+  afterEach(() => { useInlineCommentDraftStore.setState({ drafts: {} }); });
 
   test('persists snapshots by chat session and deduplicates identical selections', () => {
     useInlineCommentDraftStore.getState().addDraft(target, selection);
@@ -64,7 +65,7 @@ describe('terminal context drafts', () => {
     const originalStringify = JSON.stringify;
     let envelopeSerializations = 0;
     JSON.stringify = ((value: unknown, ...rest: unknown[]) => {
-      if (value && typeof value === 'object' && 'drafts' in value && 'touchedAt' in value) {
+      if (value && typeof value === 'object' && 'drafts' in value) {
         envelopeSerializations += 1;
       }
       return originalStringify(value, ...(rest as [Parameters<typeof JSON.stringify>[1], Parameters<typeof JSON.stringify>[2]]));
@@ -77,5 +78,62 @@ describe('terminal context drafts', () => {
     } finally {
       JSON.stringify = originalStringify;
     }
+  });
+});
+
+describe('persisted draft migration', () => {
+  type PersistedV2Draft = {
+    id: string;
+    sessionKey: string;
+    source: string;
+    fileLabel: string;
+    startLine: number;
+    endLine: number;
+    code: string;
+    language: string;
+    text: string;
+    createdAt: number;
+  };
+  const v2Draft = (overrides: Partial<PersistedV2Draft> = {}): PersistedV2Draft => ({
+    id: 'icd-1',
+    sessionKey: 'session-1',
+    source: 'diff',
+    fileLabel: 'src/app.ts',
+    startLine: 3,
+    endLine: 5,
+    code: 'const x = 1;',
+    language: 'ts',
+    text: 'fix this',
+    createdAt: 1000,
+    ...overrides,
+  });
+
+  test('moves the terminal id out of the language field', () => {
+    const migrated = migratePersistedDrafts(persistedDraftEnvelopeSchema.safeParse({
+      drafts: { key: [v2Draft({ source: 'terminal', language: 'term-9' })] },
+    }), 2);
+    expect(migrated.drafts.key[0].terminalId).toBe('term-9');
+    expect(migrated.drafts.key[0].language).toBe('');
+  });
+
+  test('drops preview-console drafts but keeps the rest of the bucket', () => {
+    const migrated = migratePersistedDrafts(persistedDraftEnvelopeSchema.safeParse({
+      drafts: { key: [v2Draft({ source: 'preview-console' }), v2Draft({ id: 'icd-2' })] },
+    }), 2);
+    expect(migrated.drafts.key.map((draft) => draft.id)).toEqual(['icd-2']);
+  });
+
+  test('malformed entries and unknown payload shapes reset safely', () => {
+    expect(migratePersistedDrafts(persistedDraftEnvelopeSchema.safeParse(null), 2)).toEqual({ drafts: {} });
+    expect(migratePersistedDrafts(persistedDraftEnvelopeSchema.safeParse({ drafts: 'nope' }), 2)).toEqual({ drafts: {} });
+    const migrated = migratePersistedDrafts(persistedDraftEnvelopeSchema.safeParse({
+      drafts: { key: [{ id: 42 }, v2Draft()] },
+    }), 2);
+    expect(migrated.drafts.key).toHaveLength(1);
+  });
+
+  test('pre-v2 payloads reset entirely', () => {
+    expect(migratePersistedDrafts(persistedDraftEnvelopeSchema.safeParse({ drafts: { key: [v2Draft()] } }), 1))
+      .toEqual({ drafts: {} });
   });
 });

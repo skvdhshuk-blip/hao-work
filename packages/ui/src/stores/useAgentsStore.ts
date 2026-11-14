@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { devtools, persist } from "zustand/middleware";
-import type { Agent, PermissionConfig } from "@opencode-ai/sdk/v2";
+import type { Agent } from "@/lib/opencode/model";
 import { opencodeClient } from "@/lib/opencode/client";
 import { emitConfigChange, scopeMatches, subscribeToConfigChanges, type ConfigChangeScope } from "@/lib/configSync";
 import {
@@ -9,6 +9,7 @@ import {
   finishConfigUpdate,
   updateConfigUpdateMessage,
 } from "@/lib/configUpdate";
+import { waitForOpenCodeConnection } from "@/stores/waitForOpenCodeConnection";
 import { createDeferredSafeJSONStorage } from "./utils/safeStorage";
 import { useConfigStore } from "@/stores/useConfigStore";
 import { invalidateCommandsLoadCache, useCommandsStore } from "@/stores/useCommandsStore";
@@ -16,6 +17,9 @@ import { useProjectsStore } from "@/stores/useProjectsStore";
 import { useSkillsCatalogStore } from "@/stores/useSkillsCatalogStore";
 import { invalidateSkillsLoadCache, useSkillsStore } from "@/stores/useSkillsStore";
 import { runtimeFetch } from "@/lib/runtime-fetch";
+import { z } from "zod";
+import { formatModelSelection, parseModelSelection } from "@/lib/modelIdentifier";
+import { getRuntimeKey } from "@/lib/runtime-switch";
 
 // Note: useDirectoryStore cannot be imported at top level to avoid circular dependency
 // useDirectoryStore -> useAgentsStore (for refreshAfterOpenCodeRestart)
@@ -27,7 +31,7 @@ const getCurrentDirectory = (): string | null => {
   }
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // oxlint-disable-next-line typescript/no-explicit-any
     const store = (window as any).__zustand_directory_store__;
     if (store) {
       return store.getState().currentDirectory;
@@ -37,6 +41,19 @@ const getCurrentDirectory = (): string | null => {
   }
 
   return null;
+};
+
+/**
+ * Directory a call operates on. Settings can browse another project without
+ * moving the app, so every entry point takes one; omitting it means the project
+ * the app is currently on.
+ */
+const resolveDirectory = (directory?: string | null): string | null => {
+  if (directory !== undefined) {
+    const trimmed = directory?.trim();
+    return trimmed ? trimmed : null;
+  }
+  return getConfigDirectory();
 };
 
 export const getConfigDirectory = (): string | null => {
@@ -64,14 +81,23 @@ export const getConfigDirectory = (): string | null => {
 const AGENTS_LOAD_CACHE_TTL_MS = 5000;
 const DEFAULT_AGENTS_CACHE_KEY = '__default__';
 const agentsLastLoadedAt = new Map<string, number>();
-const agentsLoadInFlight = new Map<string, Promise<boolean>>();
+// Each invalidation starts a new load generation. A read that began before the
+// latest invalidation (a delete, a catalog event) may carry the list from
+// before that change, so later callers never join it: they wait for it to
+// settle and read again, and the newest generation's result is the one kept.
+const agentsLoadGeneration = new Map<string, number>();
+const agentsLoadInFlight = new Map<string, { generation: number; request: Promise<boolean> }>();
+let agentsGeneration = 0;
 
 const getAgentsCacheKey = (directory: string | null): string => {
   return directory?.trim() || DEFAULT_AGENTS_CACHE_KEY;
 };
 
-const invalidateAgentsLoadCache = (directory: string | null = getConfigDirectory()) => {
-  agentsLastLoadedAt.delete(getAgentsCacheKey(directory));
+export const invalidateAgentsLoadCache = (directory: string | null = getConfigDirectory()) => {
+  const cacheKey = getAgentsCacheKey(directory);
+  agentsLastLoadedAt.delete(cacheKey);
+  agentsLoadGeneration.set(cacheKey, (agentsLoadGeneration.get(cacheKey) ?? 0) + 1);
+  opencodeClient.invalidateAgentList(directory);
 };
 
 const buildAgentsSignature = (agents: Agent[]): string => {
@@ -81,18 +107,23 @@ const buildAgentsSignature = (agents: Agent[]): string => {
       return [
         agent.name,
         extended.mode ?? '',
-        typeof extended.model === 'object' && extended.model
-          ? `${extended.model.providerID ?? ''}/${extended.model.modelID ?? ''}`
-          : String(extended.model ?? ''),
-        String(extended.temperature ?? ''),
-        String((extended as { topP?: unknown; top_p?: unknown }).topP ?? (extended as { topP?: unknown; top_p?: unknown }).top_p ?? ''),
-        extended.prompt ?? '',
-        JSON.stringify(extended.permission ?? null),
+        formatModelSelection(
+          agent.model
+            ? { providerID: agent.model.providerID, modelID: agent.model.id, variant: agent.model.variant }
+            : null,
+        ) ?? '',
+        String(agent.steps ?? ''),
+        String(agent.request?.body?.temperature ?? ''),
+        String(agent.request?.body?.top_p ?? ''),
+        agent.system ?? '',
+        JSON.stringify(agent.permissions ?? null),
         extended.scope ?? '',
         extended.group ?? '',
         extended.description ?? '',
-        String(extended.hidden === true),
+        extended.color ?? '',
+        String(agent.hidden === true),
         String(extended.native === true),
+        String(extended.legacy === true),
       ].join('|');
     })
     .join('||');
@@ -100,19 +131,74 @@ const buildAgentsSignature = (agents: Agent[]): string => {
 
 export type AgentScope = 'user' | 'project';
 
-export interface AgentConfig {
-  name: string;
-  description?: string;
-  model?: string | null;
-  variant?: string | null;
-  temperature?: number | null;
-  top_p?: number | null;
-  prompt?: string | null;
-  mode?: "primary" | "subagent" | "all";
-  permission?: PermissionConfig | null;
+/** Effect of a permission rule in OpenCode 2. */
+export type PermissionEffect = 'allow' | 'ask' | 'deny';
 
-  disable?: boolean;
+/**
+ * One entry of an agent's ordered `permissions` array. Evaluation is
+ * last-match-wins, so the order of the array is meaningful and the editor
+ * never sorts it.
+ */
+export interface PermissionRule {
+  action: string;
+  resource: string;
+  effect: PermissionEffect;
+}
+
+/**
+ * The agent entity as OpenChamber persists it, i.e. the OpenCode 2 shape the
+ * config routes read and write. `model` is the joined `provider/model#variant`
+ * string; sampling parameters live under `request.body`.
+ */
+/**
+ * The sampling parameters OpenChamber edits. OpenCode 2 keeps them under
+ * `request.body`; any other key a user put there is preserved on write.
+ */
+export interface AgentRequestBody {
+  temperature?: number;
+  top_p?: number;
+}
+
+export interface AgentRequest {
+  headers?: Record<string, string>;
+  body?: AgentRequestBody;
+}
+
+export interface AgentEntity {
+  description?: string | null;
+  model?: string | null;
+  system?: string | null;
+  mode?: "primary" | "subagent" | "all";
+  hidden?: boolean;
+  color?: string | null;
+  steps?: number | null;
+  /** null removes the key, which turns a disabled agent back on. */
+  disabled?: boolean | null;
+  request?: AgentRequest | null;
+  permissions?: PermissionRule[] | null;
+}
+
+export interface AgentConfig extends AgentEntity {
+  name: string;
   scope?: AgentScope;
+}
+
+/** What `GET /api/config/agents/:name/config` answers. */
+export interface AgentEntityEnvelope {
+  source: 'md' | 'json' | 'none';
+  scope: AgentScope | null;
+  path: string | null;
+  legacy: boolean;
+  config: AgentEntity;
+}
+
+/** What `GET /api/config/agents/:name/permissions` answers. */
+interface AgentPermissionsEnvelope {
+  global: PermissionRule[];
+  agent: PermissionRule[];
+  effective: Array<PermissionRule & { source: 'global' | 'agent' }>;
+  source: 'md' | 'json' | 'none';
+  path: string | null;
 }
 
 /**
@@ -126,14 +212,20 @@ export interface AgentMutationResult {
   requiresManualRestart?: boolean;
 }
 
-// Extended Agent type for API properties not in SDK types
+/**
+ * An agent plus the facts that live in its config file rather than in v2's
+ * `AgentInfo`: where it is defined, and the authoring fields OpenChamber writes.
+ */
 export type AgentWithExtras = Agent & {
   native?: boolean;
-  hidden?: boolean;
   options?: { hidden?: boolean };
   scope?: AgentScope;
   /** Subfolder name parsed from file path, e.g. "business", "development" */
   group?: string;
+  /** The file OpenChamber would rewrite on the next save. */
+  path?: string | null;
+  /** The file still uses v1 spellings; the next save rewrites it in v2. */
+  legacy?: boolean;
 };
 
 /** Parse the subfolder group name from an agent file path.
@@ -168,47 +260,118 @@ export const isAgentHidden = (agent: Agent): boolean => {
 export const filterVisibleAgents = (agents: Agent[]): Agent[] =>
   agents.filter((agent) => !isAgentHidden(agent));
 
+// Hidden custom agents remain manageable even though pickers exclude them. A
+// hidden agent counts as custom only when its config lookup confirmed it
+// (`native === false`): when the lookup failed the built-in flag is unknown,
+// and internal agents (title, compaction, summary) must stay out of Settings.
+export const isAgentManageable = (agent: Agent): boolean => {
+  if (!isAgentHidden(agent)) return true;
+  // SAFETY: store entries are SDK agents that loadAgents may extend with the
+  // optional config-lookup flags; reading an absent flag yields undefined.
+  const extended = agent as AgentWithExtras & { builtIn?: boolean };
+  return extended.native === false && extended.builtIn !== true;
+};
+
 const CONFIG_EVENT_SOURCE = "useAgentsStore";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const MAX_HEALTH_WAIT_MS = 20000;
-const FAST_HEALTH_POLL_INTERVAL_MS = 300;
-const FAST_HEALTH_POLL_ATTEMPTS = 4;
-const SLOW_HEALTH_POLL_BASE_MS = 800;
-const SLOW_HEALTH_POLL_INCREMENT_MS = 200;
-const SLOW_HEALTH_POLL_MAX_MS = 2000;
 
 const hasValue = <T>(value: T | null | undefined): value is T => value !== null && value !== undefined;
 
-export interface AgentDraft {
+const toModelRef = (model: string | null | undefined): Agent['model'] | undefined => {
+  const parsed = parseModelSelection(model);
+  if (!parsed) return undefined;
+  return { providerID: parsed.providerID, id: parsed.modelID, variant: parsed.variant };
+};
+
+const buildOptimisticAgent = (
+  name: string,
+  config: Partial<AgentConfig>,
+  previous?: Agent,
+): AgentWithExtras => {
+  const previousExtras = previous as AgentWithExtras | undefined;
+  const model = 'model' in config ? toModelRef(config.model) : previous?.model;
+  const request = config.request !== undefined
+    ? (config.request ?? { settings: {}, headers: {}, body: {} })
+    : previous?.request;
+  return {
+    ...(previous || { name }),
+    name,
+    description: config.description !== undefined ? (config.description || undefined) : previous?.description,
+    mode: config.mode ?? previous?.mode ?? 'subagent',
+    model,
+    steps: 'steps' in config ? (config.steps ?? undefined) : previous?.steps,
+    system: config.system !== undefined ? (config.system || undefined) : previous?.system,
+    color: 'color' in config ? (config.color ?? undefined) : previous?.color,
+    request,
+    permissions: config.permissions !== undefined
+      ? (config.permissions ?? [])
+      : (previous?.permissions ?? []),
+    scope: config.scope ?? previousExtras?.scope,
+    group: previousExtras?.group,
+  } as unknown as AgentWithExtras;
+};
+
+const upsertOptimisticAgentLocal = (
+  set: (partial: { agents: Agent[] }) => void,
+  get: () => { agents: Agent[] },
+  name: string,
+  config: Partial<AgentConfig>,
+) => {
+  const agents = get().agents;
+  const existing = agents.find((agent) => agent.name === name);
+  const nextAgent = buildOptimisticAgent(name, config, existing);
+  if (existing) {
+    set({
+      agents: agents.map((agent) => (agent.name === name ? nextAgent : agent)),
+    });
+  } else {
+    set({ agents: [...agents, nextAgent] });
+  }
+};
+
+interface AgentDraft {
   name: string;
   scope: AgentScope;
   description?: string;
+  /** Joined `provider/model#variant`. */
   model?: string | null;
-  variant?: string;
+  system?: string;
+  steps?: number | null;
   temperature?: number | null;
   top_p?: number | null;
-  prompt?: string;
   mode?: "primary" | "subagent" | "all";
-  permission?: PermissionConfig;
-  disable?: boolean;
+  permissions?: PermissionRule[];
+  hidden?: boolean;
 }
 
 interface AgentsStore {
 
   selectedAgentName: string | null;
+  /** Agents of the project the app is on. Chat and pickers read this one. */
   agents: Agent[];
+  /** Every directory loaded so far, including the ambient one. */
+  agentsByDirectory: Record<string, Agent[]>;
   isLoading: boolean;
   agentDraft: AgentDraft | null;
 
   setSelectedAgent: (name: string | null) => void;
   setAgentDraft: (draft: AgentDraft | null) => void;
-  loadAgents: () => Promise<boolean>;
-  createAgent: (config: AgentConfig) => Promise<AgentMutationResult>;
-  updateAgent: (name: string, config: Partial<AgentConfig>) => Promise<AgentMutationResult>;
-  deleteAgent: (name: string, scope?: AgentScope) => Promise<AgentMutationResult>;
-  getAgentByName: (name: string) => Agent | undefined;
+  loadAgents: (directory?: string | null) => Promise<boolean>;
+  resetForRuntimeSwitch: () => void;
+  /** The agent's own config entry, as stored — never the resolved `AgentInfo`. */
+  fetchAgentEntity: (name: string, directory?: string | null) => Promise<AgentEntityEnvelope | null>;
+  /** Global + agent + effective permission rules for one agent. */
+  fetchAgentPermissions: (name: string, directory?: string | null) => Promise<AgentPermissionsEnvelope | null>;
+  createAgent: (config: AgentConfig, directory?: string | null) => Promise<AgentMutationResult>;
+  updateAgent: (name: string, config: Partial<AgentConfig>, directory?: string | null) => Promise<AgentMutationResult>;
+  deleteAgent: (name: string, scope?: AgentScope, directory?: string | null) => Promise<AgentMutationResult>;
+  getAgentByName: (name: string, directory?: string | null) => Agent | undefined;
+  /** Agents switched off with `disabled: true`, per directory. OpenCode leaves them out of its list. */
+  disabledAgentsByDirectory: Record<string, DisabledAgent[]>;
+  /** Re-read the disabled agents; a failed read keeps the previous list. */
+  loadDisabledAgents: (directory?: string | null) => Promise<boolean>;
   // Returns only visible agents (excludes hidden internal agents)
-  getVisibleAgents: () => Agent[];
+  getVisibleAgents: (directory?: string | null) => Agent[];
 }
 
 declare global {
@@ -217,6 +380,70 @@ declare global {
   }
 }
 
+const EMPTY_AGENTS: Agent[] = [];
+const EMPTY_DISABLED_AGENTS: DisabledAgent[] = [];
+
+const DisabledAgentsResponseSchema = z.object({
+  agents: z.array(z.object({
+    name: z.string().min(1),
+    scope: z.enum(['user', 'project']).nullable(),
+    path: z.string().nullable(),
+    description: z.string().optional(),
+  })),
+});
+
+type DisabledAgent = z.infer<typeof DisabledAgentsResponseSchema>['agents'][number];
+
+/** Disabled agents of one project; an omitted directory means the project the app is on. */
+export const selectDisabledAgentsForDirectory = (
+  state: Pick<AgentsStore, 'disabledAgentsByDirectory'>,
+  directory?: string | null,
+): DisabledAgent[] => state.disabledAgentsByDirectory[getAgentsCacheKey(resolveDirectory(directory))] ?? EMPTY_DISABLED_AGENTS;
+
+/**
+ * Read one of the agent config sub-resources. Returns null on any failure so a
+ * fetch error never reads as "this agent has no config".
+ */
+async function fetchAgentResource<T>(
+  name: string,
+  resource: 'config' | 'permissions',
+  requestedDirectory?: string | null,
+): Promise<T | null> {
+  const directory = resolveDirectory(requestedDirectory);
+  const query = directory ? `?directory=${encodeURIComponent(directory)}` : '';
+  try {
+    const response = await runtimeFetch(
+      `/api/config/agents/${encodeURIComponent(name)}/${resource}${query}`,
+      {
+        headers: {
+          'Cache-Control': 'no-cache',
+          ...(directory ? { 'x-opencode-directory': directory } : {}),
+        },
+      },
+    );
+    if (!response.ok) return null;
+    // SAFETY: `/api/config/agents/:name/{config,permissions}` is OpenChamber's
+    // own route; it normalizes every entry through `config-v2.js` before
+    // answering, so the payload is already in the canonical v2 shape.
+    return (await response.json()) as T;
+  } catch (error) {
+    console.warn(`[AgentsStore] Failed to read agent ${resource} for ${name}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Agents of one project. Returns a stored array so components can select it
+ * directly; an omitted directory means the project the app is on.
+ */
+export const selectAgentsForDirectory = (
+  state: Pick<AgentsStore, 'agentsByDirectory'>,
+  directory?: string | null,
+): Agent[] => {
+  const cacheKey = getAgentsCacheKey(resolveDirectory(directory));
+  return state.agentsByDirectory[cacheKey] ?? EMPTY_AGENTS;
+};
+
 export const useAgentsStore = create<AgentsStore>()(
   devtools(
     persist(
@@ -224,8 +451,32 @@ export const useAgentsStore = create<AgentsStore>()(
 
         selectedAgentName: null,
         agents: [],
+        agentsByDirectory: {},
+        disabledAgentsByDirectory: {},
         isLoading: false,
         agentDraft: null,
+
+        loadDisabledAgents: async (requestedDirectory?: string | null) => {
+          const configDirectory = resolveDirectory(requestedDirectory);
+          const query = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
+          try {
+            const response = await runtimeFetch(`/api/config/disabled-agents${query}`, {
+              headers: {
+                'Cache-Control': 'no-cache',
+                ...(configDirectory ? { 'x-opencode-directory': configDirectory } : {}),
+              },
+            });
+            if (!response.ok) return false;
+            const parsed = DisabledAgentsResponseSchema.safeParse(await response.json().catch(() => null));
+            if (!parsed.success) return false;
+            const cacheKey = getAgentsCacheKey(configDirectory);
+            set((state) => ({ disabledAgentsByDirectory: { ...state.disabledAgentsByDirectory, [cacheKey]: parsed.data.agents } }));
+            return true;
+          } catch (error) {
+            console.warn('[AgentsStore] Failed to read disabled agents:', error);
+            return false;
+          }
+        },
 
         setSelectedAgent: (name: string | null) => {
           set({ selectedAgentName: name });
@@ -235,28 +486,65 @@ export const useAgentsStore = create<AgentsStore>()(
           set({ agentDraft: draft });
         },
 
-        loadAgents: async () => {
-          const configDirectory = getConfigDirectory();
+        resetForRuntimeSwitch: () => {
+          agentsGeneration += 1;
+          agentsLastLoadedAt.clear();
+          agentsLoadInFlight.clear();
+          agentsLoadGeneration.clear();
+          opencodeClient.clearAgentListRequests();
+          set({ agents: [], agentsByDirectory: {}, isLoading: false });
+        },
+
+        loadAgents: async (requestedDirectory?: string | null) => {
+          const configDirectory = resolveDirectory(requestedDirectory);
           const cacheKey = getAgentsCacheKey(configDirectory);
+          const isAmbient = cacheKey === getAgentsCacheKey(getConfigDirectory());
           const now = Date.now();
           const loadedAt = agentsLastLoadedAt.get(cacheKey) ?? 0;
-          const hasCachedAgents = get().agents.length > 0;
+          const hasCachedAgents = (get().agentsByDirectory[cacheKey] ?? (isAmbient ? get().agents : [])).length > 0;
 
           if (hasCachedAgents && now - loadedAt < AGENTS_LOAD_CACHE_TTL_MS) {
             return true;
           }
 
-          const inFlight = agentsLoadInFlight.get(cacheKey);
-          if (inFlight) {
-            return inFlight;
+          const runtimeGeneration = agentsGeneration;
+          const runtimeKey = getRuntimeKey();
+          // A catalog event may retire the read a create/delete is waiting for.
+          // That caller still needs the current list, not a failed mutation toast.
+          const wasRetired = (loadGeneration: number) => (
+            agentsGeneration === runtimeGeneration
+            && getRuntimeKey() === runtimeKey
+            && (agentsLoadGeneration.get(cacheKey) ?? 0) !== loadGeneration
+          );
+
+          let inFlight = agentsLoadInFlight.get(cacheKey);
+          while (inFlight) {
+            if (inFlight.generation === (agentsLoadGeneration.get(cacheKey) ?? 0)) {
+              const joined = inFlight;
+              const loaded = await joined.request;
+              return wasRetired(joined.generation) ? get().loadAgents(configDirectory) : loaded;
+            }
+            // Started before the latest invalidation: let it settle so it cannot
+            // commit after this read, then read again.
+            await inFlight.request;
+            inFlight = agentsLoadInFlight.get(cacheKey);
           }
 
+          const generation = agentsLoadGeneration.get(cacheKey) ?? 0;
+          const isCurrentLoad = () => (
+            agentsGeneration === runtimeGeneration
+            && (agentsLoadGeneration.get(cacheKey) ?? 0) === generation
+            && getRuntimeKey() === runtimeKey
+          );
           const request = (async () => {
             set({ isLoading: true });
-            const previousAgents = get().agents;
+            // Failure must never look like an empty project. The mirror is the
+            // fallback so a directory loaded before this map existed still counts.
+            const previousAgents = get().agentsByDirectory[cacheKey] ?? (isAmbient ? get().agents : []);
             const previousSignature = buildAgentsSignature(previousAgents);
 
             for (let attempt = 0; attempt < 3; attempt++) {
+              if (!isCurrentLoad()) return false;
               try {
                 const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
 
@@ -264,6 +552,7 @@ export const useAgentsStore = create<AgentsStore>()(
                 // directory directly so this shares the in-flight request with the config
                 // store instead of issuing a duplicate agents fetch at startup.
                 const agents = await opencodeClient.listAgents(configDirectory);
+                if (!isCurrentLoad()) return false;
 
                 const agentsWithScope = await Promise.all(
                   agents.map(async (agent) => {
@@ -295,12 +584,21 @@ export const useAgentsStore = create<AgentsStore>()(
                         const mdPath: string | null | undefined = data.sources?.md?.path;
                         const group = parseAgentGroup(mdPath);
 
+                        const activeSource = data.sources?.md?.exists
+                          ? data.sources.md
+                          : (data.sources?.json?.exists ? data.sources.json : null);
+                        const legacy = activeSource?.legacy === true;
+                        const sourcePath: string | null = activeSource?.path ?? null;
+                        // v2's resolved AgentInfo carries no built-in flag; the
+                        // config-entity route derives it from the sources.
+                        const native = data.isBuiltIn === true;
+
                         if (scope === 'project' || scope === 'user') {
-                          return { ...agent, scope: scope as AgentScope, group };
+                          return { ...agent, scope: scope as AgentScope, group, legacy, path: sourcePath, native };
                         }
 
                         // Explicitly set null scope if not found, to clear stale state
-                        return { ...agent, scope: undefined, group };
+                        return { ...agent, scope: undefined, group, legacy, path: sourcePath, native };
                       }
                     } catch (err) {
                       console.warn(`[AgentsStore] Failed to fetch config for agent ${agent.name}:`, err);
@@ -309,34 +607,68 @@ export const useAgentsStore = create<AgentsStore>()(
                   })
                 );
 
+                // Invalidation retires requests formed before the catalog
+                // change. Their lists and TTLs must not replace the fresh load.
+                if (!isCurrentLoad()) return false;
                 const nextSignature = buildAgentsSignature(agentsWithScope);
                 if (previousSignature !== nextSignature) {
-                  set({ agents: agentsWithScope, isLoading: false });
+                  set((state) => {
+                    const next: Partial<AgentsStore> = {
+                      agentsByDirectory: { ...state.agentsByDirectory, [cacheKey]: agentsWithScope },
+                      isLoading: false,
+                    };
+                    if (isAmbient) next.agents = agentsWithScope;
+                    return next;
+                  });
                 } else {
                   set({ isLoading: false });
                 }
-                agentsLastLoadedAt.set(cacheKey, Date.now());
+                // A stale generation's read must not count as fresh for the TTL.
+                if (generation === (agentsLoadGeneration.get(cacheKey) ?? 0)) {
+                  agentsLastLoadedAt.set(cacheKey, Date.now());
+                }
                 return true;
               } catch {
+                if (!isCurrentLoad()) return false;
                 // ignore error
               }
             }
 
-            set({ isLoading: false });
+            if (isCurrentLoad()) {
+              set({ isLoading: false });
+            }
             return false;
           })();
 
-          agentsLoadInFlight.set(cacheKey, request);
+          const entry = { generation, request };
+          agentsLoadInFlight.set(cacheKey, entry);
+          let loaded: boolean;
           try {
-            return await request;
+            loaded = await request;
           } finally {
-            agentsLoadInFlight.delete(cacheKey);
+            if (agentsLoadInFlight.get(cacheKey) === entry) agentsLoadInFlight.delete(cacheKey);
           }
+          return wasRetired(generation) ? get().loadAgents(configDirectory) : loaded;
         },
 
-        createAgent: async (config: AgentConfig) => {
-          startConfigUpdate("Creating agent configuration…");
-          let requiresReload = false;
+        fetchAgentEntity: async (name: string, requestedDirectory?: string | null) => {
+          const envelope = await fetchAgentResource<AgentEntityEnvelope>(name, 'config', requestedDirectory);
+          if (!envelope) return null;
+          return { ...envelope, config: envelope.config ?? {} };
+        },
+
+        fetchAgentPermissions: async (name: string, requestedDirectory?: string | null) => {
+          const envelope = await fetchAgentResource<AgentPermissionsEnvelope>(name, 'permissions', requestedDirectory);
+          if (!envelope) return null;
+          return {
+            ...envelope,
+            global: envelope.global ?? [],
+            agent: envelope.agent ?? [],
+            effective: envelope.effective ?? [],
+          };
+        },
+
+        createAgent: async (config: AgentConfig, requestedDirectory?: string | null) => {
           try {
             console.log('[AgentsStore] Creating agent:', config.name);
 
@@ -346,17 +678,17 @@ export const useAgentsStore = create<AgentsStore>()(
 
             if (config.description) agentConfig.description = config.description;
             if (config.model) agentConfig.model = config.model;
-            if (config.variant) agentConfig.variant = config.variant;
-            if (hasValue(config.temperature)) agentConfig.temperature = config.temperature;
-            if (hasValue(config.top_p)) agentConfig.top_p = config.top_p;
-            if (config.prompt) agentConfig.prompt = config.prompt;
-            if (config.permission) agentConfig.permission = config.permission;
-            if (config.disable !== undefined) agentConfig.disable = config.disable;
+            if (hasValue(config.steps)) agentConfig.steps = config.steps;
+            if (config.system) agentConfig.system = config.system;
+            if (config.color) agentConfig.color = config.color;
+            if (config.hidden !== undefined) agentConfig.hidden = config.hidden;
+            if (config.request) agentConfig.request = config.request;
+            if (config.permissions?.length) agentConfig.permissions = config.permissions;
             if (config.scope) agentConfig.scope = config.scope;
 
             console.log('[AgentsStore] Agent config to save:', agentConfig);
 
-            const configDirectory = getConfigDirectory();
+            const configDirectory = resolveDirectory(requestedDirectory);
             const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
 
             const response = await runtimeFetch(`/api/config/agents/${encodeURIComponent(config.name)}${queryParams}`, {
@@ -376,26 +708,13 @@ export const useAgentsStore = create<AgentsStore>()(
 
             invalidateAgentsLoadCache(configDirectory);
 
-            // External OpenCode server: persisted to disk but not reloaded.
-            // Skip the reload so the form keeps the just-saved values instead of
-            // reverting to the server's stale, startup-cached config.
             if (payload?.requiresManualRestart) {
+              upsertOptimisticAgentLocal(set, get, config.name, config);
               return { ok: true, requiresManualRestart: true };
             }
 
-            const needsReload = payload?.requiresReload ?? true;
-            if (needsReload) {
-              requiresReload = true;
-              await refreshAfterOpenCodeRestart({
-                message: payload?.message,
-                delayMs: payload?.reloadDelayMs,
-                scopes: ["agents"],
-                mode: "projects",
-              });
-              return { ok: true };
-            }
-
-            const loaded = await get().loadAgents();
+            // OpenCode 2 re-reads the file itself; the store just refreshes its list.
+            const loaded = await get().loadAgents(configDirectory);
             if (loaded) {
               emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
             }
@@ -403,31 +722,27 @@ export const useAgentsStore = create<AgentsStore>()(
           } catch (error) {
             console.error('Failed to create agent:', error);
             return { ok: false };
-          } finally {
-            if (!requiresReload) {
-              finishConfigUpdate();
-            }
           }
         },
 
-        updateAgent: async (name: string, config: Partial<AgentConfig>) => {
-          startConfigUpdate("Updating agent configuration…");
-          let requiresReload = false;
+        updateAgent: async (name: string, config: Partial<AgentConfig>, requestedDirectory?: string | null) => {
           try {
             const agentConfig: Record<string, unknown> = {};
 
             if (config.mode !== undefined) agentConfig.mode = config.mode;
             if (config.description !== undefined) agentConfig.description = config.description;
             if (config.model !== undefined) agentConfig.model = config.model;
-            if ('variant' in config) agentConfig.variant = config.variant ?? null;
-            if ('temperature' in config) agentConfig.temperature = config.temperature ?? null;
-            if ('top_p' in config) agentConfig.top_p = config.top_p ?? null;
-            if (config.prompt !== undefined) agentConfig.prompt = config.prompt;
-            if (config.permission !== undefined) agentConfig.permission = config.permission;
-            if (config.disable !== undefined) agentConfig.disable = config.disable;
+            if ('steps' in config) agentConfig.steps = config.steps ?? null;
+            if (config.system !== undefined) agentConfig.system = config.system;
+            if ('color' in config) agentConfig.color = config.color ?? null;
+            if (config.hidden !== undefined) agentConfig.hidden = config.hidden;
+            if ('disabled' in config) agentConfig.disabled = config.disabled ? true : null;
+            // `request` is replaced wholesale, so a caller must send the full
+            // block it wants persisted, not just the field it changed.
+            if (config.request !== undefined) agentConfig.request = config.request;
+            if (config.permissions !== undefined) agentConfig.permissions = config.permissions ?? [];
 
-            // Use active project root for project-level agent support.
-            const configDirectory = getConfigDirectory();
+            const configDirectory = resolveDirectory(requestedDirectory);
             const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
 
             const response = await runtimeFetch(`/api/config/agents/${encodeURIComponent(name)}${queryParams}`, {
@@ -447,26 +762,16 @@ export const useAgentsStore = create<AgentsStore>()(
 
             invalidateAgentsLoadCache(configDirectory);
 
-            // External OpenCode server: persisted to disk but not reloaded.
-            // Skip the reload so the form keeps the just-saved values instead of
-            // reverting to the server's stale, startup-cached config.
             if (payload?.requiresManualRestart) {
+              upsertOptimisticAgentLocal(set, get, name, config);
               return { ok: true, requiresManualRestart: true };
             }
 
-            const needsReload = payload?.requiresReload ?? true;
-            if (needsReload) {
-              requiresReload = true;
-              await refreshAfterOpenCodeRestart({
-                message: payload?.message,
-                delayMs: payload?.reloadDelayMs,
-                scopes: ["agents"],
-                mode: "projects",
-              });
-              return { ok: true };
-            }
-
-            const loaded = await get().loadAgents();
+            // OpenCode 2 re-reads the file itself; the store just refreshes its list.
+            const [loaded] = await Promise.all([
+              get().loadAgents(configDirectory),
+              'disabled' in config ? get().loadDisabledAgents(configDirectory) : Promise.resolve(true),
+            ]);
             if (loaded) {
               emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
             }
@@ -474,19 +779,12 @@ export const useAgentsStore = create<AgentsStore>()(
           } catch (error) {
             console.error('Failed to update agent:', error);
             throw error;
-          } finally {
-            if (!requiresReload) {
-              finishConfigUpdate();
-            }
           }
         },
 
-        deleteAgent: async (name: string, scope?: AgentScope) => {
-          startConfigUpdate("Deleting agent configuration…");
-          let requiresReload = false;
+        deleteAgent: async (name: string, scope?: AgentScope, requestedDirectory?: string | null) => {
           try {
-            // Use active project root for project-level agent support.
-            const configDirectory = getConfigDirectory();
+            const configDirectory = resolveDirectory(requestedDirectory);
             const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
 
             const response = await runtimeFetch(`/api/config/agents/${encodeURIComponent(name)}${queryParams}`, {
@@ -510,48 +808,36 @@ export const useAgentsStore = create<AgentsStore>()(
               set({ selectedAgentName: null });
             }
 
-            // External OpenCode server: persisted to disk but not reloaded.
+            const removeLocal = () => {
+              set({ agents: get().agents.filter((agent) => agent.name !== name) });
+            };
+
             if (payload?.requiresManualRestart) {
+              removeLocal();
               return { ok: true, requiresManualRestart: true };
             }
 
-            const needsReload = payload?.requiresReload ?? true;
-            if (needsReload) {
-              requiresReload = true;
-              await refreshAfterOpenCodeRestart({
-                message: payload?.message,
-                delayMs: payload?.reloadDelayMs,
-                scopes: ["agents"],
-                mode: "projects",
-              });
-              return { ok: true };
-            }
-
-            const loaded = await get().loadAgents();
+            // OpenCode 2 re-reads the file itself and then announces
+            // `agent.updated`, which re-reads this list again (catalogRefresh).
+            // This read can land before that and still carry the deleted agent.
+            const loaded = await get().loadAgents(configDirectory);
             if (loaded) {
               emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
             }
-
             return { ok: loaded };
           } catch (error) {
             console.error('Failed to delete agent:', error);
             throw error;
-          } finally {
-            if (!requiresReload) {
-              finishConfigUpdate();
-            }
           }
         },
 
 
-        getAgentByName: (name: string) => {
-          const { agents } = get();
-          return agents.find((a) => a.name === name);
+        getAgentByName: (name: string, requestedDirectory?: string | null) => {
+          return selectAgentsForDirectory(get(), requestedDirectory).find((agent) => agent.name === name);
         },
 
-        getVisibleAgents: () => {
-          const { agents } = get();
-          return filterVisibleAgents(agents);
+        getVisibleAgents: (requestedDirectory?: string | null) => {
+          return filterVisibleAgents(selectAgentsForDirectory(get(), requestedDirectory));
         },
       }),
       {
@@ -570,50 +856,6 @@ export const useAgentsStore = create<AgentsStore>()(
 
 if (typeof window !== "undefined") {
   window.__zustand_agents_store__ = useAgentsStore;
-}
-
-async function waitForOpenCodeConnection(delayMs?: number) {
-  const initialPause = typeof delayMs === "number" && delayMs > 0
-    ? Math.min(delayMs, FAST_HEALTH_POLL_INTERVAL_MS)
-    : 0;
-
-  if (initialPause > 0) {
-    await sleep(initialPause);
-  }
-
-  const start = Date.now();
-  let attempt = 0;
-  let lastError: unknown = null;
-
-  while (Date.now() - start < MAX_HEALTH_WAIT_MS) {
-    attempt += 1;
-    updateConfigUpdateMessage(`Waiting for OpenCode… (attempt ${attempt})`);
-
-    try {
-      const isHealthy = await opencodeClient.checkHealth();
-      if (isHealthy) {
-        return;
-      }
-      lastError = new Error("OpenCode health check reported not ready");
-    } catch (error) {
-      lastError = error;
-    }
-
-    const elapsed = Date.now() - start;
-
-    const waitMs =
-      attempt <= FAST_HEALTH_POLL_ATTEMPTS && elapsed < 1200
-        ? FAST_HEALTH_POLL_INTERVAL_MS
-        : Math.min(
-            SLOW_HEALTH_POLL_BASE_MS +
-              Math.max(0, attempt - FAST_HEALTH_POLL_ATTEMPTS) * SLOW_HEALTH_POLL_INCREMENT_MS,
-            SLOW_HEALTH_POLL_MAX_MS,
-          );
-
-    await sleep(waitMs);
-  }
-
-  throw lastError || new Error("OpenCode did not become ready in time");
 }
 
 type ConfigRefreshMode = "active" | "projects";
@@ -676,7 +918,6 @@ async function performConfigRefresh(options: {
     }
 
     if (refreshProviders) {
-      useConfigStore.getState().invalidateModelMetadataCache();
       useConfigStore.getState().invalidateProviderCache(mode === "active" ? currentDirectory : undefined);
     }
 
@@ -697,10 +938,14 @@ async function performConfigRefresh(options: {
     }
     if (refreshCommands) {
       invalidateCommandsLoadCache(currentDirectory);
-      uiRefreshTasks.push(commandsStore.loadCommands().then(() => undefined));
+      // The directory the user works in, as the agents and providers above: a
+      // worktree session's folder is not the active project's path.
+      uiRefreshTasks.push(commandsStore.loadCommands(currentDirectory).then(() => undefined));
     }
     if (refreshSkills) {
-      invalidateSkillsLoadCache(currentDirectory);
+      // Match loadSkills cache key (active-project-first). Passing client/directory-store
+      // path here misses the key when those diverge after getRequestDirectory().
+      invalidateSkillsLoadCache();
       uiRefreshTasks.push(skillsStore.loadSkills().then(() => undefined));
       uiRefreshTasks.push(skillsCatalogStore.loadCatalog({ refresh: true }).then(() => undefined));
     }
@@ -747,6 +992,15 @@ export async function reloadOpenCodeConfiguration(options?: {
       throw new Error(message);
     }
 
+    if (payload?.requiresManualRestart) {
+      finishConfigUpdate();
+      const error = new Error(
+        payload?.message || 'Restart your connected OpenCode server to apply the changes.',
+      );
+      (error as Error & { requiresManualRestart?: boolean }).requiresManualRestart = true;
+      throw error;
+    }
+
     const refreshOptions = {
       ...options,
       scopes: options?.scopes ?? ["all"],
@@ -764,6 +1018,9 @@ export async function reloadOpenCodeConfiguration(options?: {
     }
   } catch (error) {
     console.error('[reloadOpenCodeConfiguration] Failed:', error);
+    if ((error as Error & { requiresManualRestart?: boolean })?.requiresManualRestart) {
+      throw error;
+    }
     updateConfigUpdateMessage('Failed to reload configuration. Please try again.');
     await sleep(2000);
     finishConfigUpdate();

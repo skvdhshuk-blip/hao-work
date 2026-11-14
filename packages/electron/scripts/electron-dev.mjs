@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../../..');
 const electronDir = path.join(repoRoot, 'packages/electron');
+const bundledOpenCodeCliDir = path.join(electronDir, 'resources', 'opencode-cli');
 const preferredHmrUiPort = Number(process.env.OPENCHAMBER_HMR_UI_PORT || '5173');
 const preferredHmrApiPort = Number(process.env.OPENCHAMBER_HMR_API_PORT || '3901');
 
@@ -43,6 +45,41 @@ function spawnProcess(command, args, options = {}) {
     windowsVerbatimArguments: isWindowsCommandScript,
     ...options,
   });
+}
+
+// Packaged builds resolve the staged OpenCode CLI through process.resourcesPath.
+// In development that path points at Electron's own resources, so hand the
+// staged directory to the backend explicitly: the dev app must run the same
+// OpenCode the release ships, not whatever `opencode` sits on PATH.
+function resolveBundledOpenCodeCliEnv() {
+  const binary = path.join(bundledOpenCodeCliDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
+  if (!fs.existsSync(binary)) {
+    console.warn(
+      `[electron:dev] bundled OpenCode CLI missing at ${binary}; falling back to PATH. ` +
+        'Run `bun run --cwd packages/electron prepare:opencode-cli` to stage it.',
+    );
+    return {};
+  }
+  return { OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR: bundledOpenCodeCliDir };
+}
+
+function ensureElectronInstalled() {
+  // Electron's postinstall can silently fail to extract the binary under
+  // Node 24 (see ensure-electron.mjs). Fail fast with a repair attempt
+  // before wiring up the dev servers so the error is actionable.
+  const result = spawnSync('node', [path.join(__dirname, 'ensure-electron.mjs')], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      '[electron:dev] electron binary is missing or incomplete and could not be repaired. ' +
+        'Run `bun run --cwd packages/electron ensure:electron` (or `bun install`) with a network connection.',
+    );
+  }
 }
 
 function runProcess(command, args, options = {}) {
@@ -183,6 +220,9 @@ async function main() {
   let hmrApiPort = '';
   let hmrUiPort = '';
 
+  ensureElectronInstalled();
+  const bundledOpenCodeCliEnv = resolveBundledOpenCodeCliEnv();
+
   if (useBundledUi) {
     await runProcess('bun', ['run', '--cwd', 'packages/electron', 'build:web-assets']);
   } else {
@@ -191,6 +231,7 @@ async function main() {
     devServer = spawnProcess('node', ['./scripts/dev-web-hmr.mjs'], {
       env: {
         ...process.env,
+        ...bundledOpenCodeCliEnv,
         OPENCHAMBER_ELECTRON_DEV: '1',
         OPENCHAMBER_HMR_UI_PORT: hmrUiPort,
         OPENCHAMBER_HMR_API_PORT: hmrApiPort,
@@ -199,11 +240,17 @@ async function main() {
     });
   }
 
-  const electron = spawnProcess('npx', ['electron', './main.mjs'], {
+  // Electron exits with this code when the app asks to relaunch (the
+  // first-launch chooser, a settings change); the dev server keeps running and
+  // Electron starts again.
+  const relaunchExitCode = 75;
+  const startElectron = () => spawnProcess('bun', ['x', 'electron', './entry.mjs'], {
     cwd: electronDir,
     env: {
       ...process.env,
+      ...bundledOpenCodeCliEnv,
       OPENCHAMBER_ELECTRON_DEV: '1',
+      OPENCHAMBER_ELECTRON_DEV_RELAUNCH_EXIT_CODE: String(relaunchExitCode),
       ...(useBundledUi ? { OPENCHAMBER_ELECTRON_USE_BUNDLED_UI: '1' } : {}),
       OPENCHAMBER_HMR_UI_PORT: hmrUiPort,
       OPENCHAMBER_HMR_API_PORT: hmrApiPort,
@@ -211,6 +258,7 @@ async function main() {
     },
   });
 
+  let electron = null;
   let cleaning = false;
   const teardown = async (code) => {
     if (cleaning) {
@@ -229,16 +277,29 @@ async function main() {
     void teardown(code ?? 1);
   };
 
+  const onElectronExit = onChildExit('electron');
+  const launchElectron = () => {
+    electron = startElectron();
+    electron.on('exit', (code, signal) => {
+      if (code === relaunchExitCode && !cleaning) {
+        console.log('[electron:dev] relaunching electron.');
+        launchElectron();
+        return;
+      }
+      onElectronExit(code, signal);
+    });
+    electron.on('error', (error) => {
+      console.error('[electron:dev] failed to start electron:', error);
+      void teardown(1);
+    });
+  };
+
   devServer?.on('exit', onChildExit('dev server'));
-  electron.on('exit', onChildExit('electron'));
   devServer?.on('error', (error) => {
     console.error('[electron:dev] failed to start dev server:', error);
     void teardown(1);
   });
-  electron.on('error', (error) => {
-    console.error('[electron:dev] failed to start electron:', error);
-    void teardown(1);
-  });
+  launchElectron();
 
   for (const [signal, exitCode] of Object.entries({ SIGINT: 130, SIGTERM: 143, SIGQUIT: 131, SIGHUP: 129 })) {
     process.on(signal, () => {

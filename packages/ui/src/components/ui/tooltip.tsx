@@ -2,6 +2,7 @@ import * as React from "react"
 import { Tooltip as BaseTooltip } from "@base-ui/react/tooltip"
 
 import { cn } from "@/lib/utils"
+import { GlassRedrawGuard } from "./glass-redraw-guard"
 
 const MOBILE_LONG_PRESS_DELAY = 600
 const MOBILE_LONG_PRESS_CLOSE_DELAY = 1600
@@ -174,11 +175,11 @@ function Tooltip({
   }, [clearCloseTimeout, clearLongPressTimeout])
 
   const handleOpenChange = React.useCallback((nextOpen: boolean, event: TooltipChangeEventDetails) => {
-    if (!controlled) {
+    onOpenChange?.(nextOpen, event)
+    // A caller that cancels the change keeps the tooltip as it was.
+    if (!controlled && !event.isCanceled) {
       setLongPressOpen(nextOpen)
     }
-
-    onOpenChange?.(nextOpen, event)
   }, [controlled, onOpenChange])
 
   const tooltip = (
@@ -256,6 +257,15 @@ type ContentProps = React.ComponentProps<typeof BaseTooltip.Popup> & {
   sideOffset?: number;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
+  showArrow?: boolean;
+  /** An element to place the tooltip by other than its trigger, for one tooltip shared by many rows. */
+  anchor?: React.ComponentProps<typeof BaseTooltip.Positioner>["anchor"];
+  /**
+   * `label` (default) is a short hint on the tooltip glass. `card` is a block
+   * of details, such as a model's facts beside a picker row: it opens over
+   * content like a menu, so it takes the popover's glass and floating light.
+   */
+  surface?: "label" | "card";
 };
 
 function TooltipContent({
@@ -265,26 +275,35 @@ function TooltipContent({
   align,
   children,
   style,
+  showArrow = false,
+  anchor,
+  surface = "label",
   ...props
 }: ContentProps) {
   return (
     <TooltipPartBoundary>
       <BaseTooltip.Portal>
-        <BaseTooltip.Positioner sideOffset={sideOffset} side={side} align={align} className="z-50">
+        <BaseTooltip.Positioner sideOffset={sideOffset} side={side} align={align} anchor={anchor} className="z-50">
           <BaseTooltip.Popup
             data-slot="tooltip-content"
             className={cn(
               // data-instant is set when moving between grouped tooltips
               // (shared TooltipProvider): reposition without replaying the
               // full exit/enter animation.
-              "bg-[var(--surface-elevated)] text-[var(--surface-elevated-foreground)] border border-border/60 transition-all duration-150 ease-out data-[starting-style]:opacity-0 data-[starting-style]:scale-95 data-[ending-style]:opacity-0 data-[ending-style]:scale-95 data-[instant]:transition-none data-[instant]:duration-0 z-50 w-fit origin-[var(--transform-origin)] rounded-xl px-3 py-1.5 typography-meta text-balance overflow-hidden",
+              surface === "card" ? "oc-glass-popover oc-glass-floating" : "oc-glass-tooltip border border-edge",
+              "text-[var(--surface-elevated-foreground)] oc-popup-motion data-[starting-style]:opacity-0 data-[starting-style]:scale-95 data-[ending-style]:opacity-0 data-[ending-style]:scale-95 data-[instant]:transition-none data-[instant]:duration-0 z-50 w-fit origin-[var(--transform-origin)] rounded-xl px-3 py-1.5 typography-meta text-balance",
+              showArrow ? "overflow-visible" : "overflow-hidden",
               className
             )}
             style={{ ...style }}
             {...props}
           >
             {children}
-            <BaseTooltip.Arrow className="fill-[var(--surface-elevated)] z-50 size-2" />
+            <GlassRedrawGuard />
+            {showArrow ? (
+              // oxlint-disable-next-line openchamber/no-physical-sides -- Base UI reports the popup's side physically
+              <BaseTooltip.Arrow className="relative z-50 block h-1.5 w-3 overflow-clip data-[side=bottom]:top-[-6px] data-[side=left]:right-[-9px] data-[side=left]:rotate-90 data-[side=right]:left-[-9px] data-[side=right]:-rotate-90 data-[side=top]:bottom-[-6px] data-[side=top]:rotate-180 before:absolute before:bottom-0 before:left-1/2 before:block before:h-[calc(6px*sqrt(2))] before:w-[calc(6px*sqrt(2))] before:border before:border-edge before:bg-[var(--surface-elevated)] before:content-[''] before:[transform:translate(-50%,50%)_rotate(45deg)]" />
+            ) : null}
           </BaseTooltip.Popup>
         </BaseTooltip.Positioner>
       </BaseTooltip.Portal>

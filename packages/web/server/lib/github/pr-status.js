@@ -1,7 +1,8 @@
 import { stat } from 'node:fs/promises';
-import { getRemotes, getStatus } from '../git/index.js';
+import { getRemotes, getTrackingBranch, isAncestorOfHead, isPatchEquivalentOfHead } from '../git/index.js';
 import { resolveGitHubRepoFromDirectory } from './repo/index.js';
 import { noteIfGitHubRateLimit } from './rate-limit.js';
+import { getOctokitCacheIdentity } from './octokit.js';
 
 const directoryExists = async (dir) => {
   if (!dir) return false;
@@ -26,6 +27,27 @@ const normalizeRepoKey = (owner, repo) => {
     return '';
   }
   return `${normalizedOwner}/${normalizedRepo}`;
+};
+const scopedCacheKey = (octokit, key) => {
+  const identity = getOctokitCacheIdentity(octokit);
+  // The key already carries the host, so it is safe to memoize under it when
+  // the octokit has no identity: one host's metadata/PR state can never be
+  // served for another. The identity (when present) keeps same-host octokits
+  // with different credentials from sharing cache entries.
+  return identity && key ? `${key}::${identity}` : key;
+};
+// The same owner/repo can exist on github.com and on an enterprise instance.
+// Cache keys are scoped by host too so one host's metadata is never served for
+// the other. Matching/ranking keys keep using normalizeRepoKey (host-agnostic)
+// because they only compare objects resolved within one host.
+const repoCacheKey = (repo, extra = '') => {
+  const base = normalizeRepoKey(repo?.owner, repo?.repo);
+  if (!base) {
+    return '';
+  }
+  const host = normalizeLower(repo?.host) || 'github.com';
+  const key = `${host}::${base}`;
+  return extra ? `${key}::${extra}` : key;
 };
 const parseTrackingRemoteName = (trackingBranch) => {
   const normalized = normalizeText(trackingBranch);
@@ -162,12 +184,13 @@ const buildSourceMatcher = (sourceCandidates) => {
 };
 
 const getRepoDefaultBranch = async (octokit, repo) => {
-  const repoKey = normalizeRepoKey(repo?.owner, repo?.repo);
-  if (!repoKey) {
+  const normalizedRepoKey = repoCacheKey(repo);
+  const repoKey = scopedCacheKey(octokit, normalizedRepoKey);
+  if (!normalizedRepoKey) {
     return null;
   }
 
-  const cached = defaultBranchCache.get(repoKey);
+  const cached = repoKey ? defaultBranchCache.get(repoKey) : null;
   if (cached && Date.now() - cached.fetchedAt < REPO_DEFAULT_BRANCH_TTL_MS) {
     return cached.defaultBranch;
   }
@@ -176,10 +199,10 @@ const getRepoDefaultBranch = async (octokit, repo) => {
   // calls getRepoMetadata for every candidate before the default-branch loop).
   // This avoids a redundant repos.get per repo — fewer serial GitHub calls means
   // less exposure to secondary-rate-limiting that makes PR status slow.
-  const metaCached = repoMetadataCache.get(repoKey);
+  const metaCached = repoKey ? repoMetadataCache.get(repoKey) : null;
   if (metaCached && Date.now() - metaCached.fetchedAt < REPO_DEFAULT_BRANCH_TTL_MS) {
     const defaultBranch = normalizeText(metaCached.data?.default_branch) || null;
-    defaultBranchCache.set(repoKey, { defaultBranch, fetchedAt: Date.now() });
+    if (repoKey) defaultBranchCache.set(repoKey, { defaultBranch, fetchedAt: Date.now() });
     return defaultBranch;
   }
 
@@ -189,10 +212,12 @@ const getRepoDefaultBranch = async (octokit, repo) => {
       repo: repo.repo,
     });
     const defaultBranch = normalizeText(response?.data?.default_branch) || null;
-    defaultBranchCache.set(repoKey, {
-      defaultBranch,
-      fetchedAt: Date.now(),
-    });
+    if (repoKey) {
+      defaultBranchCache.set(repoKey, {
+        defaultBranch,
+        fetchedAt: Date.now(),
+      });
+    }
     return defaultBranch;
   } catch (error) {
     noteIfGitHubRateLimit(error);
@@ -201,12 +226,13 @@ const getRepoDefaultBranch = async (octokit, repo) => {
 };
 
 const getRepoMetadata = async (octokit, repo) => {
-  const repoKey = normalizeRepoKey(repo?.owner, repo?.repo);
-  if (!repoKey) {
+  const normalizedRepoKey = repoCacheKey(repo);
+  const repoKey = scopedCacheKey(octokit, normalizedRepoKey);
+  if (!normalizedRepoKey) {
     return null;
   }
 
-  const cached = repoMetadataCache.get(repoKey);
+  const cached = repoKey ? repoMetadataCache.get(repoKey) : null;
   if (cached && Date.now() - cached.fetchedAt < REPO_DEFAULT_BRANCH_TTL_MS) {
     return cached.data;
   }
@@ -217,18 +243,22 @@ const getRepoMetadata = async (octokit, repo) => {
       repo: repo.repo,
     });
     const data = response?.data ?? null;
-    repoMetadataCache.set(repoKey, {
-      data,
-      fetchedAt: Date.now(),
-    });
+    if (repoKey) {
+      repoMetadataCache.set(repoKey, {
+        data,
+        fetchedAt: Date.now(),
+      });
+    }
     return data;
   } catch (error) {
     noteIfGitHubRateLimit(error);
-    if (error?.status === 403 || error?.status === 404) {
-      repoMetadataCache.set(repoKey, {
-        data: null,
-        fetchedAt: Date.now(),
-      });
+    if (error?.status === 404) {
+      if (repoKey) {
+        repoMetadataCache.set(repoKey, {
+          data: null,
+          fetchedAt: Date.now(),
+        });
+      }
       return null;
     }
     throw error;
@@ -250,7 +280,7 @@ const resolveRemoteCandidates = async (directory, rankedRemoteNames) => {
   const results = [];
   const seenRepoKeys = new Set();
   for (const { remoteName, repo } of resolvedRemotes) {
-    const repoKey = normalizeRepoKey(repo?.owner, repo?.repo);
+    const repoKey = repoCacheKey(repo);
     if (!repo || !repoKey || seenRepoKeys.has(repoKey)) {
       continue;
     }
@@ -266,7 +296,7 @@ const expandRepoNetwork = async (octokit, candidates) => {
   const seenRepoKeys = new Set();
 
   const pushCandidate = (repo, remoteName, priority) => {
-    const repoKey = normalizeRepoKey(repo?.owner, repo?.repo);
+    const repoKey = repoCacheKey(repo);
     if (!repoKey || seenRepoKeys.has(repoKey)) {
       return;
     }
@@ -279,7 +309,12 @@ const expandRepoNetwork = async (octokit, candidates) => {
   // unchanged from the sequential version.
   const metadatas = await Promise.all(
     candidates.map((candidate) =>
-      getRepoMetadata(octokit, candidate.repo).then((metadata) => ({ candidate, metadata })),
+      getRepoMetadata(octokit, candidate.repo)
+        .then((metadata) => ({ candidate, metadata }))
+        .catch((error) => {
+          if (error?.status !== 403) throw error;
+          return { candidate, metadata: null, refusal: error };
+        }),
     ),
   );
 
@@ -295,7 +330,8 @@ const expandRepoNetwork = async (octokit, candidates) => {
       pushCandidate({
         owner: parent.owner.login,
         repo: parent.name,
-        url: parent.html_url || `https://github.com/${parent.owner.login}/${parent.name}`,
+        host: candidate.repo?.host ?? null,
+        url: parent.html_url || `https://${candidate.repo?.host || 'github.com'}/${parent.owner.login}/${parent.name}`,
       }, candidate.remoteName, candidate.priority + 0.1);
     }
 
@@ -304,9 +340,18 @@ const expandRepoNetwork = async (octokit, candidates) => {
       pushCandidate({
         owner: source.owner.login,
         repo: source.name,
-        url: source.html_url || `https://github.com/${source.owner.login}/${source.name}`,
+        host: candidate.repo?.host ?? null,
+        url: source.html_url || `https://${candidate.repo?.host || 'github.com'}/${source.owner.login}/${source.name}`,
       }, candidate.remoteName, candidate.priority + 0.2);
     }
+  }
+
+  // A remote GitHub refuses, such as one in an organization that restricts
+  // OAuth apps, is skipped while another remote resolves. When none does, the
+  // refusal is the answer: its message tells the user how to grant access.
+  const refusal = metadatas.find((entry) => entry.refusal)?.refusal;
+  if (expanded.length === 0 && refusal) {
+    throw refusal;
   }
 
   return expanded.sort((left, right) => left.priority - right.priority);
@@ -332,25 +377,94 @@ const safeListPulls = async (octokit, options) => {
 const REPO_PULLS_CACHE_TTL_MS = 45_000;
 const repoPullsCache = new Map();
 
-export const invalidateRepoPullsCache = (owner, repo) => {
-  const prefix = `${normalizeText(owner)}/${normalizeText(repo)}::`;
-  for (const key of repoPullsCache.keys()) {
-    if (key.startsWith(prefix)) {
+// Remembered answer to "what is the newest closed/merged PR for this head?",
+// so discovery polls do not re-ask GitHub every few minutes.
+//
+// A found record barely ever changes: it would take a second PR on the same
+// head, and while that one is open the open-PR path wins and never reads this
+// cache at all. "No history yet" is the volatile answer, since closing or
+// merging a PR elsewhere flips it, so it expires far sooner. Either way, doing
+// it from OpenChamber invalidates the entry immediately.
+const HISTORICAL_PR_FOUND_TTL_MS = 6 * 60 * 60 * 1000;
+const HISTORICAL_PR_ABSENT_TTL_MS = 10 * 60 * 1000;
+const HISTORICAL_PR_CACHE_MAX_ENTRIES = 500;
+const _historicalPrCache = new Map();
+const pendingHistoricalPrWrites = new Map();
+
+const isHistoricalPrCacheFresh = (entry) => {
+  if (!entry) {
+    return false;
+  }
+  const ttl = entry.pr ? HISTORICAL_PR_FOUND_TTL_MS : HISTORICAL_PR_ABSENT_TTL_MS;
+  return Date.now() - entry.fetchedAt < ttl;
+};
+
+const rememberHistoricalPr = (key, pr) => {
+  _historicalPrCache.delete(key);
+  _historicalPrCache.set(key, { pr, fetchedAt: Date.now() });
+  if (_historicalPrCache.size > HISTORICAL_PR_CACHE_MAX_ENTRIES) {
+    const oldest = _historicalPrCache.keys().next().value;
+    if (oldest !== undefined) {
+      _historicalPrCache.delete(oldest);
+    }
+  }
+};
+
+export const invalidateRepoPullsCache = (owner, repo, octokitOrCacheIdentity = null) => {
+  const requestedIdentity = Object.prototype.toString.call(octokitOrCacheIdentity) === '[object String]'
+    ? octokitOrCacheIdentity
+    : getOctokitCacheIdentity(octokitOrCacheIdentity);
+  const matchesIdentity = (key) => !requestedIdentity || key.split('::').includes(requestedIdentity);
+  // Cache keys carry a host prefix, but invalidation is host-agnostic: a repo
+  // changed, so drop it for every host it might be cached under. Keys are
+  // lowercase (repoCacheKey -> normalizeRepoKey), so the searched key must be
+  // too — a mixed-case repo (common on GitHub Enterprise) otherwise never
+  // invalidates and its just-created PR stays hidden for the TTL. owner/repo
+  // is a `::`-delimited segment in every cache key (both the `host::owner/repo`
+  // and `host::owner/repo::state` shapes), so matching whole segments rather
+  // than a substring means invalidating `foo/bar` never drops `xfoo/bar`.
+  const repoKey = normalizeRepoKey(owner, repo);
+  for (const [key, entry] of repoPullsCache) {
+    if (repoKey && key.split('::').includes(repoKey) && matchesIdentity(key)) {
+      if (entry.token) entry.token.invalidated = true;
       repoPullsCache.delete(key);
     }
   }
   // A just-created PR must also clear remembered search misses for this repo.
   const repoNameLower = normalizeText(repo).toLowerCase();
   for (const key of _searchMissCache.keys()) {
-    const [repoPart] = key.split('::');
-    if (repoPart && repoPart.split(',').includes(repoNameLower)) {
+    if (repoKey && key.split('::').some((part) => part.split(',').includes(repoNameLower)) && matchesIdentity(key)) {
       _searchMissCache.delete(key);
+    }
+  }
+  for (const [token, key] of pendingSearchMissWrites) {
+    if (repoKey && key.split('::').some((part) => part.split(',').includes(repoNameLower)) && matchesIdentity(key)) {
+      pendingSearchMissWrites.delete(token);
+    }
+  }
+  // A merge or close changes the branch's PR history, so drop it too.
+  for (const key of _historicalPrCache.keys()) {
+    if (key.split('::').includes(repoKey) && matchesIdentity(key)) {
+      _historicalPrCache.delete(key);
+    }
+  }
+  for (const [token, key] of pendingHistoricalPrWrites) {
+    if (key.split('::').includes(repoKey) && matchesIdentity(key)) {
+      pendingHistoricalPrWrites.delete(token);
     }
   }
 };
 
 const getRepoPulls = (octokit, repo, state, { force = false } = {}) => {
-  const key = `${normalizeText(repo.owner)}/${normalizeText(repo.repo)}::${state}`;
+  const key = scopedCacheKey(octokit, repoCacheKey(repo, state));
+  if (!key) {
+    return safeListPulls(octokit, {
+      owner: repo.owner,
+      repo: repo.repo,
+      state,
+      per_page: 100,
+    }).then((prs) => ({ fetchedAt: Date.now(), prs, complete: prs.length < 100 }));
+  }
   const cached = repoPullsCache.get(key);
   if (cached?.promise) {
     return cached.promise;
@@ -359,6 +473,7 @@ const getRepoPulls = (octokit, repo, state, { force = false } = {}) => {
     return Promise.resolve(cached);
   }
 
+  const token = { invalidated: false };
   const promise = safeListPulls(octokit, {
     owner: repo.owner,
     repo: repo.repo,
@@ -368,13 +483,15 @@ const getRepoPulls = (octokit, repo, state, { force = false } = {}) => {
     // `complete` means the first page held everything, so a miss is
     // authoritative: this repo has no PR in this state for any branch.
     const entry = { fetchedAt: Date.now(), prs, complete: prs.length < 100 };
-    repoPullsCache.set(key, entry);
+    if (!token.invalidated && repoPullsCache.get(key)?.token === token) {
+      repoPullsCache.set(key, entry);
+    }
     return entry;
   }).catch((error) => {
-    repoPullsCache.delete(key);
+    if (repoPullsCache.get(key)?.token === token) repoPullsCache.delete(key);
     throw error;
   });
-  repoPullsCache.set(key, { promise });
+  repoPullsCache.set(key, { promise, token });
   return promise;
 };
 
@@ -410,6 +527,7 @@ const SEARCH_API_RETRY_MS = 5 * 60 * 1000; // retry after 5 minutes
 const SEARCH_MISS_RETRY_MS = 10 * 60 * 1000;
 const SEARCH_MISS_CACHE_MAX_ENTRIES = 500;
 const _searchMissCache = new Map();
+const pendingSearchMissWrites = new Map();
 
 const rememberSearchMiss = (key) => {
   _searchMissCache.delete(key);
@@ -422,41 +540,49 @@ const rememberSearchMiss = (key) => {
   }
 };
 
-const searchFallbackPr = async ({ octokit, branch, repoNames }) => {
-  // Build a repo key to check/store 403 status per-repo
-  const repoKey = [...repoNames].sort().join(',').toLowerCase();
+const searchFallbackPr = async ({ octokit, branch, repoNames, host }) => {
+  // Build a repo key to check/store 403 status per-repo. Keyed by host too:
+  // the Search API is per-instance, and a 403/miss on github.com must not
+  // suppress a retry for the same names on an enterprise host.
+  const repoKey = scopedCacheKey(octokit, `${normalizeLower(host) || 'github.com'}::${[...repoNames].sort().join(',').toLowerCase()}`);
 
   // Skip if this repo set returned 403 recently
-  const disabledAt = _searchApiDisabledRepos.get(repoKey);
+  const disabledAt = repoKey ? _searchApiDisabledRepos.get(repoKey) : null;
   if (disabledAt && Date.now() - disabledAt < SEARCH_API_RETRY_MS) {
     return null;
   }
 
-  const missKey = `${repoKey}::${normalizeText(branch)}`;
-  const missedAt = _searchMissCache.get(missKey);
+  const missKey = repoKey ? `${repoKey}::${normalizeText(branch)}` : '';
+  const missedAt = missKey ? _searchMissCache.get(missKey) : null;
   if (missedAt && Date.now() - missedAt < SEARCH_MISS_RETRY_MS) {
     return null;
   }
 
-  const normalizedRepoNames = new Set(repoNames.map((name) => normalizeLower(name)).filter(Boolean));
+  const writeToken = missKey ? {} : null;
+  if (writeToken) pendingSearchMissWrites.set(writeToken, missKey);
 
-  for (const state of ['open', 'closed']) {
+  try {
+    const normalizedRepoNames = new Set(repoNames.map((name) => normalizeLower(name)).filter(Boolean));
+
+    // The Search API has a tiny quota, so it is only spent on live branch status.
+    // Closed/merged history is resolved by the cheaper per-head repo queries.
     let response;
     try {
       response = await octokit.rest.search.issuesAndPullRequests({
-        q: `is:pr state:${state} head:${branch}`,
+        q: `is:pr state:open head:${branch}`,
         per_page: 20,
       });
       // If we get here, search API works for this repo — clear the disabled flag
-      _searchApiDisabledRepos.delete(repoKey);
+      if (repoKey) _searchApiDisabledRepos.delete(repoKey);
     } catch (error) {
       noteIfGitHubRateLimit(error);
       if (error?.status === 403) {
-        _searchApiDisabledRepos.set(repoKey, Date.now());
+        if (repoKey) _searchApiDisabledRepos.set(repoKey, Date.now());
         return null;
       }
       if (error?.status === 404) {
-        continue;
+        if (missKey && pendingSearchMissWrites.has(writeToken)) rememberSearchMiss(missKey);
+        return null;
       }
       throw error;
     }
@@ -484,7 +610,8 @@ const searchFallbackPr = async ({ octokit, branch, repoNames }) => {
           repo: {
             owner: repo.owner,
             repo: repo.repo,
-            url: `https://github.com/${repo.owner}/${repo.repo}`,
+            host: normalizeLower(host) || null,
+            url: `https://${normalizeLower(host) || 'github.com'}/${repo.owner}/${repo.repo}`,
           },
           pr,
         };
@@ -495,13 +622,61 @@ const searchFallbackPr = async ({ octokit, branch, repoNames }) => {
         throw error;
       }
     }
-  }
 
-  rememberSearchMiss(missKey);
-  return null;
+    if (missKey && pendingSearchMissWrites.has(writeToken)) rememberSearchMiss(missKey);
+    return null;
+  } finally {
+    if (writeToken) pendingSearchMissWrites.delete(writeToken);
+  }
 };
 
-const findFirstMatchingPr = async ({ octokit, target, branch, sourceCandidates, force = false, coverage = null }) => {
+const isTerminalPr = (pr) => Boolean(pr) && (pr.state === 'closed' || Boolean(pr.merged_at));
+
+// A closed/merged PR is matched by head branch NAME, and names get reused: a
+// fresh worktree called `feature` cut from the default branch would inherit
+// the merged PR of last month's `feature`. The PR only belongs to this checkout
+// when the commit it was merged or closed at is part of the checkout's history.
+// A rebase can preserve its patch while replacing its commit. Both checks are
+// injectable so focused tests need no git repository.
+const isHistoricalPrOfCheckout = async (directory, pr, {
+  isAncestor = isAncestorOfHead,
+  isPatchEquivalent = isPatchEquivalentOfHead,
+} = {}) => {
+  const headSha = normalizeText(pr?.head?.sha);
+  if (!headSha) {
+    return false;
+  }
+  try {
+    if (await isAncestor(directory, headSha)) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  try {
+    return await isPatchEquivalent(directory, headSha);
+  } catch {
+    return false;
+  }
+};
+
+// Exported for focused unit tests.
+export { isHistoricalPrOfCheckout };
+
+/**
+ * Resolve the PRs a branch is associated with in one repo target.
+ *
+ * Returns both candidates because they answer different questions:
+ * `open` is live branch status, `historical` is the last closed/merged PR for
+ * the same head. The caller must prefer an open PR from ANY target over a
+ * historical one — otherwise a merged fork PR hides an open upstream PR.
+ *
+ * `includeHistory` is off by default and is only enabled for primary-source
+ * targets. Live status is worth searching every configured remote; history is
+ * limited to the branch's primary fork network so unrelated remotes cannot
+ * multiply serial GitHub calls until the route hits its resolve timeout.
+ */
+const findBranchPrCandidates = async ({ octokit, target, branch, sourceCandidates, force = false, coverage = null, includeHistory = false }) => {
   const matcher = buildSourceMatcher(sourceCandidates);
   const sourceOwners = [];
   sourceCandidates.forEach((candidate) => pushUnique(sourceOwners, candidate.repo?.owner));
@@ -511,47 +686,79 @@ const findFirstMatchingPr = async ({ octokit, target, branch, sourceCandidates, 
     .filter((pr) => matcher.matches(pr, target.repo.repo))
     .sort((left, right) => matcher.compare(left, right, target.repo.repo))[0] ?? null;
 
-  for (const state of ['open', 'closed']) {
-    // Shared per-repo list first: one pulls.list answers every branch of the
-    // repo within the TTL. A miss in a complete list is authoritative — skip
-    // the per-branch query fan entirely.
-    let listWasComplete = false;
-    try {
-      const listEntry = await getRepoPulls(octokit, target.repo, state, { force });
-      const fromList = pickPreferred(listEntry.prs);
-      if (fromList) {
-        return fromList;
-      }
-      listWasComplete = listEntry.complete;
-    } catch {
-      // fall through to the precise per-branch queries
+  // The shared repo-level open list answers every branch of the repo within the
+  // TTL. A miss in a complete list is authoritative: no open PR exists here.
+  let openListWasComplete = false;
+  try {
+    const listEntry = await getRepoPulls(octokit, target.repo, 'open', { force });
+    const fromList = pickPreferred(listEntry.prs);
+    if (fromList) {
+      return { open: fromList, historical: null };
     }
-    if (listWasComplete) {
-      continue;
-    }
-    if (coverage) {
-      coverage.authoritative = false;
-    }
+    openListWasComplete = listEntry.complete;
+  } catch {
+    // fall through to the precise per-head queries
+  }
 
+  if (!openListWasComplete && coverage) {
+    coverage.authoritative = false;
+  }
+
+  // A complete open list already proved there is no open PR in this repo. With
+  // no history to look up there is nothing left to ask GitHub.
+  if (openListWasComplete && !includeHistory) {
+    return { open: null, historical: null };
+  }
+
+  const historicalKey = scopedCacheKey(octokit, repoCacheKey(target.repo, `${branch}::${sourceOwners.map(normalizeLower).filter(Boolean).join(',')}`));
+  if (historicalKey && includeHistory && !force && openListWasComplete) {
+    const cached = _historicalPrCache.get(historicalKey);
+    if (isHistoricalPrCacheFresh(cached)) {
+      return { open: null, historical: cached.pr };
+    }
+  }
+
+  // One query per source owner. With history enabled `state: 'all'` answers
+  // both questions at once, so asking for history never costs an extra call.
+  const historicalWriteToken = historicalKey && includeHistory ? {} : null;
+  if (historicalWriteToken) pendingHistoricalPrWrites.set(historicalWriteToken, historicalKey);
+  try {
+    let historical = null;
     for (const owner of sourceOwners) {
       const directCandidates = await safeListPulls(octokit, {
         owner: target.repo.owner,
         repo: target.repo.repo,
-        state,
+        state: includeHistory ? 'all' : 'open',
         head: `${owner}:${branch}`,
         per_page: 100,
       });
-      const direct = pickPreferred(directCandidates);
-      if (direct) {
-        return direct;
+      const openMatch = pickPreferred(directCandidates.filter((pr) => !isTerminalPr(pr)));
+      if (openMatch) {
+        return { open: openMatch, historical: null };
+      }
+      if (includeHistory && !historical) {
+        // Among past PRs for the same head the newest one is the relevant record.
+        historical = directCandidates
+          .filter((pr) => normalizeText(pr?.head?.ref) === branch)
+          .filter((pr) => matcher.matches(pr, target.repo.repo))
+          .filter(isTerminalPr)
+          .sort((left, right) => (right?.number ?? 0) - (left?.number ?? 0))[0] ?? null;
       }
     }
-  }
 
-  return null;
+    if (historicalWriteToken && pendingHistoricalPrWrites.has(historicalWriteToken)) {
+      rememberHistoricalPr(historicalKey, historical);
+    }
+    return { open: null, historical };
+  } finally {
+    if (historicalWriteToken) pendingHistoricalPrWrites.delete(historicalWriteToken);
+  }
 };
 
-export async function resolveGitHubPrStatus({ octokit, directory, branch, remoteName, force = false }) {
+// Exported for focused unit tests of open-versus-historical branch matching.
+export { findBranchPrCandidates };
+
+export async function resolveGitHubPrStatus({ octokit, directory, branch, remoteName, sourceRemoteName = null, force = false, requestHost }) {
   // A deleted worktree can still have a session in the sidebar that keeps
   // requesting its PR status. Bail before touching git or GitHub for a
   // directory that no longer exists — otherwise every poll spends a git call
@@ -563,13 +770,13 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
   const normalizedBranch = normalizeText(branch);
   const normalizedRemoteName = normalizeText(remoteName) || 'origin';
 
-  const [status, remotes] = await Promise.all([
-    getStatus(directory).catch(() => null),
+  const [tracking, remotes] = await Promise.all([
+    getTrackingBranch(directory).catch(() => null),
     getRemotes(directory).catch(() => []),
   ]);
 
-  const trackingRemoteName = parseTrackingRemoteName(status?.tracking);
-  const trackingBranchName = parseTrackingBranchName(status?.tracking);
+  const trackingRemoteName = parseTrackingRemoteName(tracking);
+  const trackingBranchName = parseTrackingBranchName(tracking);
   const branchCandidates = [];
   pushUnique(branchCandidates, normalizedBranch);
   pushUnique(branchCandidates, trackingBranchName);
@@ -580,9 +787,25 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
   );
 
   const resolvedRemoteTargets = await resolveRemoteCandidates(directory, rankedRemoteNames);
+
+  // A request is scoped to one instance: the route resolves the checkout's
+  // host, pins this octokit to it, and passes that host in as `requestHost`.
+  // A fork's parent/source always live on the instance that reported them, so
+  // every target here must be on the *same* host this octokit talks to —
+  // fetch an enterprise repo through a github.com octokit (or vice versa) and
+  // the request surfaces a same-named repo on the wrong tenant. The client
+  // probes other hosts via separate requests (prStatus passes a remote), so
+  // filtering is scoping, not a lost feature. An absent request host keeps
+  // the github.com default, so an explicit remote that failed to resolve
+  // cannot drag a differently-hosted repo into a host it does not belong to.
+  const requestHostKey = normalizeLower(requestHost) || 'github.com';
+  const hostTargets = resolvedRemoteTargets.filter(
+    (target) => (normalizeLower(target.repo?.host) || 'github.com') === requestHostKey,
+  );
+
   const resolvedTargets = await expandRepoNetwork(
     octokit,
-    resolvedRemoteTargets.map((target, index) => ({ ...target, priority: index })),
+    hostTargets.map((target, index) => ({ ...target, priority: index })),
   );
   if (resolvedTargets.length === 0) {
     return {
@@ -593,7 +816,21 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
     };
   }
 
-  const sourceCandidates = resolvedTargets.slice();
+  // Only the repo this branch actually pushes to (the ranked-first remote)
+  // and its fork network can be the SOURCE of the branch's PRs. Other
+  // configured remotes — a maintainer's checkout often carries contributor
+  // forks — are places to look for an open PR, but their `owner:branch`
+  // heads are unrelated branches that merely share a name; treating them as
+  // sources made a fork's closed `main` PR show up on the local main.
+  // A branch checked out from a contributor's fork PR comes from that fork's
+  // remote, which the caller knows from the worktree's provenance.
+  const primaryRemoteName = resolvedTargets[0]?.remoteName ?? null;
+  const contributorSources = sourceRemoteName
+    ? resolvedTargets.filter((target) => target.remoteName === sourceRemoteName)
+    : [];
+  const sourceCandidates = contributorSources.length > 0
+    ? contributorSources
+    : resolvedTargets.filter((target) => target.remoteName === primaryRemoteName);
   // When every consulted repo list was complete, a no-PR result is
   // authoritative and the expensive Search API fallback is pointless.
   const coverage = { authoritative: true };
@@ -601,6 +838,11 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
   let fallbackRepo = resolvedTargets[0].repo;
   let fallbackRemoteName = resolvedTargets[0].remoteName;
   let fallbackDefaultBranch = await getRepoDefaultBranch(octokit, fallbackRepo);
+
+  // The first closed/merged PR found, in target priority order. It is only
+  // returned once every target has been checked for an open PR, so an open
+  // upstream PR always wins over a merged fork PR for the same head.
+  let historicalMatch = null;
 
   for (const target of resolvedTargets) {
     const defaultBranch = await getRepoDefaultBranch(octokit, target.repo);
@@ -616,18 +858,34 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
         continue;
       }
 
-      const pr = await findFirstMatchingPr({
+      // History is only asked for the branch's own name and its primary remote
+      // network. That includes a fork's parent/source, where a fork-owned PR
+      // may have been merged, while excluding unrelated contributor remotes.
+      // A contributor fork checkout's PR merges into the primary remote, which
+      // is not among its source candidates.
+      const isPrimaryAssociation = (target === resolvedTargets[0] || sourceCandidates.includes(target)) && candidateBranch === branchCandidates[0] && candidateBranch !== defaultBranch;
+
+      const { open, historical } = await findBranchPrCandidates({
         octokit,
         target,
         branch: candidateBranch,
         sourceCandidates,
         force,
         coverage,
+        includeHistory: isPrimaryAssociation,
       });
-      if (pr) {
+      if (open) {
         return {
           repo: target.repo,
-          pr,
+          pr: open,
+          defaultBranch,
+          resolvedRemoteName: target.remoteName,
+        };
+      }
+      if (historical && !historicalMatch) {
+        historicalMatch = {
+          repo: target.repo,
+          pr: historical,
           defaultBranch,
           resolvedRemoteName: target.remoteName,
         };
@@ -643,6 +901,7 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
       octokit,
       branch: candidateBranch,
       repoNames: resolvedTargets.map((target) => target.repo.repo),
+      host: resolvedTargets[0]?.repo?.host,
     });
     if (fallbackSearch) {
       return {
@@ -652,6 +911,10 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
         resolvedRemoteName: null,
       };
     }
+  }
+
+  if (historicalMatch && await isHistoricalPrOfCheckout(directory, historicalMatch.pr)) {
+    return historicalMatch;
   }
 
   return {

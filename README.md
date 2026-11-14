@@ -1,63 +1,116 @@
 # Hao Work
 
-Hao Work 是一个 AI 编程工作台，也是一套模型自适应 harness 的实验平台。
+[![GitHub stars](https://img.shields.io/github/stars/openchamber/openchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/openchamber/openchamber/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/openchamber/openchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/openchamber/openchamber/releases/latest)
+[![Discord](https://img.shields.io/badge/Discord-join.svg?style=flat&labelColor=100F0F&color=8B7EC8&logo=discord&logoColor=FFFCF0)](https://discord.gg/ZYRSdnwwKA)
+[![Support the project](https://img.shields.io/badge/Support-Project-black?style=flat&labelColor=100F0F&color=EC8B49&logo=patreon&logoColor=FFFCF0)](https://www.patreon.com/openchamber)
 
-不同模型擅长的提示方式、工具组合和推理节奏并不相同。Hao Work 希望用可重复的评测，为每种模型匹配合适的 system prompt、工具、推理参数、上下文管理和验证流程，让模型按自己擅长的方式完成长任务。
+<a href="https://www.blacksmith.sh/"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/badges/blacksmith-dark.svg"><img src="docs/references/badges/blacksmith-light.svg" height="28" alt="CI powered by Blacksmith" /></picture></a>
 
-当前版本以 [OpenChamber](https://github.com/openchamber/openchamber) 为界面和桌面运行基础，以 [HaoCode](https://github.com/skvdhshuk-blip/hao-code) 为 Agent 引擎。它保留会话、文件、工具调用、权限确认和终端等桌面体验，并通过兼容层把现有界面协议转换为 HaoCode SDK 调用。
+## Run agent work. Keep control. Ship from anywhere.
 
-<p align="center">
-  <img src="docs/images/hao-work-analysis.png" alt="Hao Work 使用 HaoCode 分析 PHP 源码" width="100%">
+**OpenChamber is an open-source workspace for running and reviewing AI coding work on desktop, web, VS Code, and mobile.**
+
+Start agent work, see what changed, and take it through review and release. Your projects and sessions remain available when you switch devices or step away.
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/desktop_dark.png"><img src="docs/references/desktop_light.png" alt="OpenChamber desktop app"></picture>
+
+<details>
+<summary>More screenshots</summary>
+
+![VS Code Extension](packages/vscode/extension.jpg)
+
+<p>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/mobile/new_session_dark.png"><img src="docs/references/mobile/new_session_light.png" width="30%" alt="OpenChamber mobile new session"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/mobile/chat_dark.png"><img src="docs/references/mobile/chat_light.png" width="30%" alt="OpenChamber mobile chat"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/mobile/context_usage_dark.png"><img src="docs/references/mobile/context_usage_light.png" width="30%" alt="OpenChamber mobile context and usage"></picture>
 </p>
 
 ## 当前能力
 
-- HaoCode 持久会话、多轮对话，以及流式文本与思考输出
-- Read、Write、Edit、apply_patch、Glob、Grep、Bash、Skill 与 Memory 等工具事件展示
-- Bash、文件写入和编辑操作的权限确认，支持 ask、smart、auto 三种 HITL 模式与“始终允许”规则
-- AskUserQuestion 问答、中断恢复，以及自动决策历史记录
-- Anthropic、OpenAI、DeepSeek、GitHub Copilot 等内置 Provider，自定义 OpenAI 兼容 Provider，以及 API Key / OAuth 登录
-- 按 Provider 或模型配置图片处理策略：原生视觉、离线 OCR、图片描述、VLM 转述或丢弃
-- 可选的 tokimo VM 沙箱配置与桌面端运行时打包
-- 项目、会话、消息、Provider 与行为设置持久化到 `~/.config/hao-work`
-- macOS、Windows 与 Linux 的 Electron 打包结构和自动更新能力
+## What you can do with OpenChamber
 
-兼容层目前只实现 Hao Work 主链路所需的 OpenCode API。OpenChamber 中依赖 OpenCode 专有后端能力的边缘功能可能尚未映射，新增映射时应在 `packages/web/server/lib/haocode/compat-server.test.js` 补回归测试。
+### Goals that continue on their own
 
-## 架构
+Give a session a finish line with **Session Goals**. OpenChamber checks the result after every turn and keeps the agent working until it completes the goal, gets blocked, or reaches the limit you set. It can continue after you close the app.
 
-```text
-OpenChamber React UI
-        │ OpenCode-shaped HTTP / SSE / WebSocket
-        ▼
-HaoCode compatibility server (Node.js)
-        │ one JSON request + JSON-lines events
-        ▼
-PHP bridge worker
-        │
-        ▼
-sk-wang/hao-code
-```
+### Compare and combine runs
 
-- `packages/ui`：沿用并扩展 OpenChamber 的 React UI。
-- `packages/web/server/lib/haocode`：HaoCode 兼容服务、状态存储、图片转换与 PHP worker 管理。
-- `packages/haocode-bridge`：PHP 与 Node.js 之间的 JSON-lines 边界。
-- `packages/electron`：桌面壳、图标、自动更新和内置运行时打包。
+Use **Multi-run** to give the same task to up to five models, each in its own session and optionally its own worktree. See what each one actually built, choose the best result, or use **Fusion** to combine the strongest parts into a new session.
 
-## 本地开发
+### Guided changes walkthroughs
 
-要求：Bun、Node.js 22+、Composer，以及 PHP 8.3+。
+**Changes Walkthrough** turns a large diff into an AI-guided tour of the change. It groups related edits into steps, puts them in the order the change makes sense, and explains how the pieces fit together.
+
+### Inspect a running app
+
+Open your app beside the conversation with **Preview**. Point at an element to send the agent its screenshot, styles, position, and browser errors. No more trying to explain "this thing here." The desktop app can do the same with any web page in its built-in browser.
+
+### GitHub context from issue to pull request
+
+Start a session from a GitHub issue or pull request with its context attached. Send failed checks or review comments back to the agent, then update or merge the pull request from OpenChamber.
+
+### Continue on another device
+
+Open the same projects and sessions from Desktop, Web/PWA, VS Code, iOS, or Android. Check progress, answer questions, review changes, and reattach to a running terminal.
+
+### Private remote access
+
+Pair a device with a one-time QR code and connect through **Private Relay** without opening ports or exposing a public server. The connection is end-to-end encrypted and can be revoked at any time. Direct connections, LAN/VPN access, Cloudflare/Ngrok tunnels, and SSH are also supported.
+
+### Track work across projects
+
+See which sessions are working, waiting, finished, or failed, along with approvals, scheduled tasks, provider limits, token use, and costs. Organize sessions into folders and keep notes, todos, and reusable project actions nearby.
+
+### Schedule recurring work
+
+Run a prompt once, daily, weekly, or on a cron schedule. Scheduled tasks can use Session Goals, so they continue toward an outcome instead of stopping after one response.
+
+## Use it where you work
+
+| Surface | Role |
+| --- | --- |
+| **Desktop** | The complete workspace for macOS, Windows, and Linux, with multiple windows, Mini Chat, remote machines, SSH, and native notifications |
+| **Web / PWA** | Open your workspace in a browser, install it as an app, and stay up to date through background notifications |
+| **VS Code** | Keep sessions beside your code, send selections to the agent, open results in the editor, and compare parallel runs |
+| **iOS / Android** | Review and steer work away from your desk, receive completion alerts, and use the terminal with touch controls |
+| **CLI / Server** | Run OpenChamber on a workstation or server, schedule work, manage remote access, and keep it available after login |
+
+## Quick start
+
+### Desktop for macOS, Windows, and Linux
+
+Download the latest release from [GitHub Releases](https://github.com/openchamber/openchamber/releases/latest). Desktop bundles the matching OpenCode CLI, so no separate OpenCode installation is required.
+
+The nightly build of `main` is in the [Canary release](https://github.com/openchamber/openchamber/releases/tag/canary). Tomorrow's release, available tonight.
+
+Linux releases come for x86_64 and ARM64 as a `.deb` (Debian, Ubuntu), an `.rpm` (Fedora, openSUSE) and an AppImage. The packages install OpenChamber into the app menu, and in-app updates ask for your password to install the new package:
 
 ```bash
-bun install
-composer install --working-dir=packages/haocode-bridge
-bun run dev
+sudo apt install ./OpenChamber-*-linux-amd64.deb    # Debian, Ubuntu
+sudo dnf install ./OpenChamber-*-linux-x86_64.rpm   # Fedora
 ```
 
-默认页面为 `http://127.0.0.1:5180`，API 服务为 `http://127.0.0.1:3902`。在 Settings → Providers 中保存 Provider 凭据后即可创建会话。
-Linux Desktop ships as AppImage with in-app window controls and auto-update when running from a writable AppImage.
+The AppImage needs no install. Make it executable and keep it in a writable location for in-app updates; on its first start it adds itself to the app menu:
 
-开发时可覆盖 bridge 运行环境：
+```bash
+chmod +x OpenChamber-*.AppImage
+./OpenChamber-*.AppImage
+```
+
+Linux AppImages require FUSE (`libfuse.so.2`). Without FUSE, run with `APPIMAGE_EXTRACT_AND_RUN=1`.
+
+### VS Code
+
+Install [OpenChamber from the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=fedaykindev.openchamber), or search for "OpenChamber" in Extensions.
+
+### iOS and Android
+
+Join the iOS beta on [TestFlight](https://testflight.apple.com/join/5ek6GU1E). For Android, download the `.apk` from the [Canary release](https://github.com/openchamber/openchamber/releases/tag/canary).
+
+### CLI for Web and PWA
+
+Requires Node.js 24.14+. CLI/Web and VS Code use your installed [OpenCode CLI](https://opencode.ai).
 
 ```bash
 HAOWORK_PHP_BINARY=/absolute/path/to/php \
@@ -66,73 +119,63 @@ HAOWORK_HAOCODE_AUTOLOAD=/absolute/path/to/vendor/autoload.php \
 bun run dev
 ```
 
-## 验证与测试
-
-提交前运行统一质量门：
+Common operations:
 
 ```bash
-bun run check
-bun run build
+openchamber status
+openchamber connect-url --qr
+openchamber tunnel start --provider cloudflare --mode quick --qr
+openchamber startup enable
+openchamber logs
+openchamber stop
+openchamber update
 ```
 
-`bun run check` 会执行全仓类型检查、lint，以及以下核心回归套件：
+OpenChamber binds to localhost by default. Use `--lan` only on a trusted network and protect browser access with `--ui-password`.
 
-- 发布工作流、package scripts 与桌面产物命名契约测试
-- HaoCode 兼容层、状态存储、worker 协议和图片转换测试
-- PHP bridge 的 Node 测试
-- Electron 架构与自动更新测试
+## Guides
 
-也可以只运行某一层：
+Go deeper with the OpenChamber guides:
 
-```bash
-bun run test:release-contract
-bun run test:haocode
-bun run test:bridge
-bun run test:electron
-```
+- [Quick start](packages/docs/content/docs/quickstart.mdx)
+- [Installation](packages/docs/content/docs/install.mdx)
+- [Connect devices](packages/docs/content/docs/connect-devices.mdx)
+- [Private Relay](packages/docs/content/docs/private-relay.mdx)
+- [Multi-run](packages/docs/content/docs/multi-run.mdx)
+- [Session Goals](packages/docs/content/docs/session-goals.mdx)
+- [Changes Walkthrough](packages/docs/content/docs/walkthrough.mdx)
+- [Preview and dev servers](packages/docs/content/docs/preview.mdx)
+- [GitHub workflows](packages/docs/content/docs/github.mdx)
+- [Mobile](packages/docs/content/docs/mobile.mdx)
+- [Security](packages/docs/content/docs/security.mdx)
+- [Troubleshooting](packages/docs/content/docs/troubleshooting.mdx)
 
-兼容层测试使用假 worker，不消耗模型额度；真实模型联调需要在本地 Provider 设置中保存凭据。Pull Request、`main` 分支提交和 `v*` 发布标签会在 GitHub Actions 中执行同一套 `release:prepare` 质量门。
+For self-hosting details, see the [reverse proxy guide](docs/REVERSE_PROXY.md). For custom theme authoring, see the [custom themes guide](docs/CUSTOM_THEMES.md).
 
-## 桌面运行与打包
+## Why OpenCode?
 
-```bash
-# Electron 开发模式
-bun run electron:dev
+OpenChamber uses [OpenCode](https://opencode.ai) to run coding agents. We chose it because it is open source, has a solid API, and is easy to extend.
 
-# 准备当前平台的轻量 PHP + HaoCode bridge
-bun run --cwd packages/electron prepare:haocode-runtime
+OpenChamber handles the rest of the workflow. You can decide what to try, keep the agent on track, review the result, connect from another device, and ship the change.
 
-# 完整打包
-bun run electron:build
-```
+OpenChamber is an independent project and is not affiliated with the OpenCode team.
 
-`prepare:haocode-runtime` 会执行以下操作：
+## Contributing
 
-1. 按 `packages/haocode-bridge/composer.lock` 安装 HaoCode。
-2. 从 NativePHP `php-bin` 下载与当前平台/架构匹配的静态 PHP 8.4，并用 GitHub blob SHA 校验。
-3. 把 PHP、bridge、Composer vendor、沙箱 runner 和运行清单写入 Electron resources。
+Bug fixes are welcome as PRs that link their bug report. Features and behavior changes start as a [feature request](https://github.com/openchamber/openchamber/issues/new?template=feature_request.yml), and building starts once it is marked `accepted`. Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a PR; it has the setup, the review contract, and what happens to a PR without a linked issue. Documentation authoring guidance lives in [`packages/docs`](packages/docs/README.md).
 
-这些资源只在构建阶段生成，不提交到 Git。最终用户安装打包产物后，不需要另装 OpenCode、Tokimo、Composer 或系统 PHP。
+Bugs go to [issues](https://github.com/openchamber/openchamber/issues/new/choose). Questions go to [Q&A discussions](https://github.com/openchamber/openchamber/discussions/categories/q-a).
 
-## 运行边界
+## Acknowledgments
 
-- `caption` 图片策略首次使用时需要下载模型；`ocr` 使用随包提供的离线模型。
-- 启用 tokimo 沙箱前必须先准备有效的 rootfs 和对应平台 runner；配置不完整时会保持关闭。
-- Provider 真实请求、OAuth 和发布签名仍需要各自的外部凭据，默认回归测试不会访问模型 API。
+Special thanks to:
 
-## Provider 环境变量
+- [OpenCode](https://opencode.ai) for the API and open-source architecture OpenChamber builds on
+- [Pierre](https://pierrejs-docs.vercel.app/) for the diff viewer and syntax highlighting
+- The [T3 Code](https://github.com/pingdotgg/t3code) team for their browser adapter for [libghostty-vt](https://github.com/ghostty-org/ghostty), which our terminal is built on
+- [Yulia Ivashko](https://github.com/yulia-ivashko), who built the firework celebration that plays on every successful push
+- Everyone who contributed code, reported bugs, or shared ideas
 
-Hao Work 优先使用在界面中保存的本地凭据，也兼容各内置 Provider 定义中的环境变量，例如：
+## License
 
-- `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY`
-- `DEEPSEEK_API_KEY`
-- `OPENROUTER_API_KEY`
-- `GROQ_API_KEY`
-- `GITHUB_TOKEN`（GitHub Copilot 登录时会先交换为短期 Copilot token）
-
-密钥只保存在本机运行状态中，不要写入仓库或发布产物。
-
-## 致谢与许可
-
-Hao Work 基于 OpenChamber 二次开发，并保留其 MIT License 与原作者版权声明。Hao Work 新增的 HaoCode 集成同样按本仓库的 MIT License 发布。
+MIT

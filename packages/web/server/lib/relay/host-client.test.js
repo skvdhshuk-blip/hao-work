@@ -2,9 +2,10 @@
 // client using the JS e2ee initiator. Verifies the full handshake and a tunneled
 // HTTP GET /health, and asserts only binary frames cross the relay post-handshake.
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'bun:test';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { startRelayHost } from './host-client.js';
@@ -21,16 +22,20 @@ import {
 } from './e2ee.js';
 import {
   TunnelFrameType,
+  chunkPayload,
+  createOutboundFrameBatcher,
   decodeTunnelFrame,
   encodeJsonPayload,
   encodeTunnelFrame,
+  MAX_TUNNEL_PAYLOAD_BYTES,
 } from './tunnel-codec.js';
 
 // ---------------------------------------------------------------------------
 // Fake relay: routes host-control <-> host-data <-> client by (serverId, connectionId).
-// Forwards frames verbatim, never inspects them.
+// Forwards frames verbatim, never inspects them, except that it drops the
+// client's binary message number `dropClientBinaryAt` (0-based) when given.
 // ---------------------------------------------------------------------------
-const startFakeRelay = () => {
+const startFakeRelay = ({ dropClientBinaryAt } = {}) => {
   const server = http.createServer();
   const wss = new WebSocketServer({ server });
   const state = {
@@ -39,11 +44,18 @@ const startFakeRelay = () => {
     clients: new Map(), // connectionId -> ws
     buffered: new Map(), // connectionId -> [[data, isBinary]] awaiting host-data
     relayFrames: [], // observed forwarded frames (for plaintext assertions)
+    apps: new Map(),
+    clientBinarySeen: 0,
   };
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://localhost');
     const role = url.searchParams.get('role');
+    state.apps.set(role, {
+      appId: url.searchParams.get('appId'),
+      appVersion: url.searchParams.get('appVersion'),
+      platform: url.searchParams.get('platform'),
+    });
     const connectionId = url.searchParams.get('connectionId');
 
     if (role === 'host-control') {
@@ -75,6 +87,7 @@ const startFakeRelay = () => {
       state.clients.set(connectionId, ws);
       ws.on('message', (data, isBinary) => {
         state.relayFrames.push({ from: 'client', isBinary });
+        if (isBinary && state.clientBinarySeen++ === dropClientBinaryAt) return;
         const host = state.hostData.get(connectionId);
         if (host && host.readyState === WebSocket.OPEN) {
           host.send(data, { binary: isBinary });
@@ -98,6 +111,10 @@ const startFakeRelay = () => {
         wsUrl: `ws://127.0.0.1:${port}`,
         state,
         stop: () => new Promise((r) => {
+          // A socket a failed test left open would hold server.close() until
+          // the hook timeout; drop them so a failure is reported once.
+          for (const client of wss.clients) client.terminate();
+          server.closeAllConnections();
           wss.close();
           server.close(() => r());
         }),
@@ -106,10 +123,12 @@ const startFakeRelay = () => {
   });
 };
 
-// A stub loopback origin serving /health.
+// A stub loopback origin serving /health; `requests` lists every request it saw.
 const startLoopbackOrigin = () =>
   new Promise((resolve) => {
+    const requests = [];
     const server = http.createServer((req, res) => {
+      requests.push(`${req.method} ${req.url}`);
       if (req.url === '/health') {
         const expectedOrigin = `http://127.0.0.1:${server.address().port}`;
         if (req.headers.origin !== expectedOrigin) {
@@ -129,7 +148,7 @@ const startLoopbackOrigin = () =>
       res.writeHead(404);
       res.end();
     });
-    server.listen(0, '127.0.0.1', () => resolve({ port: server.address().port, stop: () => new Promise((r) => server.close(() => r())) }));
+    server.listen(0, '127.0.0.1', () => resolve({ port: server.address().port, requests, stop: () => new Promise((r) => server.close(() => r())) }));
   });
 
 // Build the host identity around a fresh keypair (ECDH enc key + ECDSA sign key).
@@ -154,15 +173,15 @@ const buildIdentity = async () => {
   };
 };
 
-// Scripted client using the JS initiator: connects, handshakes, does a GET.
-const runScriptedClient = async ({ relayUrl, serverId, hostEncPubJwk }) => {
+// Scripted client using the JS initiator: connects, handshakes, does a GET, or
+// sends `requestPlaintexts` (one encrypted message each) instead.
+const runScriptedClient = async ({ relayUrl, serverId, hostEncPubJwk, helloExtras = {}, requestPlaintexts }) => {
   const connectionId = 'conn-test-1';
   const url = new URL(`${relayUrl}/`);
   url.searchParams.set('v', String(RELAY_PROTOCOL_VERSION));
   url.searchParams.set('role', 'client');
   url.searchParams.set('serverId', serverId);
   url.searchParams.set('connectionId', connectionId);
-  const ws = new WebSocket(url.toString());
 
   const hostPub = await globalThis.crypto.subtle.importKey(
     'jwk',
@@ -182,12 +201,19 @@ const runScriptedClient = async ({ relayUrl, serverId, hostEncPubJwk }) => {
     resolveDone = resolve;
   });
 
+  // Dialed only now, with the key material ready and the listeners attached
+  // in the same tick. Dialing before the WebCrypto awaits above let a loopback
+  // socket open while the key generation was still queued on the threadpool,
+  // and an `open` event with no listener means no hello, no ready, and a
+  // client that waits forever. Loaded CI runners hit exactly that.
+  const ws = new WebSocket(url.toString());
   ws.on('open', async () => {
     ws.send(JSON.stringify({
       t: 'hello',
       v: RELAY_PROTOCOL_VERSION,
       clientPubJwk: await exportPublicKeyJwk(ephemeral.publicKey),
       nonce: bytesToBase64Url(nonce),
+      ...helloExtras,
     }));
   });
 
@@ -204,6 +230,10 @@ const runScriptedClient = async ({ relayUrl, serverId, hostEncPubJwk }) => {
           encryptor: createFrameEncryptor(keys.clientToHost),
           decryptor: createFrameDecryptor(keys.hostToClient),
         };
+        if (requestPlaintexts) {
+          for (const plaintext of requestPlaintexts) ws.send(await channel.encryptor.encrypt(plaintext), { binary: true });
+          return;
+        }
         // Send an HTTP GET /health over stream 1.
         const req = encodeTunnelFrame(TunnelFrameType.HttpRequest, 1, encodeJsonPayload({
           method: 'GET',
@@ -216,7 +246,8 @@ const runScriptedClient = async ({ relayUrl, serverId, hostEncPubJwk }) => {
       }
       return;
     }
-    if (!channel) return;
+    // Only the GET reads its response.
+    if (!channel || requestPlaintexts) return;
     const plaintext = await channel.decryptor.decrypt(new Uint8Array(data));
     const frame = decodeTunnelFrame(plaintext);
     if (frame.frameType === TunnelFrameType.HttpResponse) {
@@ -260,16 +291,19 @@ describe('relay host-client integration', () => {
 
   it('tunnels an HTTP GET /health with only binary frames post-handshake', async () => {
     const identity = await buildIdentity();
+    let markHostConnected;
+    const hostConnected = new Promise((resolve) => { markHostConnected = resolve; });
     host = startRelayHost({
       relayUrl: `${relay.wsUrl}/`,
       identity,
       getLocalPort: () => origin.port,
-      onStatus: () => {},
+      onStatus: (status) => {
+        if (status.state === 'connected') markHostConnected();
+      },
       logger: { warn: () => {} },
     });
 
-    // Give the control socket a moment to connect before the client arrives.
-    await new Promise((r) => setTimeout(r, 200));
+    await hostConnected;
 
     const result = await runScriptedClient({
       relayUrl: relay.wsUrl,
@@ -278,6 +312,13 @@ describe('relay host-client integration', () => {
     });
 
     expect(result.status).toBe(200);
+    for (const role of ['host-control', 'host-data']) {
+      expect(relay.state.apps.get(role)).toEqual({
+        appId: 'openchamber',
+        appVersion: expect.stringMatching(/^\d+\.\d+\.\d+/),
+        platform: process.env.OPENCHAMBER_RUNTIME || 'web',
+      });
+    }
     expect(result.body.ok).toBe(true);
     expect(result.body.relayConn).toBe('conn-test-1');
     expect(result.body.origin).toBe(`http://127.0.0.1:${origin.port}`);
@@ -288,5 +329,458 @@ describe('relay host-client integration', () => {
     const plaintextForwarded = forwarded.filter((f) => !f.isBinary);
     expect(plaintextForwarded.length).toBe(2); // hello + ready only
     expect(forwarded.filter((f) => f.isBinary).length).toBeGreaterThan(0);
+  });
+});
+
+describe('relay host-client dropped message', () => {
+  it('closes the data channel when the relay drops part of a batched request body', async () => {
+    // Default batcher: a full-size body chunk travels alone, so the client
+    // sends [head] [A] [B] [CCCC + StreamEnd] as four encrypted messages.
+    const plaintexts = [];
+    const batcher = createOutboundFrameBatcher({ sendBatch: (p) => plaintexts.push(p) });
+    batcher.enqueue(encodeTunnelFrame(TunnelFrameType.HttpRequest, 1, encodeJsonPayload({
+      method: 'POST',
+      path: '/api/submit',
+      query: '',
+      headers: { 'content-type': 'application/json' },
+      hasBody: true,
+    })));
+    const body = Buffer.concat([
+      Buffer.alloc(MAX_TUNNEL_PAYLOAD_BYTES, 'A'),
+      Buffer.alloc(MAX_TUNNEL_PAYLOAD_BYTES, 'B'),
+      Buffer.from('CCCC'),
+    ]);
+    for (const piece of chunkPayload(new Uint8Array(body))) {
+      batcher.enqueue(encodeTunnelFrame(TunnelFrameType.HttpBody, 1, piece));
+    }
+    batcher.enqueue(encodeTunnelFrame(TunnelFrameType.StreamEnd, 1, new Uint8Array(0)));
+    batcher.dispose();
+    expect(plaintexts.length).toBe(4);
+
+    // The relay drops the "B" message.
+    const relay = await startFakeRelay({ dropClientBinaryAt: 2 });
+    const origin = await startLoopbackOrigin();
+    const identity = await buildIdentity();
+    const warnings = [];
+    let markConnected;
+    const connected = new Promise((resolve) => { markConnected = resolve; });
+    let markFailed;
+    const channelFailed = new Promise((resolve) => { markFailed = resolve; });
+    const host = startRelayHost({
+      relayUrl: `${relay.wsUrl}/`,
+      identity,
+      getLocalPort: () => origin.port,
+      onStatus: (status) => {
+        if (status.state === 'connected') markConnected();
+      },
+      logger: {
+        warn: (line) => {
+          warnings.push(line);
+          if (line.includes('data channel failed')) markFailed();
+        },
+        info: () => {},
+      },
+    });
+    try {
+      await connected;
+      void runScriptedClient({
+        relayUrl: relay.wsUrl,
+        serverId: identity.serverId,
+        hostEncPubJwk: identity.hostEncPubJwk,
+        helloExtras: { batch: true },
+        requestPlaintexts: plaintexts,
+      });
+      await Promise.race([channelFailed, new Promise((r) => setTimeout(r, 3000))]);
+      // Let a wrongly forwarded body reach the origin, and the close the relay.
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(relay.state.clientBinarySeen).toBe(4);
+      expect(origin.requests).toEqual([]);
+      expect(warnings).toContain('[Relay] data channel failed connectionId=conn-test-1 reason=frame decryption failed');
+      expect(relay.state.hostData.has('conn-test-1')).toBe(false);
+    } finally {
+      host.stop();
+      await relay.stop();
+      await origin.stop();
+    }
+  });
+});
+
+// Control-only relay whose host-data upgrades the test scripts: each dial is
+// answered by the next entry of `outcomes` ('reject' -> 503, 'hang' -> no
+// answer, 'accept' -> 101),
+// accepting once the list runs out.
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const startScriptedRelay = (outcomes) => {
+  const server = http.createServer();
+  const wss = new WebSocketServer({ noServer: true });
+  const state = { control: null, dials: [], dataSockets: [] };
+  // Upgraded sockets leave the server's connection tracking, so a hung one
+  // would hold server.close() open: destroy them on stop.
+  const hungSockets = [];
+  let notifyDial = () => {};
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url, 'http://localhost');
+    const role = url.searchParams.get('role');
+    if (role === 'host-data') {
+      state.dials.push(url.searchParams.get('connectionId'));
+      notifyDial();
+      const outcome = outcomes.shift() ?? 'accept';
+      if (outcome === 'reject') {
+        socket.end('HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n');
+        return;
+      }
+      if (outcome === 'hang') {
+        socket.on('error', () => {});
+        hungSockets.push(socket);
+        return;
+      }
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (role === 'host-control') state.control = ws;
+      else state.dataSockets.push(ws);
+    });
+  });
+  const waitForDials = (count, timeoutMs) => new Promise((resolve) => {
+    const check = () => {
+      if (state.dials.length >= count) resolve(true);
+    };
+    notifyDial = check;
+    check();
+    setTimeout(() => resolve(state.dials.length >= count), timeoutMs);
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      resolve({
+        wsUrl: `ws://127.0.0.1:${server.address().port}/`,
+        state,
+        waitForDials,
+        send: (message) => state.control.send(JSON.stringify(message)),
+        stop: () => new Promise((r) => {
+          for (const client of wss.clients) client.terminate();
+          for (const socket of hungSockets) socket.destroy();
+          server.closeAllConnections();
+          wss.close();
+          server.close(() => r());
+        }),
+      });
+    });
+  });
+};
+
+describe('relay host-client data socket retry', () => {
+  let relay;
+  let host;
+
+  afterEach(async () => {
+    host?.stop();
+    host = null;
+    await relay?.stop();
+    relay = null;
+  });
+
+  const startHost = async (outcomes) => {
+    relay = await startScriptedRelay(outcomes);
+    const identity = await buildIdentity();
+    let markConnected;
+    const connected = new Promise((resolve) => { markConnected = resolve; });
+    host = startRelayHost({
+      relayUrl: relay.wsUrl,
+      identity,
+      getLocalPort: () => 1,
+      onStatus: (status) => {
+        if (status.state === 'connected') markConnected();
+      },
+      logger: { warn: () => {}, info: () => {} },
+    });
+    await connected;
+  };
+
+  it('dials a waiting client again after a dial the relay refused', async () => {
+    await startHost(['reject', 'reject']);
+    relay.send({ type: 'connected', connectionId: 'conn-retry' });
+
+    // No second `connected` arrives: the host retries on its own.
+    expect(await relay.waitForDials(3, 6000)).toBe(true);
+    expect(relay.state.dials).toEqual(['conn-retry', 'conn-retry', 'conn-retry']);
+    await sleep(100);
+    expect(host.getStatus().connectedClients).toBe(1);
+  }, 10000);
+
+  it('gives up on a hung dial well inside the client handshake timeout and dials again', async () => {
+    await startHost(['hang']);
+    relay.send({ type: 'connected', connectionId: 'conn-hung' });
+
+    expect(await relay.waitForDials(2, 9000)).toBe(true);
+    await sleep(100);
+    expect(host.getStatus().connectedClients).toBe(1);
+  }, 12000);
+
+  it('stops retrying once the relay reports the client gone', async () => {
+    await startHost(['reject', 'reject', 'reject']);
+    relay.send({ type: 'connected', connectionId: 'conn-gone' });
+    expect(await relay.waitForDials(1, 2000)).toBe(true);
+    relay.send({ type: 'disconnected', connectionId: 'conn-gone' });
+
+    expect(await relay.waitForDials(2, 2500)).toBe(false);
+    expect(relay.state.dials).toEqual(['conn-gone']);
+  }, 10000);
+
+  it('leaves a data socket that opened and then closed to the client reconnect', async () => {
+    await startHost([]);
+    relay.send({ type: 'connected', connectionId: 'conn-opened' });
+    expect(await relay.waitForDials(1, 2000)).toBe(true);
+    await sleep(100);
+    relay.state.dataSockets[0].close(1012, 'gone');
+
+    expect(await relay.waitForDials(2, 2500)).toBe(false);
+  }, 10000);
+});
+
+// Bun's WebSocket fails a dial with an error whose message and `url` hold the
+// whole dial URL, signed relay auth included. Node's `ws` never does, so these
+// sockets stand in for Bun.
+class BunLikeFailingSocket extends EventEmitter {
+  constructor(url) {
+    super();
+    this.url = url;
+    this.readyState = WebSocket.CONNECTING;
+  }
+
+  fail(reason) {
+    this.readyState = WebSocket.CLOSED;
+    this.emit('error', Object.assign(new Error(`WebSocket connection to '${this.url}' failed: ${reason}`), { url: this.url }));
+    this.emit('close', 1006, Buffer.alloc(0));
+  }
+
+  close() {}
+
+  terminate() {}
+
+  ping() {}
+}
+
+describe('relay host-client control reconnect', () => {
+  const fakeIdentity = {
+    serverId: 'fake-server-id',
+    hostEncPrivateKey: null,
+    signRelayAuth: () => ({ ts: 1, sig: 'sig', pk: 'pk' }),
+  };
+
+  // Opens the control socket, has the relay close it with `code`, and reports
+  // how many control dials follow within 1.5 s.
+  const redialsAfterClose = async (code) => {
+    const sockets = [];
+    const host = startRelayHost({
+      relayUrl: 'wss://relay.example.test/ws',
+      identity: fakeIdentity,
+      getLocalPort: () => 1,
+      logger: { warn: () => {} },
+      createSocket: (url) => {
+        const socket = new BunLikeFailingSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      const control = sockets[0];
+      control.readyState = WebSocket.OPEN;
+      control.emit('open');
+      control.readyState = WebSocket.CLOSED;
+      control.emit('close', code, Buffer.from('reason'));
+      await sleep(1500);
+      return sockets.length - 1;
+    } finally {
+      host.stop();
+    }
+  };
+
+  it('reconnects after a dropped control socket on the short backoff', async () => {
+    expect(await redialsAfterClose(1006)).toBe(1);
+  });
+
+  it('holds off when another host with the same identity took the slot', async () => {
+    expect(await redialsAfterClose(4001)).toBe(0);
+  });
+
+  // The relay retires a replaced control socket with a frame; the host closes
+  // it with 1000, and the frame's code decides the reconnect.
+  const redialsAfterRetire = async (code) => {
+    const sockets = [];
+    const host = startRelayHost({
+      relayUrl: 'wss://relay.example.test/ws',
+      identity: fakeIdentity,
+      getLocalPort: () => 1,
+      logger: { warn: () => {} },
+      createSocket: (url) => {
+        const socket = new BunLikeFailingSocket(url);
+        socket.close = (closeCode) => {
+          socket.readyState = WebSocket.CLOSED;
+          socket.emit('close', closeCode, Buffer.from(''));
+        };
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      const control = sockets[0];
+      control.readyState = WebSocket.OPEN;
+      control.emit('open');
+      control.emit('message', Buffer.from(JSON.stringify({ type: 'relay-retire', code, reason: 'retired' })), false);
+      await sleep(1500);
+      return sockets.length - 1;
+    } finally {
+      host.stop();
+    }
+  };
+
+  it('holds off when the relay retires the control socket as replaced', async () => {
+    expect(await redialsAfterRetire(4001)).toBe(0);
+  });
+
+  it('reconnects when the relay retires an unresponsive control socket', async () => {
+    expect(await redialsAfterRetire(4003)).toBe(1);
+  });
+
+  it('hands a share-state nudge to its listener and opens no data socket for it', () => {
+    const sockets = [];
+    const nudges = [];
+    const host = startRelayHost({
+      relayUrl: 'wss://relay.example.test/ws',
+      identity: fakeIdentity,
+      getLocalPort: () => 1,
+      logger: { warn: () => {}, info: () => {} },
+      onShareState: (shareId) => {
+        nudges.push(shareId);
+        throw new Error('listener failure stays here');
+      },
+      createSocket: (url) => {
+        const socket = new BunLikeFailingSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      const control = sockets[0];
+      control.readyState = WebSocket.OPEN;
+      control.emit('open');
+      control.emit('message', Buffer.from(JSON.stringify({ type: 'share-state', shareId: 'abc' })), false);
+      control.emit('message', Buffer.from(JSON.stringify({ type: 'share-state', shareId: 7 })), false);
+      expect(nudges).toEqual(['abc']);
+      expect(sockets).toHaveLength(1);
+    } finally {
+      host.stop();
+    }
+  });
+
+  // The relay accepted the dial and never answered the upgrade: no error, no close.
+  it('redials a control socket whose opening handshake never completes', () => {
+    vi.useFakeTimers();
+    const sockets = [];
+    const host = startRelayHost({
+      relayUrl: 'wss://relay.example.test/ws',
+      identity: fakeIdentity,
+      getLocalPort: () => 1,
+      logger: { warn: () => {}, info: () => {} },
+      createSocket: (url) => {
+        const socket = new BunLikeFailingSocket(url);
+        socket.terminate = () => socket.fail('WebSocket is closed before the connection is established');
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      vi.advanceTimersByTime(14_999);
+      expect(sockets).toHaveLength(1);
+
+      vi.advanceTimersByTime(1 + 1000);
+      expect(sockets).toHaveLength(2);
+      expect(host.getStatus()).toMatchObject({ state: 'reconnecting', lastError: 'control socket open timeout' });
+    } finally {
+      host.stop();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('relay host-client relay retire', () => {
+  it('drops a data socket the relay asks it to close', async () => {
+    const sockets = [];
+    const host = startRelayHost({
+      relayUrl: 'wss://relay.example.test/ws',
+      identity: { serverId: 'fake-server-id', hostEncPrivateKey: null, signRelayAuth: () => ({ ts: 1, sig: 'sig', pk: 'pk' }) },
+      getLocalPort: () => 1,
+      logger: { warn: () => {}, info: () => {} },
+      createSocket: (url) => {
+        const socket = new BunLikeFailingSocket(url);
+        socket.closedWith = null;
+        socket.close = (code) => { socket.closedWith = code; };
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      const control = sockets[0];
+      control.readyState = WebSocket.OPEN;
+      control.emit('open');
+      control.emit('message', Buffer.from(JSON.stringify({ type: 'connected', connectionId: 'conn-1' })), false);
+      const data = sockets[1];
+      data.readyState = WebSocket.OPEN;
+      data.emit('open');
+      expect(host.getStatus().connectedClients).toBe(1);
+
+      data.emit('message', Buffer.from(JSON.stringify({ type: 'relay-retire', code: 1001, reason: 'Client disconnected' })), false);
+      await sleep(20);
+
+      expect(data.closedWith).toBe(1000);
+      expect(host.getStatus().connectedClients).toBe(0);
+    } finally {
+      host.stop();
+    }
+  });
+});
+
+describe('relay host-client error redaction', () => {
+  const fakeIdentity = {
+    serverId: 'fake-server-id',
+    hostEncPrivateKey: null,
+    signRelayAuth: () => ({ ts: 1, sig: 'FAKE-SIGNATURE', pk: 'FAKE-PUBLIC-KEY' }),
+  };
+
+  it('keeps the signed relay auth out of logs and status when a dial fails', () => {
+    const sockets = [];
+    const warnings = [];
+    const host = startRelayHost({
+      relayUrl: 'wss://relay.example.test/ws',
+      identity: fakeIdentity,
+      getLocalPort: () => 1,
+      logger: { warn: (line) => warnings.push(line) },
+      createSocket: (url) => {
+        const socket = new BunLikeFailingSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    try {
+      const control = sockets[0];
+      control.readyState = WebSocket.OPEN;
+      control.emit('open');
+      control.emit('message', Buffer.from(JSON.stringify({ type: 'connected', connectionId: 'conn-1' })), false);
+      expect(sockets[1].url).toContain('sig=FAKE-SIGNATURE');
+      sockets[1].fail('Expected 101 status code');
+      control.fail('Failed to connect');
+
+      const lastError = host.getStatus().lastError;
+      expect(warnings).toEqual(["[Relay] host-data socket error: WebSocket connection to 'wss://relay.example.test/ws' failed: Expected 101 status code"]);
+      expect(lastError).toBe("WebSocket connection to 'wss://relay.example.test/ws' failed: Failed to connect");
+      for (const text of [...warnings, lastError]) {
+        expect(text).not.toContain('FAKE-SIGNATURE');
+        expect(text).not.toContain('FAKE-PUBLIC-KEY');
+      }
+    } finally {
+      host.stop();
+    }
   });
 });

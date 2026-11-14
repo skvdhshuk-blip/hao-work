@@ -1,5 +1,4 @@
 import type { SidebarSection } from '@/constants/sidebar';
-import type { MainTab } from '@/stores/useUIStore';
 
 /**
  * Represents the current route state derived from URL parameters.
@@ -8,8 +7,10 @@ import type { MainTab } from '@/stores/useUIStore';
 export interface RouteState {
   /** Session ID to navigate to */
   sessionId: string | null;
-  /** Main tab to display (chat, git, diff, terminal, files) */
-  tab: MainTab | null;
+  /** Message to show in that session (a message link); only with a session */
+  messageId: string | null;
+  /** View selected through the legacy `tab` URL parameter. */
+  tab: RouteTab | null;
   /** Settings section - when non-null, settings dialog should be open */
   settingsPath: string | null;
   /** File path for diff view */
@@ -17,9 +18,11 @@ export interface RouteState {
 }
 
 /**
- * Valid main tab values for URL routing.
+ * Valid values for the legacy `tab` URL parameter. Non-chat tabs open the
+ * matching context-panel surface; the chat always owns the main area.
  */
-export const VALID_TABS: readonly MainTab[] = ['chat', 'git', 'diff', 'terminal', 'files', 'diagram'] as const;
+export type RouteTab = 'chat' | 'git' | 'diff' | 'terminal' | 'files';
+export const VALID_TABS: readonly RouteTab[] = ['chat', 'git', 'diff', 'terminal', 'files'] as const;
 
 /**
  * Valid settings section values for URL routing.
@@ -39,6 +42,7 @@ export const VALID_SETTINGS_SECTIONS: readonly SidebarSection[] = [
  */
 export const ROUTE_PARAMS = {
   SESSION: 'session',
+  MESSAGE: 'message',
   TAB: 'tab',
   SETTINGS: 'settings',
   FILE: 'file',

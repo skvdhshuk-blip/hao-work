@@ -1,9 +1,11 @@
 import React from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { useSessionGoal } from '@/hooks/useSessionGoal';
+import { useGoalCheckAvailable, useSessionGoal } from '@/hooks/useSessionGoal';
 import { useSessionGoalArmStore } from '@/stores/useSessionGoalArmStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { SESSION_GOAL_OBJECTIVE_CHAR_LIMIT } from '@/lib/sessionGoalMetadata';
+import { sessionGoalStatusColor } from '@/lib/sessionGoalPresentation';
 import { SessionGoalDialog } from '@/components/chat/SessionGoalDialog';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
@@ -37,6 +39,12 @@ export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
   const armed = useSessionGoalArmStore((state) => state.armed);
   const setArmed = useSessionGoalArmStore((state) => state.setArmed);
   const [dialogOpen, setDialogOpen] = React.useState(false);
+  // The goal loop checks every turn with Jev or the small model; with neither
+  // a goal would stop after two failed checks, so the button names the reason
+  // and opens the Small Model setting instead of arming. A goal that already
+  // exists stays manageable.
+  const canCheck = useGoalCheckAvailable(directory, !isVSCodeRuntime() && enabled);
+  const cannotCheck = !canCheck && !goal;
 
   // The goal loop runs in the web server; the VS Code extension only renders
   // goal state. Arming a goal there would create one nothing drives, so the
@@ -50,16 +58,19 @@ export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
   const liveGoal = goal && goal.status !== 'complete' ? goal : null;
   const isEngaged = armed || Boolean(liveGoal);
 
-  const colorClass = (() => {
-    if (goal?.status === 'complete') return 'text-[var(--status-success)]';
-    if (goal?.status === 'blocked' || goal?.status === 'budgetLimited') return 'text-[var(--status-error)]';
-    if (armed || goal?.status === 'active' || goal?.status === 'paused') return 'text-[var(--status-info)]';
-    return '';
-  })();
+  // One mapping for every goal surface. This button used to carry its own,
+  // which painted `paused` the same info colour as `active` — so a paused goal
+  // was indistinguishable from a running one — and `blocked` as an error rather
+  // than a warning. `armed` is not a goal status, so it keeps its own case.
+  const iconColor = goal
+    ? sessionGoalStatusColor[goal.status]
+    : (armed ? 'var(--status-info)' : undefined);
 
   const label = goal
     ? t('chat.goal.button.manageAria')
-    : (armed ? t('chat.goal.button.disarmAria') : t('chat.goal.button.armAria'));
+    : cannotCheck
+      ? t('chat.goal.button.noSmallModel')
+      : (armed ? t('chat.goal.button.disarmAria') : t('chat.goal.button.armAria'));
 
   // Any existing goal (live or completed) opens the manage dialog — a
   // completed goal must be removed there before a new one can be armed.
@@ -68,13 +79,20 @@ export const SessionGoalButton: React.FC<SessionGoalButtonProps> = React.memo(({
       setDialogOpen(true);
       return;
     }
+    // The tooltip names the missing Small Model; the click takes the user
+    // to the setting that fixes it.
+    if (cannotCheck) {
+      useUIStore.getState().openSettingsAt('sessions', 'sessions.small-model');
+      return;
+    }
     setArmed(!armed);
   };
 
   const button = (
     <button
       type="button"
-      className={cn(footerIconButtonClass, colorClass)}
+      className={cn(footerIconButtonClass, cannotCheck && 'opacity-50')}
+      style={iconColor ? { color: iconColor } : undefined}
       onClick={handleClick}
       // Same guard as PermissionAutoAcceptButton, but only for the ARM
       // toggle: arming happens mid-typing (the next message IS the
@@ -141,7 +159,7 @@ export const SessionGoalObjectiveCounter: React.FC<SessionGoalObjectiveCounterPr
     <span
       className={cn(
         'flex-shrink-0 self-center typography-micro tabular-nums',
-        over ? 'text-[var(--status-error)]' : 'text-muted-foreground/70',
+        over ? 'text-[var(--status-error)]' : 'text-muted-foreground',
       )}
       aria-label={t('chat.goal.counter.aria')}
       title={t('chat.goal.counter.aria')}

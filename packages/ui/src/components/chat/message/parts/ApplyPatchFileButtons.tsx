@@ -1,0 +1,144 @@
+import { HoverTooltip } from '@/components/ui/row-tooltip';
+import React from 'react';
+
+import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
+import { Button } from '@/components/ui/button';
+import { Text } from '@/components/ui/text';
+import { cn } from '@/lib/utils';
+
+import { getRelativeFilePath } from '@/lib/path-utils';
+
+import { getApplyPatchFilePath } from './toolDiffUtils';
+import { DiffCount } from '@/components/ui/diff-count';
+
+type ApplyPatchFileEntry = {
+    file: Record<string, unknown>;
+    path: string;
+    name: string;
+    added: number | null;
+    removed: number | null;
+};
+
+const parseCount = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return Math.max(0, Math.trunc(value));
+    }
+    if (typeof value === 'string') {
+        const parsed = Number.parseInt(value, 10);
+        return Number.isFinite(parsed) ? Math.max(0, parsed) : null;
+    }
+    return null;
+};
+
+const combineCounts = (base: number | null, incoming: number | null): number | null => {
+    if (base === null) return incoming;
+    if (incoming === null) return base;
+    return base + incoming;
+};
+
+/**
+ * One row chip per file the patch touched. v2 reports each file as
+ * `{ file, patch, additions, deletions, status }`; the path reader also
+ * accepts the older `filePath`/`relativePath` naming of MCP and plugin tools.
+ */
+const getApplyPatchFileEntries = (metadata: Record<string, unknown> | undefined, currentDirectory: string): ApplyPatchFileEntry[] => {
+    const files = Array.isArray(metadata?.files) ? metadata.files : [];
+    const entriesByPath = new Map<string, ApplyPatchFileEntry>();
+
+    for (const file of files) {
+        if (!file || typeof file !== 'object') continue;
+        const fileRecord = file as Record<string, unknown>;
+        const rawPath = getApplyPatchFilePath(fileRecord);
+        const displayPath = rawPath ? getRelativeFilePath(rawPath, currentDirectory) : '';
+        if (!displayPath) continue;
+
+        const added = parseCount(fileRecord.additions);
+        const removed = parseCount(fileRecord.deletions);
+        const existing = entriesByPath.get(displayPath);
+        if (existing) {
+            existing.added = combineCounts(existing.added, added);
+            existing.removed = combineCounts(existing.removed, removed);
+            continue;
+        }
+
+        entriesByPath.set(displayPath, {
+            file: fileRecord,
+            path: displayPath,
+            name: displayPath.split('/').pop() || displayPath,
+            added,
+            removed,
+        });
+    }
+
+    return Array.from(entriesByPath.values());
+};
+
+export const ApplyPatchFileButtons = ({
+    animate = true,
+    currentDirectory = '',
+    metadata,
+    onFileClick,
+    openDiffLabel,
+    showFileIcons = true,
+    textClassName,
+}: {
+    animate?: boolean;
+    /** Paths in the chips are shown relative to this directory. */
+    currentDirectory?: string;
+    metadata: Record<string, unknown> | undefined;
+    onFileClick?: (file: Record<string, unknown>, event: React.MouseEvent<HTMLButtonElement>) => void;
+    openDiffLabel: string;
+    showFileIcons?: boolean;
+    textClassName?: string;
+}): React.ReactNode => {
+    const entries = getApplyPatchFileEntries(metadata, currentDirectory);
+    if (entries.length <= 1) return null;
+
+    return (
+        <>
+            {entries.map((entry) => {
+                const hasPerFileDiff = entry.added !== null || entry.removed !== null;
+                const canOpen = onFileClick && entry.file.status !== 'deleted' && entry.file.type !== 'delete';
+                const content = (
+                    <>
+                        {showFileIcons ? <FileTypeIcon filePath={entry.path} className="h-3.5 w-3.5" /> : null}
+                        <Text
+                            variant={animate ? 'generate-effect' : 'static'}
+                            className={cn('min-w-0 max-w-full truncate', textClassName)}
+                            // An openable name takes the button's colour, which brightens on hover.
+                            style={canOpen ? undefined : { color: 'var(--tools-description)' }}
+                            title={canOpen ? undefined : entry.path}
+                        >
+                            {entry.name}
+                        </Text>
+                        {hasPerFileDiff ? (
+                            <DiffCount added={entry.added ?? 0} removed={entry.removed ?? 0} className="typography-meta" />
+                        ) : null}
+                    </>
+                );
+                const actionLabel = `${openDiffLabel}: ${entry.path}`;
+                return canOpen ? (
+                    <HoverTooltip key={entry.path} label={actionLabel}>
+                        <Button
+                            variant="ghost"
+                            size="xs"
+                            className={cn(
+                                'min-w-0 max-w-full gap-1 normal-case font-normal tracking-normal',
+                                'text-[var(--tools-description)] hover:bg-transparent hover:text-foreground focus-visible:text-foreground',
+                                textClassName,
+                            )}
+                            aria-label={actionLabel}
+                            onClick={(event) => onFileClick(entry.file, event)}
+                        >
+                            {content}
+                        </Button>
+                    </HoverTooltip>
+                ) : (
+                    <span key={entry.path} className={cn('inline-flex min-w-0 max-w-full items-center gap-1', textClassName)} style={{ color: 'var(--tools-description)' }}>
+                        {content}
+                    </span>
+                );
+            })}
+        </>
+    );
+};

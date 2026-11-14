@@ -645,7 +645,8 @@ const parseAgentModel = (value) => {
 const buildAgentPayload = (agentName, directory) => {
   const config = getAgentConfig(agentName, directory).config ?? {};
   const payload = { name: agentName };
-  if (typeof config.prompt === 'string' && config.prompt.trim()) payload.prompt = config.prompt;
+  const prompt = [config.prompt, config.system].find((value) => typeof value === 'string' && value.trim());
+  if (prompt) payload.prompt = prompt;
   const model = parseAgentModel(config.model);
   if (model) payload.model = model;
   return payload;
@@ -1054,6 +1055,28 @@ export const createHaoCodeCompatibilityServer = ({
   };
 
   app.use(express.json({ limit: '20mb' }));
+  // OpenCode 2.x clients and the OpenChamber proxy call /api/*. The
+  // compatibility routes keep their historical paths; this strips the prefix.
+  // Directory now travels in x-opencode-directory, not only ?directory=.
+  app.use((request, _response, next) => {
+    if (request.url === '/api' || request.url.startsWith('/api/') || request.url.startsWith('/api?')) {
+      const queryIndex = request.url.indexOf('?');
+      const pathOnly = queryIndex === -1 ? request.url : request.url.slice(0, queryIndex);
+      const search = queryIndex === -1 ? '' : request.url.slice(queryIndex);
+      request.url = `${pathOnly.slice(4) || '/'}${search}`;
+    }
+    if (!request.query?.directory) {
+      const header = typeof request.get === 'function' ? request.get('x-opencode-directory') : null;
+      if (typeof header === 'string' && header.trim()) {
+        try {
+          request.query.directory = decodeURIComponent(header.trim());
+        } catch {
+          request.query.directory = header.trim();
+        }
+      }
+    }
+    next();
+  });
 
   const resolveHaoCodeVersion = () => {
     if (!haoCodeVersionPromise) {
@@ -2682,7 +2705,7 @@ export const createHaoCodeCompatibilityServer = ({
     native: false,
     hidden: Boolean(config.hidden),
     permission: config.permission ?? [],
-    prompt: config.prompt,
+    prompt: config.prompt || config.system,
     options: {},
   }))]));
   app.get('/command', (request, response) => response.json(
@@ -2887,7 +2910,7 @@ export const createHaoCodeCompatibilityServer = ({
     })));
   });
 
-  app.post('/session/:sessionID/prompt_async', async (request, response) => {
+  const acceptPromptAsync = async (request, response) => {
     const session = await store.getSession(request.params.sessionID);
     if (!session) return response.status(404).json({ error: 'Session not found.' });
     if (supervisor.isRunning(session.id)) return response.status(409).json({ error: 'Session is already running.' });
@@ -2971,7 +2994,55 @@ export const createHaoCodeCompatibilityServer = ({
         agent: buildAgentPayload(request.body?.agent || 'build', session.directory),
       },
     });
+  };
+  app.post('/session/:sessionID/prompt', async (request, response) => {
+    const session = await store.getSession(request.params.sessionID);
+    if (!session) return response.status(404).json({ error: 'Session not found.' });
+    const text = typeof request.body?.text === 'string' && request.body.text.trim()
+      ? request.body.text.trim()
+      : extractPrompt(request.body?.parts);
+    if (!text) return response.status(400).json({ error: 'Message must include text or a file.' });
+    const messageId = request.body?.id || request.body?.messageID || createMessageId();
+    const delivery = request.body?.delivery === 'steer' ? 'steer' : 'queue';
+    if (supervisor.isRunning(session.id)) {
+      const accepted = delivery === 'steer'
+        ? supervisor.steer(session.id, text)
+        : supervisor.queue(session.id, text);
+      if (!accepted) return response.status(409).json({ error: 'Session is already running.' });
+      const now = Date.now();
+      const user = {
+        id: messageId,
+        sessionID: session.id,
+        role: 'user',
+        time: { created: now },
+        agent: request.body?.agent || session.agent || 'build',
+        model: session.model,
+      };
+      const part = {
+        id: createId('part'),
+        sessionID: session.id,
+        messageID: messageId,
+        type: 'text',
+        text,
+      };
+      await store.mutate((state) => {
+        state.messages[session.id] ??= [];
+        state.messages[session.id].push({ info: user, parts: [part] });
+      });
+      publish(session.directory, event('message.updated', { sessionID: session.id, info: user }));
+      publish(session.directory, event('message.part.updated', { sessionID: session.id, part, time: now }));
+      return response.json({ id: messageId, delivery });
+    }
+    request.body = {
+      ...request.body,
+      messageID: messageId,
+      parts: Array.isArray(request.body?.parts) && request.body.parts.length
+        ? request.body.parts
+        : [{ type: 'text', text }],
+    };
+    return acceptPromptAsync(request, response);
   });
+  app.post('/session/:sessionID/prompt_async', acceptPromptAsync);
   app.post('/session/:sessionID/abort', async (request, response) => {
     const session = await store.getSession(request.params.sessionID);
     if (!session) return response.status(404).json({ error: 'Session not found.' });
