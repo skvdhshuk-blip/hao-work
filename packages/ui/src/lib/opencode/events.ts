@@ -14,6 +14,7 @@
  */
 
 import type { OpenCodeEvent } from "@opencode/client"
+import type { AutoDecisionRecord } from "@/sync/types"
 import type { WorkflowRun } from "@/lib/workflows/model"
 import {
   compact,
@@ -156,6 +157,7 @@ export type SyncEvent =
   | { type: "message.compaction.delta"; properties: { sessionID: string; delta: string } }
   | { type: "permission.asked"; properties: PermissionRequest }
   | { type: "permission.replied"; properties: { sessionID: string; requestID: string } }
+  | { type: "permission.auto_resolved"; properties: AutoDecisionRecord }
   | { type: "form.created"; properties: { form: FormRequest } }
   | {
     type: "form.settled"
@@ -980,6 +982,7 @@ export function syncEventSessionID(event: SyncEvent): string | undefined {
     case "message.parts.replaced":
     case "message.compaction.delta":
     case "permission.replied":
+    case "permission.auto_resolved":
     case "form.settled":
       return event.properties.sessionID
     default:

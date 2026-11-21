@@ -1945,6 +1945,7 @@ export const settingsDict = {
   'settings.providers.page.connectionDetails.source.projectConfig': 'إعدادات المشروع',
   'settings.providers.page.connectionDetails.source.customConfig': 'إعدادات مخصصة',
   'settings.providers.page.models.title': 'النماذج المتاحة',
+  'settings.providers.page.models.actions.fetchRemote': 'جلب قائمة النماذج',
   'settings.providers.page.models.filterPlaceholder': 'تصفية النماذج…',
   'settings.providers.page.models.noModelsMatchFilter': 'لا توجد نماذج تطابق هذه التصفية.',
   'settings.providers.page.models.capability.toolCalling': 'استدعاء الأدوات',

@@ -37,6 +37,7 @@
       "entry": [
         "bin/cli.js",
         "server/lib/opencode/login-shell-env.js",
+        "server/lib/haocode/image-converter-worker.mjs",
         "src/mobile-main.tsx",
         "src/mini-chat-main.tsx",
         "src/main.tsx",

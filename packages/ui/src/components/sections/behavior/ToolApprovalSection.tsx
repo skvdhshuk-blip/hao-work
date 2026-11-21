@@ -7,6 +7,7 @@ import { Icon } from '@/components/icon/Icon';
 import { useI18n, type I18nKey } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { opencodeClient } from '@/lib/opencode/client';
+import { saveHaoCodeBehaviorConfig } from './haoCodeConfig';
 import {
   DEFAULT_HITL_APPROVAL_MODE,
   HITL_APPROVAL_MODES,
@@ -66,7 +67,7 @@ export const ToolApprovalSection: React.FC = () => {
     setMode(nextMode);
     void (async () => {
       try {
-        await opencodeClient.updateConfig({ _fe_hitlMode: nextMode });
+        await saveHaoCodeBehaviorConfig({ _fe_hitlMode: nextMode });
         lastSavedRef.current = {
           mode: nextMode,
           reviewModel: lastSavedRef.current?.reviewModel ?? '',
@@ -88,7 +89,7 @@ export const ToolApprovalSection: React.FC = () => {
     const timer = setTimeout(async () => {
       const attempted = trimmed;
       try {
-        await opencodeClient.updateConfig(buildHitlReviewModelPatch(attempted));
+        await saveHaoCodeBehaviorConfig(buildHitlReviewModelPatch(attempted));
         lastSavedRef.current = {
           mode: lastSavedRef.current?.mode ?? DEFAULT_HITL_APPROVAL_MODE,
           reviewModel: attempted,

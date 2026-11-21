@@ -96,15 +96,15 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
     if (!open) return;
 
     let cancelled = false;
-    const fetchOpenCodeVersion = async () => {
+    const fetchHaoCodeVersion = async () => {
       let currentVersion = '';
       try {
         const response = await runtimeFetch('/api/global/health', {
           headers: { Accept: 'application/json' },
         });
         if (response.ok) {
-          const data = await response.json().catch(() => null) as null | { currentVersion?: unknown };
-          currentVersion = typeof data?.currentVersion === 'string' ? data.currentVersion.trim() : '';
+          const data = await response.json().catch(() => null) as null | { _fe_haocodeVersion?: unknown };
+          currentVersion = typeof data?._fe_haocodeVersion === 'string' ? data._fe_haocodeVersion.trim() : '';
         }
       } catch {
         // HaoCode version is best-effort in About.

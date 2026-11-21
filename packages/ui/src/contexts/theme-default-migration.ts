@@ -91,9 +91,9 @@ export const migrateLegacyDefaultThemeIds = (
   return next;
 };
 
-export const THEME_MIGRATION_NEON_GRID_V1_SERVER_KEY = 'themeMigration.neonGridV1.server';
+const THEME_MIGRATION_NEON_GRID_V1_SERVER_KEY = 'themeMigration.neonGridV1.server';
 
-export type DesktopThemeIdSettings = {
+type DesktopThemeIdSettings = {
   themeId?: string;
   lightThemeId?: string;
   darkThemeId?: string;

@@ -28,9 +28,9 @@ import {
 recordEarlyStartupMark('electron.entry');
 
 // Set the product name early so electron-log derives its log directory as
-// ~/Library/Logs/OpenChamber/ (not ~/Library/Logs/@openchamber/electron/).
+// ~/Library/Logs/Hao Work/.
 const versionBeforeRename = app.getVersion();
-app.setName('OpenChamber');
+app.setName('Hao Work');
 // An unpackaged run on Linux reports version "0.0" after the rename, and
 // electron-updater refuses a version that is not semver, so the dev app quit
 // before its first window. Restoring the version from before the rename gives
@@ -40,7 +40,7 @@ if (app.getVersion() !== versionBeforeRename) {
   app.setVersion(versionBeforeRename);
 }
 if (process.platform === 'linux') {
-  app.setDesktopName('openchamber.desktop');
+  app.setDesktopName('hao-work.desktop');
 }
 // Shared and service workers ignore the browser panel's session user agent and
 // use this fallback. Left at Electron's default, a page saw plain Chrome in its
@@ -49,7 +49,7 @@ if (process.platform === 'linux') {
 // has loaded, the default session keeps Electron's agent for its own requests.
 app.userAgentFallback = plainChromeUserAgent(app.userAgentFallback);
 if (isDev) {
-  app.setPath('userData', path.join(app.getPath('appData'), 'OpenChamber Dev'));
+  app.setPath('userData', path.join(app.getPath('appData'), 'Hao Work Dev'));
 }
 // Test hook for scripts/profile-startup.mjs: a packaged launch that must not
 // share the single-instance lock or the Chromium profile with the installed

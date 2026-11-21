@@ -21,14 +21,6 @@ export type Path = {
 }
 
 /**
- * Adapter-owned SSE event emitted by the HaoCode compatibility server when a
- * smart-mode worker auto-resolves a permission in-process. Not part of the
- * SDK `Event` union, so reducers compare against this `string`-typed constant
- * (a literal-typed constant would fail union comparability checks).
- */
-export const PERMISSION_AUTO_RESOLVED_EVENT: string = "permission.auto_resolved"
-
-/**
  * Audit record for one auto-resolved permission decision. Built from
  * `permission.auto_resolved` SSE payloads and from the HaoCode
  * `/auto-decisions` backfill route. Bounded per session (see

@@ -2,7 +2,7 @@
 // Render the changelog outputs from `changelog/*.md`. `oc-dev create-release`
 // is the normal caller; agents only edit `changelog/unreleased.md`.
 //
-//   node scripts/changelog/build.mjs                 write packages/vscode/CHANGELOG.md, changelog/index.json (and CHANGELOG.md while it exists)
+//   node scripts/changelog/build.mjs                 write packages/vscode/CHANGELOG.md and changelog/index.json
 //   node scripts/changelog/build.mjs --check         exit 1 when any output differs from what is committed
 //   node scripts/changelog/build.mjs --release 1.2.3 [--date YYYY-MM-DD]
 //                                                    move unreleased.md to 1.2.3.md (dated today by default), then write
@@ -30,9 +30,8 @@ try {
     console.log(`Promoted changelog/unreleased.md to ${path.relative(repoRoot, created)}`);
   }
 
-  // The legacy app changelog is refreshed while it exists and never recreated.
-  const legacyAppChangelog = fs.existsSync(path.join(repoRoot, 'CHANGELOG.md'));
-  const outputs = renderOutputs(loadReleases(changelogDirectory), { legacyAppChangelog });
+  // The root archive also contains Hao Work releases that predate the versioned catalog.
+  const outputs = renderOutputs(loadReleases(changelogDirectory));
   const stale = [];
   for (const [relativePath, content] of Object.entries(outputs)) {
     const target = path.join(repoRoot, relativePath);

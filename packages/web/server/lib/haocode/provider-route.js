@@ -2,9 +2,9 @@
 // or across a group's models (order, rotate, priority). This is that choice
 // for the providers Hao Work already has: a saved list, not a second gateway.
 
-export const PROVIDER_ROUTE_STRATEGIES = Object.freeze(['order', 'rotate', 'priority']);
+const PROVIDER_ROUTE_STRATEGIES = Object.freeze(['order', 'rotate', 'priority']);
 
-export const emptyProviderRoute = () => ({
+const emptyProviderRoute = () => ({
   enabled: false,
   preferRoute: false,
   strategy: 'order',
@@ -42,7 +42,7 @@ export const normalizeProviderRoute = (value) => {
   };
 };
 
-export const orderRouteMembers = (route) => {
+const orderRouteMembers = (route) => {
   const members = route.members;
   if (route.strategy === 'priority') {
     return [...members].sort((left, right) => right.priority - left.priority

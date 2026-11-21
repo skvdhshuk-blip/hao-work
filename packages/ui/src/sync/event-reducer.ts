@@ -11,6 +11,7 @@ import {
 import { Binary } from "./binary"
 import { withoutUnshownResult } from "@/lib/opencode/toolContentShells"
 import type { State } from "./types"
+import { AUTO_DECISION_LIMIT } from "./auto-decisions"
 import { dropSessionCaches } from "./session-cache"
 import { syncDebug } from "./debug"
 import { shouldSkipStaleSessionEvent } from "./session-event-freshness"
@@ -322,43 +323,10 @@ export function applyDirectoryEvent(
     onCatalogUpdated?: (kind: Extract<SyncEvent, { type: "catalog.updated" }>["properties"]["kind"]) => void
   },
 ): DirectoryEventResult {
-  // Adapter-owned event (not in the SDK Event union): a HaoCode smart-mode
-  // worker auto-resolved one permission in-process. Audit trail only — never
-  // creates a pending permission/question. Unknown enum fields fail closed
-  // (unknown decision displays as reject, unknown risk as high), mirroring
-  // the server's normalization.
-  if (event.type === PERMISSION_AUTO_RESOLVED_EVENT) {
-    const props = event.properties as {
-      sessionID?: unknown
-      requestID?: unknown
-      permission?: unknown
-      metadata?: {
-        input?: Record<string, unknown>
-        description?: unknown
-        _fe_autoDecision?: unknown
-        _fe_source?: unknown
-        _fe_riskLevel?: unknown
-      }
-    }
-    const sessionID = typeof props.sessionID === "string" ? props.sessionID : ""
-    const requestID = typeof props.requestID === "string" ? props.requestID : ""
-    if (!sessionID || !requestID) return false
-    const metadata = props.metadata ?? {}
-    const record: AutoDecisionRecord = {
-      id: requestID,
-      sessionID,
-      requestID,
-      permission: typeof props.permission === "string" && props.permission ? props.permission : "tool",
-      decision: metadata._fe_autoDecision === "approve" ? "approve" : "reject",
-      source: metadata._fe_source === "review" || metadata._fe_source === "sandbox" ? metadata._fe_source : "rule",
-      riskLevel: metadata._fe_riskLevel === "low" || metadata._fe_riskLevel === "medium"
-        || metadata._fe_riskLevel === "high" || metadata._fe_riskLevel === "critical"
-        ? metadata._fe_riskLevel
-        : "high",
-      reason: typeof metadata.description === "string" ? metadata.description : "",
-      ...(metadata.input && typeof metadata.input === "object" ? { input: metadata.input } : {}),
-      time: Date.now(),
-    }
+  // Resolved actions belong to the audit trail and never create a pending request.
+  if (event.type === "permission.auto_resolved") {
+    const record = event.properties
+    const { sessionID, requestID } = record
     draft.autoDecision ??= {}
     const existing = draft.autoDecision[sessionID] ?? []
     const index = existing.findIndex((item) => item.requestID === requestID)

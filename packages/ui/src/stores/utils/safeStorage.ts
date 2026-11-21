@@ -1,4 +1,4 @@
-import type { PersistStorage, StateStorage, StorageValue } from 'zustand/middleware';
+import type { PersistStorage, StorageValue } from 'zustand/middleware';
 
 let safeStorageInstance: Storage | null = null;
 let safeSessionStorageInstance: Storage | null = null;
@@ -44,10 +44,10 @@ const registerDeferredFlusher = (flush: () => void) => {
 };
 
 const createDeferredJSONStorage = <S>(
-    getStorage: () => StateStorage,
+    getStorage: () => Storage,
     options?: JsonStorageOptions,
 ): PersistStorage<S> | undefined => {
-    let storage: StateStorage;
+    let storage: Storage;
     try {
         storage = getStorage();
     } catch {
@@ -114,11 +114,7 @@ const createDeferredJSONStorage = <S>(
                     return null;
                 }
             };
-            const value = storage.getItem(name);
-            if (value instanceof Promise) {
-                return value.then(parse);
-            }
-            return parse(value);
+            return parse(storage.getItem(name));
         },
         setItem: (name, value) => {
             pendingWrites.set(name, value);

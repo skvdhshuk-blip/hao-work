@@ -73,6 +73,8 @@ import { tooltipsWorkspaceI18n } from './tooltips-workspace.i18n';
 import { tooltipsPanelI18n } from './tooltips-panel.i18n';
 import { tooltipsChatI18n } from './tooltips-chat.i18n';
 
+import type { I18nKey } from './en';
+
 export const dict = {
   'quota.family.zen': 'نماذج Zen',
   'quota.value.requests': 'الطلبات: {count}',
@@ -2224,8 +2226,8 @@ export const dict = {
   'directoryTree.section.pinned': 'المثبّتة',
   'directoryTree.section.browse': 'استعراض',
   'aboutDialog.versionLabel': 'الإصدار {version}',
-  'aboutDialog.openChamberVersionLabel': 'إصدار OpenChamber {version}',
-  'aboutDialog.openCodeVersionLabel': 'إصدار OpenCode {version}',
+  'aboutDialog.openChamberVersionLabel': 'إصدار Hao Work {version}',
+  'aboutDialog.openCodeVersionLabel': 'إصدار HaoCode {version}',
   'aboutDialog.appVersionLabel': 'إصدار التطبيق {version}',
   'aboutDialog.actions.copyDiagnostics': 'نسخ بيانات التشخيص',
   'aboutDialog.actions.preparingDiagnostics': 'جارٍ تجهيز بيانات التشخيص…',
@@ -3262,6 +3264,10 @@ export const dict = {
   'onboarding.localSetup.helper.checkAndContinue': 'انقر للتحقق من توفر OpenCode CLI. عند النجاح، ستنتقل تلقائيًا إلى الشاشة الرئيسية.',
   'onboarding.localSetup.status.watching': 'بانتظار OpenCode v2',
   'onboarding.localSetup.status.autoContinue': 'سنتابع تلقائيًا بمجرد اكتشافه.',
+  'onboarding.localSetup.bundledEngine.title': 'جارٍ تشغيل المحرك المدمج',
+  'onboarding.localSetup.bundledEngine.description': 'يتضمن Hao Work محرك HaoCode المدمج. سيتابع التطبيق تلقائيًا عندما يصبح المحرك جاهزًا.',
+  'onboarding.localSetup.bundledEngine.status.waiting': 'جارٍ تشغيل محرك HaoCode المدمج',
+  'onboarding.localSetup.bundledEngine.status.autoContinue': 'ستنتقل تلقائيًا عند جهوزية المحرك.',
   'onboarding.localSetup.field.alreadyInstalled': 'مثبّت بالفعل؟ اضبط مسار OpenCode CLI:',
   'onboarding.localSetup.advanced.title': 'تعيين مسار مخصص للملف التنفيذي',
   'onboarding.localSetup.troubleshoot.title': 'تواجه مشكلة؟',
@@ -4050,5 +4056,24 @@ export const dict = {
   'chat.promptHistorySearch.attachmentsPlural': "{count} مرفقات",
   'chat.promptHistorySearch.hint': "↑ ↓ للتصفح · Enter للتحميل · Esc للإغلاق",
   'helpDialog.item.searchPromptHistory': "البحث في سجل المطالبات (إدخال الدردشة)",
+  'chat.autoDecisionCard.approved': 'تمت الموافقة تلقائيًا',
+  'chat.autoDecisionCard.rejected': 'تم الرفض تلقائيًا',
+  'chat.autoDecisionCard.source.rule': 'قاعدة',
+  'chat.autoDecisionCard.source.review': 'مراجعة النموذج',
+  'chat.autoDecisionCard.source.sandbox': 'بيئة معزولة',
+  'chat.sandboxBadge.label': 'بيئة معزولة',
+  'chat.sandboxBadge.tooltip': 'تعمل أدوات الوكيل داخل آلة افتراضية معزولة.',
+  'chat.assistantError.sendFailed': 'تعذّر إرسال الرسالة.\n`{detail}`',
+  'chat.assistantError.sendFailedRetry': 'تعذّر إرسال الرسالة. جارٍ إعادة المحاولة.\n`{detail}`',
+  'chat.assistantError.stoppedBeforeSend': 'توقفت العملية قبل إرسال الرسالة التالية.',
+  'chat.autoDecisionCard.risk': 'المخاطر: {level}',
+  'chat.permissionEscalation.label': 'الموافقة الذكية: تلزم مراجعة يدوية',
+  'chat.permissionEscalation.reason.rule_red_line': 'تم الحظر بموجب قاعدة أمان',
+  'chat.permissionEscalation.reason.rule_ask': 'تقتضي السياسة مراجعة يدوية',
+  'chat.permissionEscalation.reason.review_unavailable': 'لم يكن نموذج المراجعة متاحًا',
+  'chat.permissionEscalation.reason.review_unsure': 'لم يحسم نموذج المراجعة قراره',
+  'chat.permissionEscalation.reason.batch_escalated': 'يلزم مراجعة إجراء آخر في المجموعة نفسها',
+  'chat.permissionEscalation.reason.batch_circuit_breaker': 'تم تعليق الموافقة التلقائية بعد تكرار الرفض',
+  'chat.permissionEscalation.reason.unknown': 'يلزم قرار بشري',
 
-} as const;
+} satisfies Record<I18nKey, string>;

@@ -1880,6 +1880,7 @@ export const settingsDict = {
   'settings.providers.page.connectionDetails.source.projectConfig': 'Projektkonfiguration',
   'settings.providers.page.connectionDetails.source.customConfig': 'Benutzerkonfiguration',
   'settings.providers.page.models.title': 'Verfügbare Modelle',
+  'settings.providers.page.models.actions.fetchRemote': 'Modellliste abrufen',
   'settings.providers.page.models.filterPlaceholder': 'Modelle filtern...',
   'settings.providers.page.models.noModelsMatchFilter': 'Keine Modelle entsprechen diesem Filter.',
   'settings.providers.page.models.capability.toolCalling': 'Tool-Aufruf',

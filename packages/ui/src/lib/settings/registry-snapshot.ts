@@ -22,7 +22,7 @@ export const SETTINGS_REGISTRY_SNAPSHOT_PATHS = [
 
 export const renderSettingsRegistrySnapshot = (): string => `${JSON.stringify(buildSettingsRegistrySnapshot(), null, 2)}\n`;
 
-export const writeSettingsRegistrySnapshots = (): string[] => {
+const writeSettingsRegistrySnapshots = (): string[] => {
   const rendered = renderSettingsRegistrySnapshot();
   return SETTINGS_REGISTRY_SNAPSHOT_PATHS.map((relativePath) => {
     const target = resolve(repoRoot, relativePath);

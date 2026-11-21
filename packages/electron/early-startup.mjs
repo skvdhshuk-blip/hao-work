@@ -33,8 +33,8 @@ export const isDev = process.env.OPENCHAMBER_ELECTRON_DEV === '1' || !app.isPack
 
 export const DEEP_LINK_PROTOCOL = 'openchamber';
 export const UI_PROTOCOL = 'openchamber-ui';
-const PACKAGED_APP_USER_MODEL_ID = 'dev.openchamber.desktop';
-const DEV_APP_USER_MODEL_ID = 'dev.openchamber.desktop.dev';
+const PACKAGED_APP_USER_MODEL_ID = 'com.haowork.desktop';
+const DEV_APP_USER_MODEL_ID = 'com.haowork.desktop.dev';
 export const APP_USER_MODEL_ID = app.isPackaged ? PACKAGED_APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID;
 export const BACKGROUND_START_ARG = '--background';
 
@@ -98,10 +98,8 @@ const DEFAULT_WINDOW_WIDTH = 1280;
 const DEFAULT_WINDOW_HEIGHT = 800;
 
 export const settingsFilePath = () => {
-  if (typeof process.env.OPENCHAMBER_DATA_DIR === 'string' && process.env.OPENCHAMBER_DATA_DIR.trim()) {
-    return path.join(process.env.OPENCHAMBER_DATA_DIR.trim(), 'settings.json');
-  }
-  return path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
+  const directory = process.env.HAOWORK_DATA_DIR || process.env.OPENCHAMBER_DATA_DIR || path.join(os.homedir(), '.config', 'hao-work');
+  return path.resolve(directory, 'settings.json');
 };
 
 const readJsonFile = (filePath) => {

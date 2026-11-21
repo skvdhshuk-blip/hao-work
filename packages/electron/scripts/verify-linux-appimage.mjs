@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { normalizeTargetArchitecture } from './target-architecture.mjs';
-import { parseOpenCodeCliVersion, readPinnedOpenCodeCliVersion } from './opencode-cli-version.mjs';
+import { LINUX_IDENTITY } from '../linux-identity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const electronRoot = path.resolve(__dirname, '..');
@@ -87,29 +87,17 @@ const assertThemeIcon = (root) => {
   const hicolorRoot = path.join(root, 'usr', 'share', 'icons', 'hicolor');
   const sizeNames = fs.existsSync(hicolorRoot) ? fs.readdirSync(hicolorRoot) : [];
   const themeIcon = sizeNames.filter(isHicolorAppsDirectory).some((sizeName) => (
-    ['openchamber.png', 'openchamber.svg'].some((fileName) => (
-      fs.existsSync(path.join(hicolorRoot, sizeName, 'apps', fileName))
+    ['png', 'svg'].some((extension) => (
+      fs.existsSync(path.join(hicolorRoot, sizeName, 'apps', `${LINUX_IDENTITY.iconName}.${extension}`))
     ))
   ));
-  if (!themeIcon) throw new Error('Missing theme icon: no openchamber icon under usr/share/icons/hicolor/<size>/apps');
+  if (!themeIcon) throw new Error(`Missing theme icon: no ${LINUX_IDENTITY.iconName} icon under usr/share/icons/hicolor/<size>/apps`);
   if (!fs.existsSync(path.join(root, '.DirIcon'))) throw new Error('Missing AppImage icon: .DirIcon does not resolve');
-};
-
-const defaultCliVersion = (binaryPath) => {
-  const result = spawnSync(binaryPath, ['--version'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 15000,
-  });
-  if (result.status !== 0) throw new Error(`Failed to run packaged OpenCode CLI: ${binaryPath}`);
-  return parseOpenCodeCliVersion(result.stdout);
 };
 
 export const verifyExtractedPayload = ({
   root,
   targetArchitecture,
-  expectedOpenCodeVersion,
-  runCliVersion = defaultCliVersion,
 }) => {
   const desktopPath = path.join(root, LINUX_IDENTITY.desktopFileName);
   if (!fs.existsSync(desktopPath)) throw new Error(`Missing desktop entry: ${desktopPath}`);
@@ -125,11 +113,11 @@ export const verifyExtractedPayload = ({
   assertThemeIcon(root);
 
   assertElfArchitecture(path.join(root, LINUX_IDENTITY.executableName), targetArchitecture, 'Electron executable');
-  const cliPath = path.join(root, 'resources', 'opencode-cli', 'opencode');
-  assertElfArchitecture(cliPath, targetArchitecture, 'OpenCode CLI');
-  const actualVersion = runCliVersion(cliPath);
-  if (actualVersion !== expectedOpenCodeVersion) {
-    throw new Error(`OpenCode CLI version mismatch: expected ${expectedOpenCodeVersion}, got ${actualVersion || '(empty)'}`);
+  const runtimeRoot = path.join(root, 'resources', 'haocode-runtime');
+  const runtime = readJson(path.join(runtimeRoot, 'runtime.json'));
+  assertElfArchitecture(path.join(runtimeRoot, runtime.php), targetArchitecture, 'HaoCode PHP');
+  for (const file of [runtime.worker, runtime.autoload]) {
+    if (!fs.existsSync(path.join(runtimeRoot, file))) throw new Error(`Missing HaoCode runtime file: ${file}`);
   }
   assertElfArchitecture(path.join(root, 'resources', 'ripgrep', 'rg'), targetArchitecture, 'ripgrep');
 
@@ -151,12 +139,12 @@ export const verifyExtractedPayload = ({
     }
   }
   for (const modulePath of nativeModules) assertElfArchitecture(modulePath, targetArchitecture, 'Native module');
-  return { nativeModuleCount: nativeModules.length, openCodeVersion: actualVersion };
+  return { nativeModuleCount: nativeModules.length };
 };
 
 const findAppImage = (version, architecture) => {
   const suffix = linuxAppImageArchSuffix(architecture);
-  const expected = path.join(electronRoot, 'dist', `Hao Work-${version}-linux-${suffix}.AppImage`);
+  const expected = path.join(electronRoot, 'dist', `Hao-Work-${version}-linux-${suffix}.AppImage`);
   if (!fs.existsSync(expected)) throw new Error(`Linux AppImage not found: ${expected}`);
   return expected;
 };
@@ -186,10 +174,9 @@ const main = () => {
     const result = verifyExtractedPayload({
       root: extractAppImage(appImagePath, temporaryDirectory),
       targetArchitecture: target,
-      expectedOpenCodeVersion: readPinnedOpenCodeCliVersion(),
     });
     console.log(`[electron] verified Linux ${target} AppImage: ${appImagePath}`);
-    console.log(`[electron] verified OpenCode CLI ${result.openCodeVersion} and ${result.nativeModuleCount} native modules`);
+    console.log(`[electron] verified HaoCode runtime and ${result.nativeModuleCount} native modules`);
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }

@@ -741,6 +741,21 @@ describe('HaoCode compatibility server', () => {
     });
   });
 
+  test('publishes auto-decision audit records on the v2 stream', async () => {
+    const runtime = await createRuntime();
+    await configureDeepSeek(runtime.baseUrl);
+    const session = await createSession(runtime);
+    const sseResponse = await fetch(`${runtime.baseUrl}/api/event`, {
+      headers: { 'x-opencode-directory': encodeURIComponent(runtime.project) },
+    });
+    expect((await prompt(runtime.baseUrl, runtime.project, session.id, 'auto-decision')).status).toBe(200);
+    const payload = await readSseEvent(sseResponse, 'openchamber:haocode-auto-decision');
+    expect(payload).toMatchObject({
+      directory: runtime.project,
+      properties: { sessionId: session.id, actionId: 'act_auto', decision: 'approve', source: 'rule' },
+    });
+  });
+
   test('merges smart-mode escalation context into the pending permission metadata', async () => {
     const runtime = await createRuntime();
     await configureDeepSeek(runtime.baseUrl);

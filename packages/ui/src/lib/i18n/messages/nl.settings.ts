@@ -1948,6 +1948,7 @@ export const settingsDict = {
   'settings.providers.page.connectionDetails.source.projectConfig': 'projectconfiguratie',
   'settings.providers.page.connectionDetails.source.customConfig': 'aangepaste configuratie',
   'settings.providers.page.models.title': 'Beschikbare modellen',
+  'settings.providers.page.models.actions.fetchRemote': 'Modellijst ophalen',
   'settings.providers.page.models.filterPlaceholder': 'Modellen filteren...',
   'settings.providers.page.models.noModelsMatchFilter': 'Geen modellen komen overeen met dit filter.',
   'settings.providers.page.models.capability.toolCalling': 'Toolaanroepen',

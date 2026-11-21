@@ -22,6 +22,7 @@ import {
   readSandboxConfig,
   type SandboxNetwork,
 } from './sandboxConfig';
+import { saveHaoCodeBehaviorConfig } from './haoCodeConfig';
 
 type LoadState = 'loading' | 'ready' | 'error';
 type PrepareState = 'idle' | 'preparing' | 'done' | 'error';
@@ -134,7 +135,7 @@ export const SandboxSection: React.FC = () => {
     }
     const timer = setTimeout(async () => {
       try {
-        await opencodeClient.updateConfig(buildSandboxPatch({ network, memoryMb, cpuCount }));
+        await saveHaoCodeBehaviorConfig(buildSandboxPatch({ network, memoryMb, cpuCount }));
         lastSavedRef.current = {
           enabled: lastSavedRef.current?.enabled ?? false,
           network,
@@ -167,7 +168,7 @@ export const SandboxSection: React.FC = () => {
     setEnabled(nextEnabled);
     void (async () => {
       try {
-        await opencodeClient.updateConfig(buildSandboxPatch({ enabled: nextEnabled }));
+        await saveHaoCodeBehaviorConfig(buildSandboxPatch({ enabled: nextEnabled }));
         lastSavedRef.current = {
           enabled: nextEnabled,
           network: lastSavedRef.current?.network ?? 'blocked',

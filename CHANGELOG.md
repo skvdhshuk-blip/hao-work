@@ -1,6 +1,6 @@
 # Changelog
 
-<!-- Legacy copy for app versions up to 1.22.1, which fetch this file for their update notes. Generated from changelog/*.md while it exists; delete it after 2026-09-19 and nothing will recreate it. -->
+<!-- Legacy release archive for desktop clients that fetch this file for update notes. It includes Hao Work releases that predate the versioned changelog. -->
 
 ## [2.7.1] - 2026-11-12
 

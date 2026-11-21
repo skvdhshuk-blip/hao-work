@@ -1,11 +1,6 @@
 import type { DesktopSettings } from '@/lib/desktop';
 import { useUIStore } from '@/stores/useUIStore';
 import { loadAppearancePreferences, applyAppearancePreferences } from '@/lib/appearancePersistence';
-import {
-  isServerThemeMigrationDone,
-  markServerThemeMigrationDone,
-  migrateDesktopSettingsThemeIds,
-} from '@/contexts/theme-default-migration';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { setStoredMobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { runtimeFetch } from '@/lib/runtime-fetch';

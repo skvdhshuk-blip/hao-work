@@ -79,6 +79,8 @@ workspaces/
 .maintenance-clone
 test-results/
 artifacts/
+packages/electron/resources/haocode-runtime/
+packages/haocode-bridge/vendor/
 
 # TypeScript build-mode caches: UI declarations for project references
 packages/ui/.tsbuild/

@@ -1945,6 +1945,7 @@ export const settingsDict = {
   'settings.providers.page.connectionDetails.source.projectConfig': 'תצורת פרויקט',
   'settings.providers.page.connectionDetails.source.customConfig': 'תצורה מותאמת אישית',
   'settings.providers.page.models.title': 'מודלים זמינים',
+  'settings.providers.page.models.actions.fetchRemote': 'אחזור רשימת המודלים',
   'settings.providers.page.models.filterPlaceholder': 'סינון מודלים…',
   'settings.providers.page.models.noModelsMatchFilter': 'אין מודלים שתואמים לסינון זה.',
   'settings.providers.page.models.capability.toolCalling': 'קריאה לכלים',

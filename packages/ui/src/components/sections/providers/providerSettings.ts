@@ -17,7 +17,7 @@
  *   policy: null clears it so the model falls back to the provider default.
  */
 
-export interface ProviderOption {
+interface ProviderOption {
   id: string;
   name?: string;
 }
@@ -75,7 +75,7 @@ export const parseProvidersPayload = (payload: unknown): ProviderOption[] => {
   });
 };
 
-export type PositiveIntOverrideParse =
+type PositiveIntOverrideParse =
   | { kind: 'empty' }
   | { kind: 'valid'; value: number }
   | { kind: 'invalid' };
@@ -110,7 +110,7 @@ export const settingsNumberToInput = (value: unknown): string => {
 /** Image handling strategies accepted by PATCH /provider/:id/settings. */
 export const IMAGE_POLICIES = ['native', 'ocr', 'caption', 'vlm', 'drop'] as const;
 
-export type ImagePolicy = (typeof IMAGE_POLICIES)[number];
+type ImagePolicy = (typeof IMAGE_POLICIES)[number];
 
 export const DEFAULT_IMAGE_POLICY: ImagePolicy = 'native';
 
@@ -123,7 +123,7 @@ export const settingsVlmModelToInput = (value: unknown): string =>
   typeof value === 'string' ? value : '';
 
 /** Per-model image policy overrides keyed by model id. */
-export type ModelImagePolicies = Record<string, ImagePolicy>;
+type ModelImagePolicies = Record<string, ImagePolicy>;
 
 /** Sanitizes a settings payload per-model policy map; unknown entries are dropped. */
 export const normalizeModelImagePolicies = (value: unknown): ModelImagePolicies => {
@@ -158,7 +158,7 @@ export const buildModelImagePolicyPatch = (model: string, policy: ImagePolicy | 
 export const isImageVlmModelMissing = (policy: ImagePolicy, model: string): boolean =>
   policy === 'vlm' && model.trim().length === 0;
 
-export interface HaoCodeSettingsDraft {
+interface HaoCodeSettingsDraft {
   baseUrl: string;
   providerType: string;
   model: string;
@@ -203,7 +203,7 @@ export const parseModelIdList = (raw: string): string[] => {
   return result;
 };
 
-export interface CustomProviderDraft {
+interface CustomProviderDraft {
   name: string;
   baseUrl: string;
   providerType: string;
@@ -213,12 +213,12 @@ export interface CustomProviderDraft {
   maxTokens: string;
 }
 
-export type CustomProviderBuildError =
+type CustomProviderBuildError =
   | 'nameRequired'
   | 'baseUrlRequired'
   | 'invalidNumber';
 
-export type CustomProviderBuildResult =
+type CustomProviderBuildResult =
   | { ok: true; body: Record<string, unknown> }
   | { ok: false; error: CustomProviderBuildError };
 
@@ -268,12 +268,12 @@ export const buildCustomProviderBody = (draft: CustomProviderDraft): CustomProvi
   return { ok: true, body };
 };
 
-export interface ProviderSourceInfo {
+interface ProviderSourceInfo {
   exists: boolean;
   path?: string | null;
 }
 
-export interface ProviderSources {
+interface ProviderSources {
   auth: ProviderSourceInfo;
   user: ProviderSourceInfo;
   project: ProviderSourceInfo;

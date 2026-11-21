@@ -65,6 +65,15 @@ const SAFETY_KIND_LABEL_KEYS = new Map<string, I18nKey>([
 
 const safetyKindLabelKey = (kind: string): I18nKey => SAFETY_KIND_LABEL_KEYS.get(kind) ?? 'routing.safetyKind.unknown';
 
+const ESCALATION_REASON_KEYS: ReadonlyArray<readonly [string, I18nKey]> = [
+  ['rule:red_line', 'chat.permissionEscalation.reason.rule_red_line'],
+  ['rule:ask', 'chat.permissionEscalation.reason.rule_ask'],
+  ['review:unavailable', 'chat.permissionEscalation.reason.review_unavailable'],
+  ['review:unsure', 'chat.permissionEscalation.reason.review_unsure'],
+  ['batch:circuit_breaker', 'chat.permissionEscalation.reason.batch_circuit_breaker'],
+  ['batch:escalated', 'chat.permissionEscalation.reason.batch_escalated'],
+];
+
 /** The safety-net hold notice and what the request wants to do. */
 export const PermissionRequestContent: React.FC<{ permission: PermissionRequest }> = ({ permission }) => {
   const { t } = useI18n();
@@ -317,6 +326,13 @@ export const PermissionRequestContent: React.FC<{ permission: PermissionRequest 
       ) : null}
 
       <div className="px-2 py-2">
+        {escalationReason ? (
+          <div className="mb-2 typography-meta text-muted-foreground">
+            <p className="font-medium">{t('chat.permissionEscalation.label')}</p>
+            <p>{t(escalationReasonKey)}</p>
+            {escalationDetail ? <p dir="auto">{escalationDetail}</p> : null}
+          </div>
+        ) : null}
         {/* v2 lets the agent explain in its own words why it needs this. */}
         {permission.message ? (
           <div dir="auto" className="typography-meta text-foreground/80 mb-2 whitespace-pre-wrap break-words">

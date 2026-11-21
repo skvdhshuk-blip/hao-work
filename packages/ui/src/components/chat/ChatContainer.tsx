@@ -63,6 +63,7 @@ import {
     withdrawComposerInsets,
 } from '@/components/chat/composer/state/composerInsetReaders';
 import { SessionErrorNotice } from '@/components/chat/SessionErrorNotice';
+import { SessionAutoDecisions } from '@/components/chat/AutoDecisionCard';
 import ScrollToBottomButton from './components/ScrollToBottomButton';
 import { PromptNavigatorRail } from './components/PromptNavigatorRail';
 import { useAuthSessionStore } from '@/lib/runtime-auth-expiry';
@@ -421,6 +422,7 @@ const ChatViewport = React.memo(({
             {/* Permissions dock above the composer (`PermissionDock`); forms
                 too (`FormDock`) unless questions are set to show in the chat. */}
             <SessionErrorNotice sessionId={currentSessionId} directory={directory} />
+            {currentSessionId ? <SessionAutoDecisions sessionId={currentSessionId} directory={directory} /> : null}
             {formsInChat && currentSessionId ? <TranscriptForms sessionId={currentSessionId} directory={directory} /> : null}
 
             {/* Tail spacer. With a floating composer it reserves the band the

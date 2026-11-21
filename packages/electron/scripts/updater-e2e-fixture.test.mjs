@@ -10,7 +10,7 @@ import { parseUpdateManifest, verifyUpdateManifest } from './verify-update-manif
 test('stages architecture-specific generic updater fixtures with valid metadata', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-updater-fixture-'));
   try {
-    const source = path.join(root, 'Hao Work-1.15.1-linux-arm64.AppImage');
+    const source = path.join(root, 'Hao-Work-1.15.1-linux-arm64.AppImage');
     const directory = path.join(root, 'feed');
     fs.writeFileSync(source, 'fixture-appimage');
     const result = stageUpdaterFixture({
@@ -28,7 +28,7 @@ test('stages architecture-specific generic updater fixtures with valid metadata'
       expectedVersion: '1.15.1',
     }), {
       version: '1.15.1',
-      artifacts: [{ name: 'OpenChamber-1.15.1-linux-arm64.AppImage', size: 16 }],
+      artifacts: [{ name: 'Hao-Work-1.15.1-linux-arm64.AppImage', size: 16 }],
     });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

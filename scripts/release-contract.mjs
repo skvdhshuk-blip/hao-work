@@ -109,8 +109,12 @@ export const validateReleaseContract = ({
   if (!productName) {
     errors.push('Electron productName is missing');
   } else {
-    const localArtifact = `APPIMAGE="dist/${productName}-\${VERSION}-linux-\${ARTIFACT_ARCH}.AppImage"`;
-    const inventoryArtifact = `${productName}-\${version}-linux-x86_64.AppImage`;
+    const artifactPrefix = productName.replaceAll(' ', '-');
+    const localArtifact = `"dist/${artifactPrefix}-\${VERSION}-linux-\${ARTIFACT_ARCH}.AppImage"`;
+    const inventoryArtifact = `${artifactPrefix}-\${version}-linux-x86_64.AppImage`;
+    if (electronPackage.build.linux?.artifactName !== `${artifactPrefix}-\${version}-linux-\${arch}.\${ext}`) {
+      errors.push('Linux packaging does not use the current product artifact name');
+    }
     if (!releaseWorkflow.includes(localArtifact)) {
       errors.push(`Linux workflow artifact path does not match productName ${JSON.stringify(productName)}`);
     }

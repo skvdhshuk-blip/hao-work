@@ -3,12 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import { LINUX_IDENTITY } from '../linux-identity.mjs';
 import { linuxAppImageArchSuffix, readElfArchitecture, verifyExtractedPayload } from './verify-linux-appimage.mjs';
-
-const electronRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const writeElf = (filePath, architecture) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -31,20 +28,28 @@ const createPayload = () => {
     '[Desktop Entry]', `Name=${LINUX_IDENTITY.productName}`, `Exec=AppRun --no-sandbox %U`, `Icon=${LINUX_IDENTITY.iconName}`, `StartupWMClass=${LINUX_IDENTITY.startupWMClass}`, '',
   ].join('\n'));
   writeElf(path.join(root, LINUX_IDENTITY.executableName), 'x64');
-  writeElf(path.join(root, 'resources/opencode-cli/opencode'), 'x64');
+  const runtime = path.join(root, 'resources/haocode-runtime');
+  const manifest = { php: 'php/php', worker: 'bridge/worker.php', autoload: 'bridge/vendor/autoload.php' };
+  writeElf(path.join(runtime, manifest.php), 'x64');
+  fs.writeFileSync(path.join(runtime, 'runtime.json'), JSON.stringify(manifest));
+  for (const asset of [manifest.worker, manifest.autoload,
+    'resources/app.asar.unpacked/node_modules/@gutenye/ocr-models/assets/ch_PP-OCRv4_det_infer.onnx',
+    'resources/app.asar.unpacked/node_modules/onnxruntime-node/package.json']) {
+    const file = path.join(asset.startsWith('resources/') ? root : runtime, asset);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+  }
   writeElf(path.join(root, 'resources/ripgrep/rg'), 'x64');
   for (const name of ['pty.node', 'sherpa-onnx.node']) {
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules', name), 'x64');
   }
-  writeIcon(root, 'usr/share/icons/hicolor/512x512/apps/openchamber.png');
+  writeIcon(root, 'usr/share/icons/hicolor/512x512/apps/hao-work.png');
   return root;
 };
 
 const verify = (root) => verifyExtractedPayload({
   root,
   targetArchitecture: 'x64',
-  expectedOpenCodeVersion: '1.17.18',
-  runCliVersion: () => '1.17.18',
 });
 
 test('reads supported ELF architectures', () => {
@@ -64,15 +69,10 @@ test('AppImage artifact names use electron-builder arch suffixes', () => {
   assert.equal(linuxAppImageArchSuffix('arm64'), 'arm64');
 });
 
-test('verifies identity, version, and native payload architecture', () => {
+test('verifies the Hao Work identity and HaoCode runtime architecture', () => {
   const root = createPayload();
   try {
-    const result = verifyExtractedPayload({
-      root,
-      targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.18',
-    });
+    const result = verify(root);
     assert.equal(result.nativeModuleCount, 2);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -83,12 +83,7 @@ test('fails on a missing native module', () => {
   const root = createPayload();
   try {
     fs.rmSync(path.join(root, 'resources/app.asar.unpacked/node_modules/pty.node'));
-    assert.throws(() => verifyExtractedPayload({
-      root,
-      targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.18',
-    }), /Missing packaged native module: pty\.node/);
+    assert.throws(() => verify(root), /Missing packaged native module: pty\.node/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -98,33 +93,21 @@ test('fails when the OCR model asset stays inside the asar', () => {
   const root = createPayload();
   try {
     fs.rmSync(path.join(root, 'resources/app.asar.unpacked/node_modules/@gutenye/ocr-models/assets/ch_PP-OCRv4_det_infer.onnx'));
-    assert.throws(() => verifyExtractedPayload({
-      root,
-      targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.18',
-    }), /Missing unpacked runtime asset: node_modules\/@gutenye\/ocr-models/);
+    assert.throws(() => verify(root), /Missing unpacked runtime asset: node_modules\/@gutenye\/ocr-models/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('fails on wrong CLI version or native architecture', () => {
+test('fails when the PHP runtime or native modules have the wrong architecture', () => {
   const root = createPayload();
   try {
-    assert.throws(() => verifyExtractedPayload({
-      root,
-      targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.17',
-    }), /OpenCode CLI version mismatch/);
+    const php = path.join(root, 'resources/haocode-runtime/php/php');
+    writeElf(php, 'arm64');
+    assert.throws(() => verify(root), /HaoCode PHP architecture mismatch/);
+    writeElf(php, 'x64');
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules/pty.node'), 'arm64');
-    assert.throws(() => verifyExtractedPayload({
-      root,
-      targetArchitecture: 'x64',
-      expectedOpenCodeVersion: '1.17.18',
-      runCliVersion: () => '1.17.18',
-    }), /Native module architecture mismatch/);
+    assert.throws(() => verify(root), /Native module architecture mismatch/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -134,17 +117,17 @@ test('accepts a scalable theme icon', () => {
   const root = createPayload();
   try {
     fs.rmSync(path.join(root, 'usr/share/icons/hicolor/512x512'), { recursive: true });
-    writeIcon(root, 'usr/share/icons/hicolor/scalable/apps/openchamber.svg');
+    writeIcon(root, 'usr/share/icons/hicolor/scalable/apps/hao-work.svg');
     assert.equal(verify(root).nativeModuleCount, 2);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('fails when the theme cannot resolve Icon=openchamber', () => {
+test('fails when the theme cannot resolve Icon=hao-work', () => {
   for (const relativePath of [
-    'usr/share/icons/hicolor/scalable/openchamber.svg',
-    'usr/share/icons/hicolor/1024x1024/apps/openchamber.png',
+    'usr/share/icons/hicolor/scalable/hao-work.svg',
+    'usr/share/icons/hicolor/1024x1024/apps/hao-work.png',
   ]) {
     const root = createPayload();
     try {
@@ -161,7 +144,7 @@ test('fails when .DirIcon is dangling', () => {
   const root = createPayload();
   try {
     fs.rmSync(path.join(root, '.DirIcon'));
-    fs.symlinkSync('usr/share/icons/hicolor/scalable/openchamber.svg', path.join(root, '.DirIcon'));
+    fs.symlinkSync('usr/share/icons/hicolor/scalable/hao-work.svg', path.join(root, '.DirIcon'));
     assert.throws(() => verify(root), /\.DirIcon does not resolve/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

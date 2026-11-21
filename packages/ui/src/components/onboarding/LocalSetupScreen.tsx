@@ -278,7 +278,7 @@ export function LocalSetupScreen({
 
         {engineMode !== 'external' && (
           <div
-            className="mx-auto max-w-md rounded-lg border px-4 py-3 flex items-center gap-3 text-left"
+            className="mx-auto max-w-md rounded-lg border px-4 py-3 flex items-center gap-3 text-start"
             style={{
               borderColor: 'color-mix(in srgb, var(--primary-base) 20%, transparent)',
               backgroundColor: 'color-mix(in srgb, var(--primary-base) 6%, transparent)',
@@ -315,9 +315,9 @@ export function LocalSetupScreen({
         )}
 
         {engineMode === 'external' && platform === 'windows' && (
-          <div className="mx-auto max-w-2xl rounded-lg border border-border bg-background/50 p-4 text-left">
+          <div className="mx-auto max-w-2xl rounded-lg border border-border bg-background/50 p-4 text-start">
             <div className="text-sm text-foreground">{t('onboarding.localSetup.windows.title')}</div>
-            <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
+            <ol className="mt-2 list-decimal space-y-1 ps-5 text-sm text-muted-foreground">
               <li>{t('onboarding.localSetup.windows.stepRunInstallInWsl')}</li>
               <li>{t('onboarding.localSetup.windows.stepSetBinaryPath')}</li>
             </ol>
@@ -424,7 +424,7 @@ export function LocalSetupScreen({
       </div>
 
       {showHint && engineMode === 'external' && (
-        <div className="absolute bottom-8 left-0 right-0 text-center space-y-1">
+        <div className="absolute bottom-8 inset-x-0 text-center space-y-1">
           {platform === 'windows' ? (
             <>
               <p className="text-sm text-muted-foreground/70">

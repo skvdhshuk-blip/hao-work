@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { SandboxStatusBadge } from './SandboxStatusBadge';
 import { formatShortcutForDisplay, getEffectiveShortcutCombo } from '@/lib/shortcuts';
 import { TooltipLabelWithShortcut } from '@/components/ui/action-toolbar';
 import { useGuestsStore } from '@/lib/guests/store';
@@ -1152,6 +1153,7 @@ export const Header: React.FC = () => {
             </Tooltip>
           ) : null}
 
+          {currentSessionId && !activeSurfaceHeader ? <SandboxStatusBadge /> : null}
           <WindowsWindowControls visible={endEdgeOwnedByInWindowControls} position={windowControlsSide} />
         </div>
       </div>

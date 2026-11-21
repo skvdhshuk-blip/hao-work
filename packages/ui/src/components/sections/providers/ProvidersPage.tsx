@@ -1,5 +1,6 @@
 import { rankByQuery } from '@/lib/search/fuzzySearch';
 import React from 'react';
+import { z } from 'zod';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import { SettingsSection } from '@/components/sections/shared/SettingsSection';
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
@@ -18,6 +19,7 @@ import type { ModelMetadata } from '@/types';
 import { useI18n } from '@/lib/i18n';
 import { formatCompactNumber } from '@/lib/numberFormat';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { captureRuntimeInstance } from '@/lib/runtime-switch';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { opencodeClient } from '@/lib/opencode/client';
 import { getIntegrationClient, loadIntegrationCatalog, peekIntegrationCatalog, subscribeCredentialChanges, type IntegrationCatalog } from '@/lib/opencode/integration-catalog';
@@ -61,6 +63,7 @@ import {
   isConfigDefinedCustomProvider,
   providerToEditFormState,
   resolveProviderConfigScope,
+  modelDiscoveryErrorSchema,
   storedProviderEntrySchema,
   type CustomProviderFormState,
   type CustomProviderLogoPlan,
@@ -89,6 +92,7 @@ const connectIntegrationKey = async (request: IntegrationKeyRequest): Promise<vo
 const ADD_PROVIDER_ID = '__add_provider__';
 /** Not an OpenCode provider id: the page for OpenChamber's own classification providers (Jev). */
 const CLASSIFICATION_PAGE_ID = '__classification__';
+const remoteModelIdsSchema = z.object({ models: z.array(z.string().min(1)) });
 
 interface ProviderSourceInfo {
   exists: boolean;
@@ -157,6 +161,7 @@ export const ProvidersPage: React.FC = () => {
   // startup or from the last visit), then reads it again below.
   const [catalog, setCatalog] = React.useState<IntegrationCatalog | null>(() => peekIntegrationCatalog());
   const [integrationsLoadFailed, setIntegrationsLoadFailed] = React.useState(false);
+  const [fetchModelsBusy, setFetchModelsBusy] = React.useState(false);
   const integrations = catalog?.integrations ?? null;
   // A provider with no model at all gets a card only while it holds a stored
   // login: without one there is nothing on its page to act on. Joined so a
@@ -824,10 +829,36 @@ export const ProvidersPage: React.FC = () => {
     );
   }
 
-  const haoCodeContextWindowInvalid = parsePositiveIntOverride(haoCodeContextWindow).kind === 'invalid';
-  const haoCodeMaxTokensInvalid = parsePositiveIntOverride(haoCodeMaxTokens).kind === 'invalid';
-  const haoCodeOverridesInvalid = haoCodeContextWindowInvalid || haoCodeMaxTokensInvalid;
-  const haoCodeImageVlmModelMissing = isImageVlmModelMissing(haoCodeImagePolicy, haoCodeImageVlmModel);
+  const handleFetchRemoteModels = async () => {
+    const isCurrent = captureRuntimeInstance();
+    const path = `/api/provider/${encodeURIComponent(selectedProvider.id)}`;
+    const failure = t('settings.providers.page.custom.discovery.failed');
+    setFetchModelsBusy(true);
+    try {
+      const response = await runtimeFetch(`${path}/models`);
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(modelDiscoveryErrorSchema.safeParse(payload).data?.error || failure);
+      const parsed = remoteModelIdsSchema.safeParse(payload);
+      if (!parsed.success) throw new Error(failure);
+      if (!isCurrent()) return;
+      const { models } = parsed.data;
+      if (!models.length) {
+        toast.info(t('settings.providers.page.models.none'));
+        return;
+      }
+      const saved = await runtimeFetch(`${path}/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models }),
+      });
+      if (!saved.ok) throw new Error(failure);
+      if (isCurrent()) await loadProviders({ directory: settingsDirectory, source: 'settings:fetchModels', fresh: true });
+    } catch (error) {
+      if (isCurrent()) toast.error(error instanceof Error ? error.message : failure);
+    } finally {
+      setFetchModelsBusy(false);
+    }
+  };
 
   return (
     <SettingsPageLayout
@@ -962,12 +993,11 @@ export const ProvidersPage: React.FC = () => {
         titleAccessory={modelCountAccessory}
         headerAction={canHideModels ? (
           <div className="flex items-center gap-1">
-            <Button
-              disabled={fetchModelsBusy}
-              onClick={() => handleFetchRemoteModels(selectedProvider.id)}
-            >
-              {fetchModelsBusy ? t('settings.providers.page.actions.saving') : t('settings.providers.page.models.actions.fetchRemote')}
-            </Button>
+            {selectedProvider.package === '' && !enterpriseLocked ? (
+              <Button variant="outline" size="xs" className="!font-normal" disabled={fetchModelsBusy} onClick={() => void handleFetchRemoteModels()}>
+                {fetchModelsBusy ? t('settings.providers.page.actions.saving') : t('settings.providers.page.models.actions.fetchRemote')}
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               size="xs"

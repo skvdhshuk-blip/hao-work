@@ -48,6 +48,20 @@ test('accepts a valid final JSON event without a trailing newline', async () => 
   expect(supervisor.activeCount()).toBe(0);
 });
 
+test('names a missing project directory instead of blaming the PHP binary', async () => {
+  const { root, workerPath } = await fixture('');
+  const missingDirectory = path.join(root, 'missing-project');
+  const supervisor = supervisorFor(workerPath);
+
+  await expect(supervisor.run({
+    sessionId: 'missing-cwd',
+    request: { cwd: missingDirectory },
+    onEvent: () => {},
+  })).rejects.toThrow(`Project directory does not exist: ${missingDirectory}`);
+
+  expect(supervisor.activeCount()).toBe(0);
+});
+
 test('preserves UTF-8 characters split across stdout chunks', async () => {
   const { root, workerPath } = await fixture(`
     for await (const _chunk of process.stdin) {}

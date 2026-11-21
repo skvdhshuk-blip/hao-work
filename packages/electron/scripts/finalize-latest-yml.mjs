@@ -119,8 +119,8 @@ if (windowsFromRelease) {
   });
   if (!response.ok) throw new Error(`Failed to read release ${releaseId}: ${response.status} ${await response.text()}`);
   const { assets } = await response.json();
-  output['latest.yml'] = serialize(await manifestFromReleaseAsset(assets, `OpenChamber-${version}-win-x64.exe`, token));
-  output['latest-arm64.yml'] = serialize(await manifestFromReleaseAsset(assets, `OpenChamber-${version}-win-arm64.exe`, token));
+  output['latest.yml'] = serialize(await manifestFromReleaseAsset(assets, `Hao-Work-${version}-win-x64.exe`, token));
+  output['latest-arm64.yml'] = serialize(await manifestFromReleaseAsset(assets, `Hao-Work-${version}-win-arm64.exe`, token));
 } else {
   const winX64 = await read('latest-yml-x86_64-pc-windows-msvc', 'latest.yml');
   const winArm64 = await read('latest-yml-aarch64-pc-windows-msvc', 'latest.yml');

@@ -50,13 +50,13 @@ for (const [manifestName, arch, debArch] of [
 }
 
 test('accepts electron-builder field ordering and optional blockMapSize', (t) => {
-  const artifactName = 'OpenChamber-1.15.0-linux-x86_64.AppImage';
+  const artifactName = 'Hao Work-1.15.0-linux-x86_64.AppImage';
   const bytes = Buffer.from(`artifact:${artifactName}`);
   const value = fixture(t, 'latest-linux.yml', [artifactName], [
     `  - sha512: ${crypto.createHash('sha512').update(bytes).digest('base64')}`,
     `    size: ${bytes.length}`,
     '    blockMapSize: 1234',
-    `    url: ${encodedArtifactName}`,
+    `    url: ${encodeURIComponent(artifactName)}`,
   ]);
   assert.equal(verifyUpdateManifest({ ...value, expectedVersion: '1.15.0' }).artifacts[0].name, artifactName);
 });

@@ -1324,9 +1324,34 @@ export const createHaoCodeCompatibilityServer = ({
           delta: props.delta || '',
         });
       case 'permission.asked':
-        return wire('permission.asked', props);
+        return wire('permission.asked', {
+          id: props.id,
+          sessionID: props.sessionID,
+          action: props.permission,
+          resources: props.patterns,
+          metadata: props.metadata,
+        });
       case 'permission.replied':
         return wire('permission.replied', props);
+      case 'permission.auto_resolved': {
+        const metadata = props.metadata;
+        return {
+          id: payload.id,
+          type: 'openchamber:haocode-auto-decision',
+          directory,
+          properties: {
+            time: created,
+            sessionId: sessionID,
+            actionId: metadata._fe_actionId,
+            tool: props.permission,
+            input: metadata.input,
+            reason: metadata.description,
+            decision: metadata._fe_autoDecision,
+            source: metadata._fe_source,
+            riskLevel: metadata._fe_riskLevel,
+          },
+        };
+      }
       default:
         return null;
     }
@@ -1334,16 +1359,18 @@ export const createHaoCodeCompatibilityServer = ({
   const publish = (directory, payload) => {
     const normalizedDirectory = normalizeDirectory(directory);
     const wireEvent = toWireEvent(normalizedDirectory, payload);
-    if (!wireEvent) return;
     for (const response of globalEventClients) {
+      const frame = response.req.openCodeV2 ? wireEvent : payload;
+      if (!frame) continue;
       writeSse(response, {
         directory: normalizedDirectory,
-        payload: wireEvent,
-        id: wireEvent.id,
+        payload: frame,
+        id: frame.id,
       });
     }
     for (const response of directoryEventClients.get(normalizedDirectory) ?? []) {
-      writeSse(response, wireEvent);
+      const frame = response.req.openCodeV2 ? wireEvent : payload;
+      if (frame) writeSse(response, frame);
     }
   };
 

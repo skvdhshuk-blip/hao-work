@@ -2,6 +2,7 @@ import React from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
 import type { AutoDecisionRecord } from '@/sync/types';
+import { useScopedAutoDecisions } from '@/sync/sync-context';
 
 // Resolved-state companion to PermissionCard: renders one HaoCode smart-mode
 // auto decision (audit trail only — no actions).
@@ -25,7 +26,7 @@ const RISK_TONE: Record<AutoDecisionRecord['riskLevel'], string | undefined> = {
   critical: 'var(--status-error)',
 };
 
-export const AutoDecisionCard: React.FC<AutoDecisionCardProps> = ({ record }) => {
+const AutoDecisionCard: React.FC<AutoDecisionCardProps> = ({ record }) => {
   const { t } = useI18n();
   const approved = record.decision === 'approve';
   const tone = approved ? 'var(--status-success)' : 'var(--status-error)';
@@ -82,3 +83,8 @@ export const AutoDecisionCard: React.FC<AutoDecisionCardProps> = ({ record }) =>
     </div>
   );
 };
+
+export function SessionAutoDecisions({ sessionId, directory }: { sessionId: string; directory?: string }) {
+  const records = useScopedAutoDecisions(sessionId, directory);
+  return records.map((record) => <AutoDecisionCard key={record.requestID} record={record} />);
+}

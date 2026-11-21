@@ -29,6 +29,7 @@ import { spaceCreationStepSchema, spaceTaskTitleSchema, type SpaceTaskTitle } fr
 import { workflowRunSchema } from "@/lib/workflows/model"
 import { syncDebug } from "./debug"
 import { countSyncPerformance } from "./performance-diagnostics"
+import { normalizeAutoDecisionRecord } from "./auto-decisions"
 
 // Paces a sustained event stream only: the first event after a quiet spell is
 // flushed at once, so a lone permission or status event is not delayed. Every
@@ -276,6 +277,7 @@ const wireEventSchema = z.object({
 // one payload per delta, and trying every OpenChamber schema in turn cost
 // eleven zod parses per delta, nine of them certain to fail.
 const payloadTypeSchema = z.object({ type: z.string() })
+const haoCodeAutoDecisionSchema = z.object({ directory: z.string().min(1), properties: z.unknown() })
 
 const OPENCHAMBER_TYPE_PREFIX = "openchamber:"
 
@@ -391,6 +393,13 @@ export function classifyStreamPayload(payload: unknown, frameDirectory: string |
   if (!type.startsWith(OPENCHAMBER_TYPE_PREFIX)) return { kind: "events", events: translateWirePayload(payload, frameDirectory) }
 
   switch (type) {
+    case "openchamber:haocode-auto-decision": {
+      const parsed = haoCodeAutoDecisionSchema.safeParse(payload)
+      if (!parsed.success) return NO_EVENTS
+      const { directory, properties } = parsed.data
+      const record = normalizeAutoDecisionRecord(properties)
+      return record ? { kind: "events", events: [{ directory, event: { type: "permission.auto_resolved", properties: record } }] } : NO_EVENTS
+    }
     case "openchamber:space-stream": {
       const parsed = openchamberSpaceStreamSchema.safeParse(payload)
       return parsed.success ? { kind: "space-stream", properties: parsed.data.properties } : NO_EVENTS

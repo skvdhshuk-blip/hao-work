@@ -11,11 +11,10 @@
 
 import { z } from 'zod';
 
+import type { I18nKey, I18nParams } from '@/lib/i18n';
 import type { Message } from '@/lib/opencode/model';
 
 import { isLikelyProviderAuthFailure, PROVIDER_AUTH_FAILURE_MESSAGE } from './providerAuthError';
-
-export const STOPPED_TURN_MESSAGE = 'The running turn was stopped before OpenCode could send the next message.';
 
 /** OpenCode's structured name for an interrupted step. */
 const ABORT_ERROR_NAME = 'MessageAbortedError';
@@ -84,20 +83,23 @@ type AssistantErrorNotice = { text: string };
  * The sentence the transcript prints for a message's recorded error, or null
  * when the message carries none worth showing.
  */
-export const assistantErrorNotice = (info: Message): AssistantErrorNotice | null => {
+export const assistantErrorNotice = (
+    info: Message,
+    t: (key: I18nKey, params?: I18nParams) => string,
+): AssistantErrorNotice | null => {
     const errorDetail = readAssistantErrorDetail(info);
     if (!errorDetail) {
         return null;
     }
     const { name: errorName, detail } = errorDetail;
     if (errorName === 'SessionRetry') {
-        return { text: `Opencode failed to send a message. Retry attempt info: ${detail}` };
+        return { text: t('chat.assistantError.sendFailedRetry', { detail }) };
     }
     if (isLikelyProviderAuthFailure(detail)) {
         return { text: PROVIDER_AUTH_FAILURE_MESSAGE };
     }
     if (isStoppedTurnError(errorName, detail)) {
-        return { text: STOPPED_TURN_MESSAGE };
+        return { text: t('chat.assistantError.stoppedBeforeSend') };
     }
-    return { text: `Opencode failed to send message with error: ${detail}` };
+    return { text: t('chat.assistantError.sendFailed', { detail }) };
 };

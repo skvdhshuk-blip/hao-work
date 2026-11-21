@@ -1809,6 +1809,7 @@ export const settingsDict = {
   'settings.providers.page.connectionDetails.source.projectConfig': 'proje yapılandırması',
   'settings.providers.page.connectionDetails.source.customConfig': 'özel yapılandırma',
   'settings.providers.page.models.title': 'Kullanılabilir Modeller',
+  'settings.providers.page.models.actions.fetchRemote': 'Model listesini getir',
   'settings.providers.page.models.filterPlaceholder': 'Modelleri filtrele...',
   'settings.providers.page.models.noModelsMatchFilter': 'Bu filtreye uyan model yok.',
   'settings.providers.page.models.capability.toolCalling': 'Araç çağırma',

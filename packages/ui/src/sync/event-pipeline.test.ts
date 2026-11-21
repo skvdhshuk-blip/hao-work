@@ -519,6 +519,14 @@ describe("createEventPipeline over the WebSocket transport", () => {
 })
 
 describe("classifyStreamPayload", () => {
+  test("routes HaoCode auto-decision audit records to the session directory", () => {
+    const properties = { sessionId: "ses_1", actionId: "act_1", decision: "approve", tool: "Bash" }
+    expect(classifyStreamPayload({ type: "openchamber:haocode-auto-decision", directory: "/repo", properties }, undefined))
+      .toMatchObject({ kind: "events", events: [{ directory: "/repo", event: {
+        type: "permission.auto_resolved",
+        properties: { sessionID: "ses_1", requestID: "req_act_1", decision: "approve", permission: "Bash" },
+      } }] })
+  })
   test("routes authoritative space task titles and refuses malformed title records", () => {
     const properties = { spaceId: "0123456789ab", taskTitle: { title: "Task", by: "user" } }
     expect(classifyStreamPayload({ type: "openchamber:space-task-title.updated", properties }, undefined))

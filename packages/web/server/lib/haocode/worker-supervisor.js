@@ -12,6 +12,22 @@ const DEFAULT_ABORT_GRACE_MS = 1500;
 // Lines PHP prints outside the protocol when display_errors leaks to stdout.
 const PHP_NOISE_PATTERN = /^(?:PHP )?(?:Warning|Notice|Deprecated|Strict standards)\b/i;
 
+const assertWorkerDirectory = (cwd) => {
+  if (!cwd?.trim()) return;
+  let stat;
+  try {
+    stat = fs.statSync(cwd);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      throw new Error(`Project directory does not exist: ${cwd}`, { cause: error });
+    }
+    throw error;
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`Project path is not a directory: ${cwd}`);
+  }
+};
+
 const appendChunk = (state, chunk, onLine, maxEventBytes) => {
   // StringDecoder retains an incomplete UTF-8 sequence between pipe chunks;
   // plain chunk.toString('utf8') can corrupt CJK/emoji when a code point is
@@ -49,6 +65,13 @@ export const createWorkerSupervisor = ({
   const run = ({ sessionId, request, onEvent }) => new Promise((resolve, reject) => {
     if (active.has(sessionId)) {
       reject(new Error(`Session ${sessionId} is already running.`));
+      return;
+    }
+
+    try {
+      assertWorkerDirectory(request.cwd);
+    } catch (error) {
+      reject(error);
       return;
     }
 
@@ -162,7 +185,14 @@ export const createWorkerSupervisor = ({
       if (settled) return;
       settled = true;
       markExited();
-      reject(error);
+      if (error?.code !== 'ENOENT') {
+        reject(error);
+        return;
+      }
+      const reason = request.cwd?.trim() && !fs.existsSync(request.cwd)
+        ? `Project directory does not exist: ${request.cwd}`
+        : `PHP executable was not found: ${phpBinary}`;
+      reject(new Error(reason, { cause: error }));
     });
     // `close` runs after stdout/stderr are drained; settling on `exit` can
     // race the final JSON line still buffered in the pipe.

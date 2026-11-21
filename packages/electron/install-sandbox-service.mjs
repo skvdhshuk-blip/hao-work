@@ -32,7 +32,7 @@ const buildElevatedPayload = (svcBinaryPath) => {
   // backslashes inside the JSON-style single-quoted path argument. New-Service
   // is idempotent only by failing on duplicate; we -ErrorAction SilentlyContinue
   // and check afterwards so re-running after a prior install still returns ok.
-  const quoted = `'${svcBinaryPath.replace(/'/g, "''")}'`;
+  const quoted = `'"${svcBinaryPath.replace(/'/g, "''")}"'`;
   return [
     `$svc = Get-Service -Name '${SERVICE_NAME}' -ErrorAction SilentlyContinue`,
     `if (-not $svc) {`,

@@ -907,7 +907,7 @@ export const downloadDesktopUpdate = async (
   }
 };
 
-export const restartToApplyUpdate = async (): Promise<void> => {
+export const restartToApplyUpdate = async (): Promise<boolean> => {
   if (!hasDesktopInvoke()) {
     throw new Error('Desktop bridge is not available');
   }

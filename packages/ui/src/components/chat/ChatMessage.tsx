@@ -468,8 +468,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         if (isFollowedByAssistant) {
             return undefined;
         }
-        return assistantErrorNotice(message.info);
-    }, [isFollowedByAssistant, isUser, message.info]);
+        return assistantErrorNotice(message.info, t);
+    }, [isFollowedByAssistant, isUser, message.info, t]);
 
     const assistantErrorText = assistantError?.text;
     // The provider's raw response behind the error, offered as expandable details.

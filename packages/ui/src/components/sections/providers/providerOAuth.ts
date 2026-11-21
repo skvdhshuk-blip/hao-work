@@ -12,7 +12,7 @@
 
 import { isRecord } from './providerSettings';
 
-export interface AuthMethod {
+interface AuthMethod {
   type?: string;
   name?: string;
   label?: string;
@@ -22,9 +22,9 @@ export interface AuthMethod {
   [key: string]: unknown;
 }
 
-export type OAuthFlowMethod = 'auto' | 'code';
+type OAuthFlowMethod = 'auto' | 'code';
 
-export interface OAuthAuthorizeDetails {
+interface OAuthAuthorizeDetails {
   url?: string;
   instructions?: string;
   userCode?: string;

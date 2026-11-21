@@ -10,6 +10,7 @@ import { restartDesktopApp } from '@/lib/desktop';
 import { cn } from '@/lib/utils';
 import { useWaitingBlink } from '@/hooks/useDurationTicker';
 import { RemoteConnectionForm } from './RemoteConnectionForm';
+import { isEngineReady, resolveEngineMode, type OnboardingEngineMode } from './engineMode';
 import { desktopHostsGet, desktopHostsSet } from '@/lib/desktopHosts';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
@@ -307,7 +308,23 @@ export function ChooserScreen({ onCliAvailable, localAvailable = true }: Chooser
           </div>
         ) : null}
 
-        {showLocal && (
+        {showLocal && engineMode !== 'external' && (
+          <div className="mt-6">
+            <p className="text-center text-sm leading-relaxed text-muted-foreground">
+              {t('onboarding.localSetup.bundledEngine.description')}
+            </p>
+            <div className="mt-3 flex items-center gap-2.5 px-1" role="status" aria-live="polite">
+              <span className="relative inline-flex h-2 w-2 shrink-0" aria-hidden>
+                <WatchingDot />
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {t('onboarding.localSetup.bundledEngine.status.waiting')}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {showLocal && engineMode === 'external' && (
           <div className="mt-6">
             {platform === 'windows' && (
               <div className="mb-4 rounded-lg border border-border p-4">

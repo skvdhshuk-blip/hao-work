@@ -23,7 +23,7 @@ type SandboxConfig = {
   cpuCount: number;
 };
 
-export const sanitizeSandboxNetwork = (value: unknown): SandboxNetwork => {
+const sanitizeSandboxNetwork = (value: unknown): SandboxNetwork => {
   return value === 'allow-all' ? 'allow-all' : 'blocked';
 };
 
@@ -50,9 +50,7 @@ export const readSandboxConfig = (config: unknown): SandboxConfig => {
   };
 };
 
-// Build a patch object for opencodeClient.updateConfig. null values clear the
-// key (server treats absent and null equivalently). The enabled toggle sets
-// the boolean directly.
+// The enabled toggle sets the boolean directly.
 export const buildSandboxPatch = (partial: Partial<SandboxConfig>): Record<string, unknown> => {
   const patch: Record<string, unknown> = {};
   if (partial.enabled !== undefined) patch._fe_sandboxEnabled = partial.enabled === true;
